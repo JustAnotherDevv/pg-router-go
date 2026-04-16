@@ -1,0 +1,32 @@
+# Build artifacts
+bin/
+*.exe
+*.test
+
+# Coverage
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local configs (real ones; samples in configs/ are tracked)
+*.local.yaml
+pgrouter.yaml
+!configs/pgrouter.yaml
+
+# Secrets
+*.key
+*.pem
+!test/tls/*.key
+!test/tls/*.pem
