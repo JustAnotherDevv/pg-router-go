@@ -1,0 +1,70 @@
+# golangci-lint configuration for pgrouter.
+# https://golangci-lint.run/usage/configuration/
+#
+# Run: `make lint` or `golangci-lint run`.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - integration
+
+linters:
+  default: none
+  enable:
+    # Defaults that catch real bugs.
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    # Style + safety extras.
+    - bodyclose
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: exported
+          disabled: true # too noisy during early scaffolding; re-enable post-MVP
+
+  exclusions:
+    rules:
+      # Test files: allow longer fns, dot imports, unused params.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - prealloc
+          - unparam
+
+      # pgproto3 message types use snake_case parameter names that don't
+      # match Go style — silence revive there.
+      - path: internal/proto/
+        linters:
+          - revive
+        text: var-naming
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/JustAnotherDevv/pgrouter
