@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/proto"
 )
 
 // Conn handles one accepted client connection. Renamed from the PoC's
@@ -230,27 +231,30 @@ func (h *Conn) forwardStartupToClient(be *pgproto3.Backend, bConn *backend.Conn,
 // proxy runs two goroutines that forward messages between the client and
 // the backend. Returns when either side disconnects or ctx is cancelled.
 //
-// M.1 scope: full pass-through, no per-message inspection. Pool reuse +
-// transaction-boundary detection are M.6 / M.9. Buffered raw forwarding
-// (the perf optimisation noted in the PoC bench results) is M.2.
+// Uses the typed `internal/proto` helpers (M.2) so this loop is the
+// reference example for higher-level code. Per-message inspection
+// (transaction-boundary detection, prepared-stmt cache) lands in
+// M.6 / M.9 / M.11 on top of this same shape.
 func (h *Conn) proxy(ctx context.Context, be *pgproto3.Backend, bConn *backend.Conn, log *slog.Logger) {
 	done := make(chan struct{}, 2)
+
+	clientSide := proto.WrapClientBackend(be)
+	serverSide := proto.WrapServerFrontend(bConn.Frontend)
 
 	// client → backend
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
-			msg, err := be.Receive()
+			msg, err := proto.ForwardClientToServer(clientSide, serverSide)
 			if err != nil {
 				log.Debug("client recv err", "err", err)
 				return
 			}
-			bConn.Frontend.Send(msg.(pgproto3.FrontendMessage))
-			if err := bConn.Frontend.Flush(); err != nil {
+			if err := serverSide.Flush(); err != nil {
 				log.Debug("backend send err", "err", err)
 				return
 			}
-			if _, ok := msg.(*pgproto3.Terminate); ok {
+			if proto.IsTerminate(msg) {
 				log.Info("client sent Terminate")
 				return
 			}
@@ -261,13 +265,12 @@ func (h *Conn) proxy(ctx context.Context, be *pgproto3.Backend, bConn *backend.C
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
-			msg, err := bConn.Frontend.Receive()
+			_, err := proto.ForwardServerToClient(serverSide, clientSide)
 			if err != nil {
 				log.Debug("backend recv err", "err", err)
 				return
 			}
-			be.Send(msg.(pgproto3.BackendMessage))
-			if err := be.Flush(); err != nil {
+			if err := clientSide.Flush(); err != nil {
 				log.Debug("client send err", "err", err)
 				return
 			}
