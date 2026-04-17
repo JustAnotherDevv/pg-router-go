@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 	"github.com/JustAnotherDevv/pgrouter/internal/proto"
@@ -49,6 +50,14 @@ type Conn struct {
 	// 'S' and upgrade the conn via tls.Server. Nil → SSLRequest is
 	// declined with 'N' (PoC carryover behaviour).
 	TLSConfig *tls.Config
+
+	// Auth, if non-nil + Type != trust, runs the SCRAM / MD5 handshake
+	// against the client before forwarding. Nil → trust mode.
+	Auth *auth.ServerAuthOptions
+
+	// BackendPassword, if non-empty, is forwarded to the upstream during
+	// backend.Dial for MD5 / SCRAM client-side auth. Empty = trust upstream.
+	BackendPassword string
 }
 
 // Handle is the `listener.Handler` signature. One goroutine per client.
@@ -123,6 +132,15 @@ func (h *Conn) Handle(ctx context.Context, conn net.Conn) {
 				"parameters", m.Parameters,
 			)
 
+			// Run the configured server-side auth handshake (trust / MD5 / SCRAM).
+			user := m.Parameters["user"]
+			if h.Auth != nil {
+				if err := auth.PerformServerAuth(be, *h.Auth, user); err != nil {
+					log.Info("client auth failed", "err", err)
+					return
+				}
+			}
+
 			if h.BackendAddr == "" {
 				// No upstream configured: trust-mode canned response.
 				if err := h.sendStartupResponse(be, conn, log); err != nil {
@@ -134,7 +152,6 @@ func (h *Conn) Handle(ctx context.Context, conn net.Conn) {
 			}
 
 			// Per-client upstream (no pooling yet — M.6-M.9).
-			user := m.Parameters["user"]
 			db := m.Parameters["database"]
 			app := m.Parameters["application_name"]
 			bctx, bcancel := context.WithTimeout(ctx, 5*time.Second)
@@ -143,6 +160,7 @@ func (h *Conn) Handle(ctx context.Context, conn net.Conn) {
 				User:     user,
 				Database: db,
 				AppName:  app,
+				Password: h.BackendPassword,
 				Log:      log,
 			})
 			bcancel()

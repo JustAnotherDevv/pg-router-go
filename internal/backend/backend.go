@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 )
 
@@ -37,6 +38,7 @@ type DialOptions struct {
 	User     string
 	Database string
 	AppName  string // optional application_name
+	Password string // for MD5 / SCRAM client-side auth; empty = trust
 	Timeout  time.Duration
 	Log      *slog.Logger
 
@@ -137,7 +139,7 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 		Log:      log,
 	}
 
-	// Read until ReadyForQuery.
+	// Read until ReadyForQuery, running any auth handshake along the way.
 	for {
 		msg, err := fe.Receive()
 		if err != nil {
@@ -149,10 +151,20 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 			log.Debug("backend auth ok")
 		case *pgproto3.AuthenticationCleartextPassword,
 			*pgproto3.AuthenticationMD5Password,
-			*pgproto3.AuthenticationSASL,
-			*pgproto3.AuthenticationGSS:
+			*pgproto3.AuthenticationSASL:
+			// Drive the auth phase using the password from DialOptions.
+			if opts.Password == "" {
+				_ = c.Close()
+				return nil, fmt.Errorf("backend requested auth (%T) but DialOptions.Password is empty", m)
+			}
+			if err := auth.PerformClientAuth(fe, opts.User, opts.Password, m); err != nil {
+				_ = c.Close()
+				return nil, fmt.Errorf("backend auth: %w", err)
+			}
+			log.Debug("backend auth ok (after handshake)")
+		case *pgproto3.AuthenticationGSS:
 			_ = c.Close()
-			return nil, errors.New("backend requires auth other than trust; SCRAM/MD5 wired in MVP M.5")
+			return nil, errors.New("backend requested GSS auth; not supported")
 		case *pgproto3.ParameterStatus:
 			conn.Params[m.Name] = m.Value
 		case *pgproto3.BackendKeyData:
