@@ -1,0 +1,44 @@
+# basic.yaml — single primary, transaction-mode pooling, SCRAM auth.
+#
+# Drop-in start point for most users. Edit the database host, mount your
+# userlist.txt, and run:
+#
+#   pgrouter run --config examples/configs/basic.yaml
+
+server:
+  listen_addr: 0.0.0.0
+  listen_port: 6432
+  max_client_conn: 1000
+
+pool:
+  mode: transaction
+  default_pool_size: 20
+  min_pool_size: 0
+  reserve_pool_size: 5
+  reserve_pool_timeout: 5s
+  query_wait_timeout: 120s
+  server_idle_timeout: 600s
+  server_lifetime: 3600s
+  server_connect_timeout: 15s
+
+auth:
+  type: scram-sha-256
+  userlist_file: /etc/pgrouter/userlist.txt
+
+tls:
+  client_mode: disable
+  server_mode: disable
+
+metrics:
+  listen: ":9090"
+  path: /metrics
+
+logging:
+  level: info
+  format: text
+
+databases:
+  appdb:
+    host: 127.0.0.1
+    port: 5432
+    dbname: appdb
