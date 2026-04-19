@@ -25,6 +25,40 @@ var Build = struct {
 	Version: "dev",
 }
 
+// Active is the singleton Metrics handle initialised by New(). Other
+// packages reach into it via the small public hooks below so they
+// don't have to thread *Metrics through every constructor.
+var Active *Metrics
+
+// OnPoolAcquireWait satisfies pool.Callbacks.OnAcquireWait. No-op if
+// Active is nil (tests that don't initialise the metrics surface).
+func OnPoolAcquireWait(name string, d float64) {
+	if Active != nil {
+		Active.PoolAcquireSeconds.WithLabelValues(name).Observe(d)
+	}
+}
+
+// OnPoolDial increments backend dial counters.
+func OnPoolDial(_ string) {
+	if Active != nil {
+		Active.BackendDialsTotal.Inc()
+	}
+}
+
+// OnPoolDialError increments dial-error counters.
+func OnPoolDialError(_ string, _ error) {
+	if Active != nil {
+		Active.BackendDialErrorsTot.Inc()
+	}
+}
+
+// OnPoolEvict increments eviction counters.
+func OnPoolEvict(_ string, n int) {
+	if Active != nil {
+		Active.BackendEvictionsTotal.Add(float64(n))
+	}
+}
+
 // Reg is the *prometheus.Registry pgrouter writes to. Production main
 // passes this into the metrics HTTP handler.
 var Reg = prometheus.NewRegistry()
@@ -182,6 +216,7 @@ func New() *Metrics {
 		m.AuthAttempts, m.AuthFailures,
 		m.CancelsReceived, m.CancelsForwarded, m.CancelsDropped,
 	)
+	Active = m
 	return m
 }
 

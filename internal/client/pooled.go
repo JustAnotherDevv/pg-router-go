@@ -7,21 +7,24 @@
 //     ParameterStatus* + BackendKeyData + ReadyForQuery) WITHOUT a
 //     backend attached. The client sees pgrouter answering directly.
 //  2. On the first client Query / Parse, Acquires a backend from the
-//     pool and forwards the message.
+//     pool and forwards the message. If the client has set any GUCs
+//     during this session, the cache's ReplayQuery is fired first so
+//     the (potentially fresh) backend has the right state.
 //  3. Keeps forwarding bidirectionally inside the transaction.
-//  4. When the backend's ReadyForQuery returns tx_status='I' (idle), we
-//     just-completed-a-transaction — Release the backend back to the
-//     pool. The client sees the RFQ as usual.
+//  4. When the backend's ReadyForQuery returns tx_status='I' (idle) AND
+//     the client isn't session-pinned (LISTEN / advisory_lock / temp
+//     table / cursor), Release the backend back to the pool. The
+//     client sees the RFQ as usual.
 //  5. The next Query / Parse Acquires again — possibly a different
 //     backend.
 //
 // MVP scope (M.9):
-//   - txn mode only (session/statement modes coming after M.9.4)
-//   - bare Query / Parse / Bind / Execute / Sync; COPY + LISTEN /
-//     NOTIFY land in M.9.4 with force-session logic.
-//   - GUC tracking is M.10 — for now, SETs inside a transaction commit
-//     with the transaction. SETs OUTSIDE a transaction are lost on
-//     Release; clients that need persistent SETs must wrap them in BEGIN.
+//   - txn mode + automatic session pinning for incompatible features
+//   - bare Query / Parse / Bind / Execute / Sync; COPY data is forwarded
+//     1:1 inside an implicit transaction.
+//   - GUC replay on fresh-backend acquire (per-client GUC cache).
+//   - DISCARD ALL on release by default; per-client prepared-statement
+//     bookkeeping (Parse / Close('S', name) tracked).
 
 package client
 
@@ -56,8 +59,28 @@ type PooledConn struct {
 	CannedParams map[string]string
 
 	// ResetOnRelease, when true, sends DISCARD ALL on every Release.
-	// Default true in production; tests may disable.
+	// Defaults to TRUE in production (NewPooledConn) so a backend never
+	// carries session state across clients. Tests may override.
 	ResetOnRelease bool
+
+	// resetOnReleaseSet is true once a caller has explicitly written to
+	// ResetOnRelease (including via the zero value of the bool — but
+	// most production paths go via NewPooledConn which sets this).
+	// Internal toggle; not exported.
+	resetOnReleaseSet bool
+}
+
+// NewPooledConn returns a PooledConn with production defaults applied:
+// ResetOnRelease=true. Use this from cmd/pgrouter and any orchestration
+// code; direct struct literals are fine for tests that want to opt out.
+func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]string) *PooledConn {
+	return &PooledConn{
+		Log:               log,
+		Pool:              p,
+		CannedParams:      cannedParams,
+		ResetOnRelease:    true,
+		resetOnReleaseSet: true,
+	}
 }
 
 // Serve runs the pooled handler against an already-authenticated client.
@@ -79,13 +102,22 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	log.Info("pooled client ready")
 
 	state := NewClientState()
+	gucCache := NewGUCCache()
+	prepCache := NewPrepareCache()
+
 	// First synthetic RFQ → mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 
 	var bConn *backend.Conn
-	releaseOnExit := true
+	// `sessionPinned` flips on once we see LISTEN / advisory_lock / temp
+	// table / cursor — after which the backend stays attached for the
+	// rest of the client's session.
+	sessionPinned := false
+
 	defer func() {
-		if bConn != nil && releaseOnExit {
+		if bConn != nil {
+			// On client disconnect we always release. Reset is best-effort
+			// per the user's ResetOnRelease config.
 			h.Pool.Release(bConn, h.ResetOnRelease)
 		}
 	}()
@@ -114,6 +146,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		}
 
 		state.ObserveClientMessage(msg)
+		h.observeClientMessage(msg, gucCache, prepCache, &sessionPinned, log)
 
 		// Acquire a backend lazily on the first traffic-generating message.
 		needsBackend := messageNeedsBackend(msg)
@@ -125,6 +158,22 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				return err
 			}
 			log.Debug("backend acquired", "backend_pid", bConn.PostgresPID)
+
+			// Replay tracked GUCs on the fresh backend BEFORE the
+			// client's message hits it. Skip if cache is empty (the
+			// common case).
+			if replay := gucCache.ReplayQuery(); replay != "" {
+				if err := h.fireReplay(bConn, replay); err != nil {
+					log.Warn("guc replay failed; treating backend as bad",
+						"err", err)
+					// Defensively discard the backend.
+					_ = bConn.Close()
+					bConn = nil
+					h.sendFatalError(be, "57P03",
+						fmt.Sprintf("pgrouter: backend replay failed: %v", err))
+					return err
+				}
+			}
 		}
 
 		if bConn != nil {
@@ -135,7 +184,6 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			}
 
 			// Drain backend response up to ReadyForQuery, forwarding each.
-			released := false
 			for {
 				bmsg, err := bConn.Frontend.Receive()
 				if err != nil {
@@ -152,15 +200,18 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					// implicit-transaction queries (e.g. bare SELECT
 					// outside BEGIN). PgBouncer's transaction mode
 					// behaves identically.
-					if state.Tx().IsIdle() {
+					//
+					// EXCEPT when the client has triggered session-pin
+					// (LISTEN, advisory_lock, temp table, cursor) —
+					// then we hold the backend for the remainder of the
+					// session.
+					if state.Tx().IsIdle() && !sessionPinned {
 						h.Pool.Release(bConn, h.ResetOnRelease)
 						bConn = nil
-						released = true
 					}
 					break
 				}
 			}
-			_ = released
 			continue
 		}
 
@@ -169,6 +220,74 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if _, ok := msg.(*pgproto3.Sync); ok {
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 			_ = be.Flush()
+		}
+	}
+}
+
+// observeClientMessage runs the per-message hooks that drive the GUC +
+// prepare caches and the session-pin trigger.
+func (h *PooledConn) observeClientMessage(
+	msg pgproto3.FrontendMessage,
+	gucCache *GUCCache,
+	prepCache *PrepareCache,
+	sessionPinned *bool,
+	log *slog.Logger,
+) {
+	switch m := msg.(type) {
+	case *pgproto3.Query:
+		gucCache.ObserveQuery(m.String)
+		if !*sessionPinned && needsSessionPin(m.String) {
+			*sessionPinned = true
+			log.Info("session pinned (force-session)",
+				"reason", "incompatible feature in Query",
+				"sql_prefix", truncate(m.String, 64),
+			)
+		}
+	case *pgproto3.Parse:
+		prepCache.Observe(m.Name, m.Query, m.ParameterOIDs)
+		if !*sessionPinned && needsSessionPin(m.Query) {
+			*sessionPinned = true
+			log.Info("session pinned (force-session)",
+				"reason", "incompatible feature in Parse",
+				"sql_prefix", truncate(m.Query, 64),
+			)
+		}
+	case *pgproto3.Close:
+		// Close('S', name) untracks a prepared statement.
+		if m.ObjectType == 'S' {
+			prepCache.Close(m.Name)
+		}
+	}
+}
+
+// truncate is a no-frills string slicer for log fields.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// fireReplay sends `sql` on the backend and drains the response up to
+// ReadyForQuery. Returns an error on backend ErrorResponse — the caller
+// should treat the backend as poisoned and discard it.
+func (h *PooledConn) fireReplay(bConn *backend.Conn, sql string) error {
+	bConn.Frontend.Send(&pgproto3.Query{String: sql})
+	if err := bConn.Frontend.Flush(); err != nil {
+		return fmt.Errorf("replay flush: %w", err)
+	}
+	for {
+		msg, err := bConn.Frontend.Receive()
+		if err != nil {
+			return fmt.Errorf("replay recv: %w", err)
+		}
+		switch m := msg.(type) {
+		case *pgproto3.ErrorResponse:
+			return fmt.Errorf("replay error %s: %s", m.Severity, m.Message)
+		case *pgproto3.ReadyForQuery:
+			return nil
+		default:
+			// CommandComplete, RowDescription, etc.: drain
 		}
 	}
 }
