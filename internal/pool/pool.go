@@ -160,6 +160,15 @@ func (p *Pool) Acquire(ctx context.Context) (*backend.Conn, error) {
 	}
 	select {
 	case pc := <-w.ch:
+		if pc == nil {
+			// Close() sent zero-value via closed chan.
+			return nil, ErrPoolClosed
+		}
+		// active was kept pinned by Release; just bump the metric.
+		p.mu.Lock()
+		p.totalAcquired++
+		p.mu.Unlock()
+		pc.Lifecycle.MarkActive(time.Now())
 		return pc.Conn, nil
 	case <-ctx.Done():
 		p.cancelWaiter(w)
@@ -199,6 +208,12 @@ func (p *Pool) Release(c *backend.Conn, resetSession bool) {
 	p.mu.Lock()
 	p.totalReleased++
 	// Hand off to next waiter under lock to preserve FIFO.
+	// The active count is invariant across a handoff: the slot we just
+	// released is being claimed by the waiter atomically — we do NOT
+	// decrement active here. (If we did, another goroutine could see
+	// active<limit between Release and the waiter's resume and dial a
+	// new backend, leaking a slot.) The waiter side bumps totalAcquired
+	// but skips active++ since we kept it pinned.
 	for len(p.waiters) > 0 {
 		w := p.waiters[0]
 		p.waiters = p.waiters[1:]

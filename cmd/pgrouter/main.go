@@ -28,6 +28,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
+	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
 var version = "0.2.0-mvp"
@@ -139,7 +140,23 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		"databases", len(cfg.Databases),
 	)
 
-	// Pick the first database for the M.3 demo. Multi-pool wiring is M.8.
+	// Initialise the Prometheus registry once. (Each metric must only be
+	// registered once per process; New() panics on re-register.)
+	_ = stats.New()
+
+	// Spawn the metrics endpoint.
+	metricsCtx, metricsCancel := context.WithCancel(context.Background())
+	defer metricsCancel()
+	go func() {
+		if err := stats.ServeMetrics(metricsCtx, cfg.Metrics.Listen, cfg.Metrics.Path, log); err != nil {
+			log.Error("metrics server", "err", err)
+		}
+	}()
+
+	// Pick the first database for the single-upstream MVP demo. Full
+	// per-(db, user) pool routing is wired through pool.Manager — the
+	// dispatcher inside listener.Serve looks up the right pool from
+	// StartupMessage parameters; that wiring lands in a follow-up.
 	var dbAddr string
 	for _, db := range cfg.Databases {
 		dbAddr = net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
