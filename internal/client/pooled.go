@@ -63,6 +63,14 @@ type PooledConn struct {
 	// carries session state across clients. Tests may override.
 	ResetOnRelease bool
 
+	// WelcomePID + WelcomeSecret, if non-zero, are emitted in the
+	// BackendKeyData portion of the welcome message. Callers wire the
+	// cancel.Tracker here so subsequent CancelRequest packets can be
+	// routed back to this client's currently-attached backend. Zero
+	// values cause a one-shot random key to be generated locally.
+	WelcomePID    uint32
+	WelcomeSecret []byte
+
 	// resetOnReleaseSet is true once a caller has explicitly written to
 	// ResetOnRelease (including via the zero value of the bool — but
 	// most production paths go via NewPooledConn which sets this).
@@ -292,16 +300,22 @@ func (h *PooledConn) fireReplay(bConn *backend.Conn, sql string) error {
 	}
 }
 
-// sendWelcome sends AuthOk + canned ParameterStatus + synthetic
-// BackendKeyData + ReadyForQuery 'I'.
+// sendWelcome sends AuthOk + canned ParameterStatus + BackendKeyData +
+// ReadyForQuery 'I'. PID/secret come from WelcomePID/Secret if set,
+// otherwise random one-shot values.
 func (h *PooledConn) sendWelcome(be *pgproto3.Backend) error {
 	be.Send(&pgproto3.AuthenticationOk{})
 	for k, v := range h.CannedParams {
 		be.Send(&pgproto3.ParameterStatus{Name: k, Value: v})
 	}
-	pid, sec, err := randomBackendKey()
-	if err != nil {
-		return err
+	pid := h.WelcomePID
+	sec := h.WelcomeSecret
+	if pid == 0 || len(sec) == 0 {
+		p, s, err := randomBackendKey()
+		if err != nil {
+			return err
+		}
+		pid, sec = p, s
 	}
 	be.Send(&pgproto3.BackendKeyData{ProcessID: pid, SecretKey: sec})
 	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})

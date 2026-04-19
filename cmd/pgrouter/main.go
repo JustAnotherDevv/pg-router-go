@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -24,10 +25,15 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/auth"
+	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
+	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
@@ -112,10 +118,12 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdRun starts the pooler driven by a config file.
-//
-// MVP scope: only the first database in cfg.Databases is wired (single
-// upstream). M.7 / M.8 add per-(db,user) pool selection.
+// cmdRun starts the pooler driven by a config file. Wires:
+//   - YAML config → TLS, auth, pool sizing
+//   - per-(db, user) pool routing via pool.Manager
+//   - Prometheus /metrics + /healthz endpoint
+//   - cancel.Tracker for per-client (PID, secret) routing
+//   - PooledHandler for the listener.Handler role
 func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	var configPath string
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -132,20 +140,17 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	}
 
 	log := newLogger(cfg.Logging.Format, cfg.Logging.Level)
+	listenAddr := net.JoinHostPort(cfg.Server.ListenAddr, strconv.Itoa(cfg.Server.ListenPort))
 	log.Info("pgrouter starting",
 		"version", version,
 		"config", configPath,
-		"listen", net.JoinHostPort(cfg.Server.ListenAddr, strconv.Itoa(cfg.Server.ListenPort)),
+		"listen", listenAddr,
 		"pool_mode", string(cfg.Pool.Mode),
 		"databases", len(cfg.Databases),
 	)
 
-	// Initialise the Prometheus registry once. (Each metric must only be
-	// registered once per process; New() panics on re-register.) stats.New()
-	// sets stats.Active so pool callbacks can find it.
-	_ = stats.New()
-
-	// Spawn the metrics endpoint.
+	// --- metrics ---
+	_ = stats.New() // sets stats.Active
 	metricsCtx, metricsCancel := context.WithCancel(context.Background())
 	defer metricsCancel()
 	go func() {
@@ -154,20 +159,167 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}()
 
-	// Pick the first database for the single-upstream MVP demo. Full
-	// per-(db, user) pool routing is wired through pool.Manager — the
-	// dispatcher inside listener.Serve looks up the right pool from
-	// StartupMessage parameters; that wiring lands in a follow-up.
-	var dbAddr string
-	for _, db := range cfg.Databases {
-		dbAddr = net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
-		break
+	// --- TLS configs ---
+	clientTLS, _, err := listener.BuildServerTLSConfig(cfg.TLS)
+	if err != nil {
+		log.Error("client TLS init", "err", err)
+		return 1
+	}
+	backendTLS, err := listener.BuildBackendTLSConfig(cfg.TLS)
+	if err != nil {
+		log.Error("backend TLS init", "err", err)
+		return 1
+	}
+	backendTLSRequired := cfg.TLS.ServerMode == config.SSLRequire ||
+		cfg.TLS.ServerMode == config.SSLVerifyCA ||
+		cfg.TLS.ServerMode == config.SSLVerifyFull
+
+	// --- auth ---
+	var authOpts *auth.ServerAuthOptions
+	var userlist *auth.Userlist
+	if cfg.Auth.UserlistFile != "" {
+		ul, err := auth.NewUserlist(cfg.Auth.UserlistFile)
+		if err != nil {
+			log.Error("userlist load", "err", err)
+			return 1
+		}
+		userlist = ul
+		log.Info("userlist loaded", "path", cfg.Auth.UserlistFile, "entries", ul.Len())
+	}
+	if cfg.Auth.Type != config.AuthTrust {
+		authOpts = &auth.ServerAuthOptions{
+			Type:     cfg.Auth.Type,
+			Userlist: userlist,
+			Log:      log,
+		}
 	}
 
-	return runServer(log,
-		net.JoinHostPort(cfg.Server.ListenAddr, strconv.Itoa(cfg.Server.ListenPort)),
-		dbAddr,
-	)
+	// --- pool.Manager ---
+	cancelTracker := cancel.NewTracker()
+
+	dialerFor := func(k pool.Key) pool.Dialer {
+		db, ok := cfg.Databases[k.DB]
+		if !ok {
+			// Unknown database — return a dialer that always errors so
+			// Acquire fails with a clear message.
+			return func(_ context.Context) (*backend.Conn, error) {
+				return nil, fmt.Errorf("unknown database %q", k.DB)
+			}
+		}
+		addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
+		// Per-DB upstream user override: if the config pins a user for
+		// this database, use it; otherwise forward the client's.
+		upstreamUser := k.User
+		if db.User != "" {
+			upstreamUser = db.User
+		}
+		dbName := db.DBName
+		if dbName == "" {
+			dbName = k.DB
+		}
+		password := db.Password
+		// If a userlist is loaded and we don't have a per-db password,
+		// look up the upstream user there. This matches PgBouncer's
+		// auth_file behaviour for the upstream side.
+		if password == "" && userlist != nil {
+			if entry, ok := userlist.Lookup(upstreamUser); ok && entry.PlainPassword != "" {
+				password = entry.PlainPassword
+			}
+		}
+		return func(ctx context.Context) (*backend.Conn, error) {
+			return backend.Dial(ctx, backend.DialOptions{
+				Addr:        addr,
+				User:        upstreamUser,
+				Database:    dbName,
+				AppName:     "pgrouter",
+				Password:    password,
+				TLSConfig:   backendTLS,
+				TLSRequired: backendTLSRequired,
+				Log:         log,
+			})
+		}
+	}
+
+	cbs := pool.Callbacks{
+		OnAcquireWait: func(name string, d time.Duration) {
+			stats.OnPoolAcquireWait(name, d.Seconds())
+		},
+		OnDial:      stats.OnPoolDial,
+		OnDialError: stats.OnPoolDialError,
+		OnEvict:     stats.OnPoolEvict,
+	}
+
+	defaultCfg := pool.Config{
+		DefaultPoolSize:    cfg.Pool.DefaultPoolSize,
+		MinPoolSize:        cfg.Pool.MinPoolSize,
+		ReservePoolSize:    cfg.Pool.ReservePoolSize,
+		ReservePoolTimeout: cfg.Pool.ReservePoolTimeout,
+		QueryWait:          cfg.Pool.QueryWaitTimeout,
+		ServerIdle:         cfg.Pool.ServerIdle,
+		ServerLifetime:     cfg.Pool.ServerLifetime,
+		Log:                log,
+		Callbacks:          cbs,
+	}
+	mgr := pool.NewManager(defaultCfg, dialerFor).WithConfigFor(func(k pool.Key) *pool.Config {
+		db, ok := cfg.Databases[k.DB]
+		if !ok || db.PoolSize == 0 {
+			return nil
+		}
+		return &pool.Config{DefaultPoolSize: db.PoolSize}
+	})
+	mgr.Start(cfg.Pool.ServerCheckDelay)
+
+	// --- canned ParameterStatus ---
+	// Until we capture the first upstream's real ParameterStatus, ship a
+	// minimal set so pg drivers don't bail on missing critical vars.
+	cannedParams := map[string]string{
+		"server_version":              "16.0 (pgrouter)",
+		"server_encoding":             "UTF8",
+		"client_encoding":             "UTF8",
+		"DateStyle":                   "ISO, MDY",
+		"IntervalStyle":               "postgres",
+		"TimeZone":                    "UTC",
+		"integer_datetimes":           "on",
+		"standard_conforming_strings": "on",
+		"is_superuser":                "off",
+	}
+
+	// --- handler ---
+	h := &client.PooledHandler{
+		Log:            log,
+		Manager:        mgr,
+		TLSConfig:      clientTLS,
+		Auth:           authOpts,
+		CancelTracker:  cancelTracker,
+		CannedParams:   cannedParams,
+		ResetOnRelease: true,
+	}
+
+	// --- listener + signal-driven shutdown ---
+	ctx, signalCancel := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signalCancel()
+
+	ln, err := listener.New(listenAddr, log)
+	if err != nil {
+		log.Error("listener init", "err", err)
+		return 1
+	}
+	log.Info("listening", "addr", ln.Addr().String())
+
+	serveErr := ln.Serve(ctx, h.Handle)
+
+	// Graceful drain: give pools 30s to release before force-close.
+	drainDeadline := time.Now().Add(30 * time.Second)
+	if err := mgr.CloseWithDeadline(drainDeadline); err != nil {
+		log.Warn("pool drain", "err", err)
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		log.Error("serve", "err", serveErr)
+		return 1
+	}
+	log.Info("pgrouter stopped")
+	return 0
 }
 
 // cmdLegacyRun reproduces the PoC v0.1.0 CLI: bare flags, no config.
