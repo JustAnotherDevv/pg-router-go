@@ -270,8 +270,12 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
 	// --- canned ParameterStatus ---
-	// Until we capture the first upstream's real ParameterStatus, ship a
-	// minimal set so pg drivers don't bail on missing critical vars.
+	// First-client cold-start fallback: pool.CachedParams will be
+	// populated on the first successful upstream dial and override
+	// these. The full set mirrors what real Postgres emits during the
+	// startup phase so drivers that check specific fields (psql's
+	// is_superuser, application_name watchers in dashboards, pgx's
+	// server_version-keyed protocol decisions, etc.) don't degrade.
 	cannedParams := map[string]string{
 		"server_version":              "16.0 (pgrouter)",
 		"server_encoding":             "UTF8",
@@ -282,6 +286,8 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		"integer_datetimes":           "on",
 		"standard_conforming_strings": "on",
 		"is_superuser":                "off",
+		"session_authorization":       "pgrouter",
+		"application_name":            "",
 	}
 
 	// --- handler ---

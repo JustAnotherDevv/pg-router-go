@@ -1,6 +1,13 @@
 // Package backend opens a TCP connection to an upstream Postgres and
-// completes the v3 startup handshake. PoC scope: trust auth only.
-// Real SCRAM auth + lifecycle wired in M.5 / M.7.
+// completes the v3 startup handshake.
+//
+// Auth: trust by default; if DialOptions.Password is non-empty, the
+// dialer drives whichever auth flow the upstream offers via
+// `internal/auth.PerformClientAuth` (Cleartext / MD5 / SCRAM-SHA-256).
+// GSS is rejected with an explicit error.
+//
+// Lifecycle (state machine, reset, health-check) is in state.go +
+// reset.go; this file is just dial-and-handshake.
 package backend
 
 import (
@@ -55,8 +62,10 @@ type DialOptions struct {
 }
 
 // Dial opens a TCP connection to the upstream and performs the startup
-// handshake. PoC supports only trust auth (AuthenticationOk immediately).
-// SCRAM / MD5 are rejected with an error in this PoC scope.
+// handshake. If `opts.Password` is empty we treat the connection as
+// trust-auth and reject any backend-side auth challenge. With a
+// password set, the matching auth flow (Cleartext / MD5 / SCRAM-SHA-256)
+// is driven via `internal/auth.PerformClientAuth`.
 func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 5 * time.Second

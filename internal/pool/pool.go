@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
@@ -100,6 +101,19 @@ type Pool struct {
 	totalReleased uint64
 	totalSpawned  uint64
 	totalEvicted  uint64
+
+	// cachedParams: the ParameterStatus map captured from the first
+	// successful upstream dial. PooledConn welcomes new clients with
+	// these values so things like server_version reflect the actual
+	// upstream rather than a hardcoded canned default. Atomic pointer
+	// lets `CachedParams` be lock-free on the hot path.
+	cachedParams atomic.Pointer[map[string]string]
+
+	// dialAttempted is true once at least one Acquire has reached the
+	// dial path (successfully or not). PooledConn uses this to avoid
+	// re-trying an eager-warm on every cold client when the upstream
+	// is known to not emit ParameterStatus (test fakes, mostly).
+	dialAttempted atomic.Bool
 }
 
 // pooledConn wraps a backend + its lifecycle marker.
@@ -257,8 +271,53 @@ func (p *Pool) dialWithLockHeld(ctx context.Context, start time.Time) (*backend.
 		p.mu.Unlock()
 		return nil, fmt.Errorf("pool %s: dial: %w", p.name, err)
 	}
+	p.captureParams(c)
 	p.emitWait(start)
 	return c, nil
+}
+
+// captureParams stores the upstream's ParameterStatus map on the first
+// successful dial. Subsequent dials are no-ops: the first upstream's
+// values "win" (matches PgBouncer's behaviour). Safe to call from any
+// dial path.
+func (p *Pool) captureParams(c *backend.Conn) {
+	// Record that a dial completed, even if c.Params is empty — that
+	// lets DialAttempted() report true and short-circuit further
+	// eager-warm attempts that would never populate the cache.
+	p.dialAttempted.Store(true)
+	if c == nil || len(c.Params) == 0 {
+		return
+	}
+	if p.cachedParams.Load() != nil {
+		return
+	}
+	m := make(map[string]string, len(c.Params))
+	for k, v := range c.Params {
+		m[k] = v
+	}
+	p.cachedParams.CompareAndSwap(nil, &m)
+}
+
+// CachedParams returns the ParameterStatus map captured from the first
+// successful upstream dial, or nil if no dial has succeeded yet (or
+// the upstream emitted no params, in which case DialAttempted() will
+// be true).
+//
+// PooledConn welcomes new clients with these values so server_version,
+// client_encoding etc. reflect the real upstream. The returned map is
+// the cache's own copy; callers must NOT mutate it.
+func (p *Pool) CachedParams() map[string]string {
+	if ptr := p.cachedParams.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
+}
+
+// DialAttempted is true once at least one Acquire reached the dial
+// path. Used by PooledConn to skip eager-warm when a previous dial
+// already proved the upstream doesn't emit ParameterStatus.
+func (p *Pool) DialAttempted() bool {
+	return p.dialAttempted.Load()
 }
 
 // tryDialReserve attempts to allocate a reserve slot for the given
@@ -301,6 +360,7 @@ func (p *Pool) tryDialReserve(ctx context.Context, w *waiter, start time.Time) (
 		p.mu.Unlock()
 		return nil, false, fmt.Errorf("pool %s: reserve dial: %w", p.name, err)
 	}
+	p.captureParams(c)
 	p.emitWait(start)
 	return c, true, nil
 }
@@ -578,6 +638,7 @@ func (p *Pool) EnsureWarm(ctx context.Context) int {
 			p.mu.Unlock()
 			return spawned
 		}
+		p.captureParams(c)
 		// Treat as Released-from-active so it lands in idle for callers.
 		p.Release(c, false)
 		spawned++
