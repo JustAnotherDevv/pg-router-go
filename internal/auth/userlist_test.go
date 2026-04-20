@@ -91,3 +91,60 @@ func TestUserlistReload(t *testing.T) {
 	a, _ = ul.Lookup("alice")
 	require.Equal(t, "new", a.PlainPassword)
 }
+
+func TestUserlistReloadDiffAddRemoveRotate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "userlist.txt")
+	require.NoError(t, os.WriteFile(path,
+		[]byte(`"alice" "a-old"`+"\n"+`"bob" "b-keep"`+"\n"+`"carol" "c-drop"`),
+		0o600))
+	ul, err := NewUserlist(path)
+	require.NoError(t, err)
+
+	// alice: secret rotated, bob: unchanged, carol: removed, dave: added.
+	require.NoError(t, os.WriteFile(path,
+		[]byte(`"alice" "a-new"`+"\n"+`"bob" "b-keep"`+"\n"+`"dave" "d-fresh"`),
+		0o600))
+	diff, err := ul.ReloadDiff()
+	require.NoError(t, err)
+
+	require.Equal(t, 3, diff.Before)
+	require.Equal(t, 3, diff.After)
+	require.ElementsMatch(t, []string{"dave"}, diff.Added)
+	require.ElementsMatch(t, []string{"carol"}, diff.Removed)
+	require.ElementsMatch(t, []string{"alice"}, diff.Rotated)
+}
+
+func TestUserlistReloadDiffParseErrorPreservesOldEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "userlist.txt")
+	require.NoError(t, os.WriteFile(path, []byte(`"alice" "good"`), 0o600))
+	ul, err := NewUserlist(path)
+	require.NoError(t, err)
+
+	// Malformed line: missing second quoted field.
+	require.NoError(t, os.WriteFile(path, []byte(`"alice"`), 0o600))
+	_, err = ul.ReloadDiff()
+	require.Error(t, err)
+
+	// Old entries still resolvable.
+	a, ok := ul.Lookup("alice")
+	require.True(t, ok)
+	require.Equal(t, "good", a.PlainPassword)
+	require.Equal(t, 1, ul.Len())
+}
+
+func TestUserlistReloadDiffNoChangeNoEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "userlist.txt")
+	require.NoError(t, os.WriteFile(path, []byte(`"alice" "x"`), 0o600))
+	ul, err := NewUserlist(path)
+	require.NoError(t, err)
+	diff, err := ul.ReloadDiff()
+	require.NoError(t, err)
+	require.Equal(t, 1, diff.Before)
+	require.Equal(t, 1, diff.After)
+	require.Empty(t, diff.Added)
+	require.Empty(t, diff.Removed)
+	require.Empty(t, diff.Rotated)
+}

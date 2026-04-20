@@ -346,6 +346,10 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	}
 
 	// --- handler ---
+	logSQLMode := string(config.NormalizeLogSQL(cfg.Logging.LogSQL))
+	if logSQLMode == string(config.LogSQLFull) {
+		log.Warn("logging.log_sql=full enabled — raw SQL (with literals) will be logged. Use only in dev.")
+	}
 	h := &client.PooledHandler{
 		Log:               log,
 		Manager:           mgr,
@@ -357,6 +361,14 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		QueryTimeout:      cfg.Pool.QueryTimeout,
 		ClientIdleTimeout: cfg.Server.ClientIdle,
 		IdleTxTimeout:     cfg.Server.IdleTx,
+		LogSQL:            logSQLMode,
+		PoolMode:          string(cfg.Pool.Mode),
+		PoolModeFor: func(db string) string {
+			if d, ok := cfg.Databases[db]; ok && d.PoolMode != "" {
+				return string(d.PoolMode)
+			}
+			return ""
+		},
 	}
 
 	// --- listener + signal-driven shutdown ---
@@ -371,7 +383,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	hupCh := make(chan os.Signal, 1)
 	signal.Notify(hupCh, syscall.SIGHUP)
 	defer signal.Stop(hupCh)
-	go runSighupReloader(ctx, hupCh, configPath, cfg, log)
+	go runSighupReloader(ctx, hupCh, configPath, cfg, userlist, log)
 
 	ln, err := listener.New(listenAddr, log)
 	if err != nil {
@@ -380,7 +392,32 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	}
 	log.Info("listening", "addr", ln.Addr().String())
 
-	serveErr := ln.Serve(ctx, h.Handle)
+	// Optional Unix socket listener for PgBouncer-compat in-host clients
+	// + peer auth. unix_socket_dir empty → skip.
+	var unixLn *listener.Listener
+	if cfg.Server.UnixSocketDir != "" {
+		uln, err := listener.NewUnix(cfg.Server.UnixSocketDir,
+			cfg.Server.ListenPort, cfg.Server.UnixSocketMode, log)
+		if err != nil {
+			log.Error("unix listener init", "err", err)
+			return 1
+		}
+		unixLn = uln
+		log.Info("listening", "addr", uln.Addr().String())
+	}
+
+	// Run both listeners; first non-nil error wins. ctx cancel triggers
+	// both to drain in parallel.
+	errCh := make(chan error, 2)
+	go func() { errCh <- ln.Serve(ctx, h.Handle) }()
+	if unixLn != nil {
+		go func() { errCh <- unixLn.Serve(ctx, h.Handle) }()
+	}
+	serveErr := <-errCh
+	// Drain the second error if any.
+	if unixLn != nil {
+		<-errCh
+	}
 
 	// Graceful drain: give pools 30s to release before force-close.
 	drainDeadline := time.Now().Add(30 * time.Second)
@@ -444,15 +481,21 @@ func runServer(log *slog.Logger, listenAddr, backendAddr string) int {
 }
 
 // runSighupReloader is the SIGHUP handler goroutine. Each HUP re-reads
-// the config file off disk and logs a diff against the previous load.
+// the config file off disk and the (optional) userlist.txt, logging a
+// diff against the previous state for each.
 //
-// MVP scope (M.13.5 / spec gate 11 prep): SIGHUP no longer kills
-// pgrouter. Live pool resize + db-registry diff applied to running pools
-// remains post-MVP — applying those would require Manager.Reconfigure
-// surface that doesn't exist yet. We log the diff so operators can see
-// what WOULD have changed; the running pools stay on the boot config.
+// MVP scope (M.13.5 + M.5.4 / spec gate 11 prep): SIGHUP no longer
+// kills pgrouter and the userlist atomically swaps under the lock
+// inside *auth.Userlist (new conns immediately see the new map; in
+// flight conns keep their already-authenticated identity). Live
+// pool resize + db-registry diff applied to running pools remains
+// post-MVP — applying those would require a Manager.Reconfigure
+// surface that doesn't exist yet. We log the config diff so operators
+// can see what WOULD have changed; the running pools stay on the boot
+// config.
 func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
-	path string, current *config.Config, log *slog.Logger,
+	path string, current *config.Config, userlist *auth.Userlist,
+	log *slog.Logger,
 ) {
 	for {
 		select {
@@ -466,6 +509,9 @@ func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 			if err != nil {
 				log.Error("SIGHUP reload failed", "path", path, "err", err)
 				stats.OnSighupReload("fail")
+				// Even if the YAML failed, still attempt the userlist
+				// reload — its file is independent and may be valid.
+				reloadUserlist(userlist, log)
 				continue
 			}
 			log.Info("SIGHUP reload (logged; live apply post-MVP)",
@@ -481,8 +527,32 @@ func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 			)
 			current = next
 			stats.OnSighupReload("ok")
+			reloadUserlist(userlist, log)
 		}
 	}
+}
+
+// reloadUserlist re-reads the in-memory userlist (if one is configured)
+// and logs the diff. No-op when no userlist_file was set.
+func reloadUserlist(ul *auth.Userlist, log *slog.Logger) {
+	if ul == nil {
+		stats.OnSighupUserlistReload("skip")
+		return
+	}
+	diff, err := ul.ReloadDiff()
+	if err != nil {
+		log.Error("SIGHUP userlist reload failed", "err", err)
+		stats.OnSighupUserlistReload("fail")
+		return
+	}
+	log.Info("SIGHUP userlist reload",
+		"before", diff.Before,
+		"after", diff.After,
+		"added", len(diff.Added),
+		"removed", len(diff.Removed),
+		"rotated", len(diff.Rotated),
+	)
+	stats.OnSighupUserlistReload("ok")
 }
 
 func newLogger(format, level string) *slog.Logger {

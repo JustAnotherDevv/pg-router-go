@@ -65,6 +65,26 @@ type PooledHandler struct {
 	QueryTimeout      time.Duration
 	ClientIdleTimeout time.Duration
 	IdleTxTimeout     time.Duration
+
+	// LogSQL is one of: "off" | "redacted" | "full". Forwarded to each
+	// PooledConn for per-query logging. Empty string is equivalent to
+	// "redacted" — the safe default. "full" should only be used in dev
+	// because it lets PII reach the log handler.
+	LogSQL string
+
+	// PoolMode is the default pool dispatch mode
+	// ("session" | "transaction" | "statement"). Per-DB overrides via
+	// PoolModeFor.
+	PoolMode string
+
+	// PoolModeFor, if non-nil, returns the per-database pool-mode
+	// override (one of "session" | "transaction" | "statement"). An
+	// empty return falls back to PoolMode. Lets a config define
+	//   pool.mode: transaction
+	//   databases:
+	//     analytics: { pool_mode: statement }
+	// without storing every override in every PooledHandler field.
+	PoolModeFor func(db string) string
 }
 
 // NewPooledHandler returns a PooledHandler with production defaults
@@ -81,7 +101,8 @@ func NewPooledHandler(log *slog.Logger, mgr *pool.Manager) *PooledHandler {
 // connection.
 func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	log := h.Log.With("remote", conn.RemoteAddr().String())
+	reqID := newRequestID()
+	log := h.Log.With("remote", conn.RemoteAddr().String(), "req_id", reqID)
 	log.Info("client connected")
 	defer log.Info("client disconnected")
 
@@ -138,7 +159,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 			)
 
 			if h.Auth != nil {
-				if err := auth.PerformServerAuth(be, *h.Auth, user); err != nil {
+				if err := auth.PerformServerAuthConn(be, conn, *h.Auth, user); err != nil {
 					log.Info("client auth failed", "err", err)
 					return
 				}
@@ -180,6 +201,12 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		}
 	}()
 
+	mode := h.PoolMode
+	if h.PoolModeFor != nil {
+		if override := h.PoolModeFor(db); override != "" {
+			mode = override
+		}
+	}
 	pc := &PooledConn{
 		Log:               log,
 		Pool:              p,
@@ -192,6 +219,8 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		QueryTimeout:      h.QueryTimeout,
 		ClientIdleTimeout: h.ClientIdleTimeout,
 		IdleTxTimeout:     h.IdleTxTimeout,
+		LogSQL:            h.LogSQL,
+		PoolMode:          mode,
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)

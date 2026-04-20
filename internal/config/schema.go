@@ -72,11 +72,12 @@ type AuthConfig struct {
 type AuthType string
 
 const (
-	AuthTrust    AuthType = "trust"
-	AuthSCRAM    AuthType = "scram-sha-256"
-	AuthMD5      AuthType = "md5"
-	AuthHBA      AuthType = "hba"  // post-MVP
-	AuthCert     AuthType = "cert" // post-MVP
+	AuthTrust AuthType = "trust"
+	AuthSCRAM AuthType = "scram-sha-256"
+	AuthMD5   AuthType = "md5"
+	AuthPeer  AuthType = "peer" // Unix-socket SO_PEERCRED
+	AuthHBA   AuthType = "hba"  // post-MVP
+	AuthCert  AuthType = "cert" // post-MVP
 )
 
 // TLSConfig configures client- and server-facing TLS.
@@ -115,6 +116,34 @@ type MetricsConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`  // debug | info | warn | error (default info)
 	Format string `yaml:"format"` // text | json (default text)
+
+	// LogSQL controls per-query SQL logging:
+	//   off      — never log query text (only req_id + tags)
+	//   redacted — replace literals with `?` before logging (default)
+	//   full     — log the raw SQL (dev only; emits a warning at boot)
+	LogSQL string `yaml:"log_sql"`
+}
+
+// LogSQLMode normalises LoggingConfig.LogSQL into one of the three
+// canonical strings. Empty / unrecognised falls back to "redacted".
+type LogSQLMode string
+
+const (
+	LogSQLOff      LogSQLMode = "off"
+	LogSQLRedacted LogSQLMode = "redacted"
+	LogSQLFull     LogSQLMode = "full"
+)
+
+// NormalizeLogSQL maps a YAML string to a canonical LogSQLMode.
+func NormalizeLogSQL(v string) LogSQLMode {
+	switch v {
+	case "off", "none", "false":
+		return LogSQLOff
+	case "full", "raw":
+		return LogSQLFull
+	default:
+		return LogSQLRedacted
+	}
 }
 
 // DatabaseConfig is a per-database upstream definition.

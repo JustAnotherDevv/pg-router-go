@@ -52,19 +52,80 @@ func NewUserlist(path string) (*Userlist, error) {
 // Reload re-reads the userlist file. New conns see the new data
 // immediately; in-flight conns are unaffected.
 func (u *Userlist) Reload() error {
+	_, err := u.ReloadDiff()
+	return err
+}
+
+// ReloadDiff is Reload + a description of what changed. Returned even
+// if no change occurred (counts will all be zero); error is returned
+// only on parse/IO failure, in which case the current entries stay
+// in place.
+type ReloadDiff struct {
+	Before  int      // entry count before reload
+	After   int      // entry count after reload
+	Added   []string // usernames new in `after`
+	Removed []string // usernames missing from `after`
+	Rotated []string // usernames where the credential bytes changed
+}
+
+// ReloadDiff re-reads the userlist file and returns a structured diff
+// against the previous in-memory state. On parse/IO failure, the
+// current entries stay in place and the error is returned.
+func (u *Userlist) ReloadDiff() (ReloadDiff, error) {
+	var d ReloadDiff
 	f, err := os.Open(u.path)
 	if err != nil {
-		return fmt.Errorf("open userlist %s: %w", u.path, err)
+		return d, fmt.Errorf("open userlist %s: %w", u.path, err)
 	}
 	defer f.Close()
 	parsed, err := parseUserlist(f)
 	if err != nil {
-		return fmt.Errorf("parse userlist %s: %w", u.path, err)
+		return d, fmt.Errorf("parse userlist %s: %w", u.path, err)
 	}
 	u.mu.Lock()
+	old := u.entries
 	u.entries = parsed
 	u.mu.Unlock()
-	return nil
+
+	d.Before = len(old)
+	d.After = len(parsed)
+	for name, newEntry := range parsed {
+		oldEntry, ok := old[name]
+		switch {
+		case !ok:
+			d.Added = append(d.Added, name)
+		case !sameSecret(oldEntry, newEntry):
+			d.Rotated = append(d.Rotated, name)
+		}
+	}
+	for name := range old {
+		if _, ok := parsed[name]; !ok {
+			d.Removed = append(d.Removed, name)
+		}
+	}
+	return d, nil
+}
+
+// sameSecret compares two entries by the credential bytes they carry.
+// Returns true if the on-disk secret string would be identical.
+func sameSecret(a, b *UserEntry) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.PlainPassword != b.PlainPassword {
+		return false
+	}
+	if a.MD5Hash != b.MD5Hash {
+		return false
+	}
+	switch {
+	case a.SCRAMVerifier == nil && b.SCRAMVerifier == nil:
+		return true
+	case a.SCRAMVerifier == nil || b.SCRAMVerifier == nil:
+		return false
+	default:
+		return a.SCRAMVerifier.String() == b.SCRAMVerifier.String()
+	}
 }
 
 // Lookup returns the entry for username or (nil, false).

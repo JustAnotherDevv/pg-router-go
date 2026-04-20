@@ -83,6 +83,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Logging.Format == "" {
 		cfg.Logging.Format = "text"
 	}
+	if cfg.Logging.LogSQL == "" {
+		cfg.Logging.LogSQL = string(LogSQLRedacted)
+	}
 
 	// Per-database fills.
 	for name, db := range cfg.Databases {
