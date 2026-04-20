@@ -48,6 +48,7 @@ type PoolConfig struct {
 	ServerConnectTimeout time.Duration `yaml:"server_connect_timeout"` // default 15s
 	ServerCheckQuery  string        `yaml:"server_check_query"`  // default ";"
 	ServerCheckDelay  time.Duration `yaml:"server_check_delay"`  // default 30s
+	ServerResetQuery  string        `yaml:"server_reset_query"`  // default "DISCARD ALL"
 }
 
 // PoolMode is the connection-reuse policy.
@@ -122,13 +123,14 @@ type LoggingConfig struct {
 // is the actual Postgres database on the upstream (may differ for
 // renaming).
 type DatabaseConfig struct {
-	Host     string   `yaml:"host"`     // required
-	Port     int      `yaml:"port"`     // default 5432
-	DBName   string   `yaml:"dbname"`   // defaults to map key
-	User     string   `yaml:"user,omitempty"`     // optional fixed upstream user
-	Password string   `yaml:"password,omitempty"` // optional fixed password
-	PoolMode PoolMode `yaml:"pool_mode,omitempty"` // override Pool.Mode
-	PoolSize int      `yaml:"pool_size,omitempty"` // override Pool.DefaultPoolSize
+	Host             string   `yaml:"host"`     // required
+	Port             int      `yaml:"port"`     // default 5432
+	DBName           string   `yaml:"dbname"`   // defaults to map key
+	User             string   `yaml:"user,omitempty"`             // optional fixed upstream user
+	Password         string   `yaml:"password,omitempty"`         // optional fixed password
+	PoolMode         PoolMode `yaml:"pool_mode,omitempty"`        // override Pool.Mode
+	PoolSize         int      `yaml:"pool_size,omitempty"`        // override Pool.DefaultPoolSize
+	ServerResetQuery string   `yaml:"server_reset_query,omitempty"` // override Pool.ServerResetQuery
 }
 
 // UserConfig is a per-user override.

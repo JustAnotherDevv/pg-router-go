@@ -51,6 +51,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Pool.ServerCheckDelay == 0 {
 		cfg.Pool.ServerCheckDelay = 30 * time.Second
 	}
+	if cfg.Pool.ServerResetQuery == "" {
+		cfg.Pool.ServerResetQuery = "DISCARD ALL"
+	}
 
 	// Auth.
 	if cfg.Auth.Type == "" {

@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
@@ -57,6 +58,13 @@ type PooledHandler struct {
 	// ResetOnRelease is forwarded to each PooledConn. Defaults to true
 	// when constructed via NewPooledHandler.
 	ResetOnRelease bool
+
+	// QueryTimeout / ClientIdleTimeout / IdleTxTimeout are forwarded to
+	// each PooledConn (PgBouncer query_timeout / client_idle_timeout /
+	// idle_transaction_timeout). 0 disables.
+	QueryTimeout      time.Duration
+	ClientIdleTimeout time.Duration
+	IdleTxTimeout     time.Duration
 }
 
 // NewPooledHandler returns a PooledHandler with production defaults
@@ -137,7 +145,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 			}
 
 			p := h.Manager.Get(pool.Key{DB: db, User: user})
-			h.servePooled(ctx, conn, p, log)
+			h.servePooled(ctx, conn, p, db, user, log)
 			return
 
 		default:
@@ -148,7 +156,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 }
 
 // servePooled is the hand-off from startup to PooledConn.Serve.
-func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.Pool, log *slog.Logger) {
+func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.Pool, db, user string, log *slog.Logger) {
 	var (
 		welcomePID    uint32
 		welcomeSecret []byte
@@ -173,12 +181,17 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 	}()
 
 	pc := &PooledConn{
-		Log:            log,
-		Pool:           p,
-		CannedParams:   h.CannedParams,
-		ResetOnRelease: h.ResetOnRelease,
-		WelcomePID:     welcomePID,
-		WelcomeSecret:  welcomeSecret,
+		Log:               log,
+		Pool:              p,
+		Database:          db,
+		User:              user,
+		CannedParams:      h.CannedParams,
+		ResetOnRelease:    h.ResetOnRelease,
+		WelcomePID:        welcomePID,
+		WelcomeSecret:     welcomeSecret,
+		QueryTimeout:      h.QueryTimeout,
+		ClientIdleTimeout: h.ClientIdleTimeout,
+		IdleTxTimeout:     h.IdleTxTimeout,
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)

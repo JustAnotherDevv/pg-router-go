@@ -226,7 +226,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 				password = entry.PlainPassword
 			}
 		}
-		return func(ctx context.Context) (*backend.Conn, error) {
+		dialOnce := func(ctx context.Context) (*backend.Conn, error) {
 			return backend.Dial(ctx, backend.DialOptions{
 				Addr:        addr,
 				User:        upstreamUser,
@@ -237,6 +237,44 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 				TLSRequired: backendTLSRequired,
 				Log:         log,
 			})
+		}
+		// Retry with capped exponential backoff. Spec M.7.6: handshake
+		// auth failures + transient TLS/network errors shouldn't kill
+		// the next Acquire instantly — back off so a dying backend
+		// doesn't get hammered. Cap at 6 attempts so wrong creds give up
+		// in seconds rather than minutes.
+		return func(ctx context.Context) (*backend.Conn, error) {
+			const maxAttempts = 6
+			backoff := 100 * time.Millisecond
+			var lastErr error
+			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				c, err := dialOnce(ctx)
+				if err == nil {
+					if attempt > 1 {
+						log.Info("backend dial succeeded after retry",
+							"attempts", attempt, "addr", addr)
+					}
+					return c, nil
+				}
+				lastErr = err
+				if attempt == maxAttempts {
+					break
+				}
+				log.Warn("backend dial failed; backing off",
+					"attempt", attempt, "max", maxAttempts,
+					"backoff", backoff, "err", err)
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				backoff *= 2
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+			}
+			return nil, fmt.Errorf("backend dial gave up after %d attempts: %w",
+				maxAttempts, lastErr)
 		}
 	}
 
@@ -257,16 +295,33 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		QueryWait:          cfg.Pool.QueryWaitTimeout,
 		ServerIdle:         cfg.Pool.ServerIdle,
 		ServerLifetime:     cfg.Pool.ServerLifetime,
+		ResetQuery:         cfg.Pool.ServerResetQuery,
 		Log:                log,
 		Callbacks:          cbs,
 	}
-	mgr := pool.NewManager(defaultCfg, dialerFor).WithConfigFor(func(k pool.Key) *pool.Config {
-		db, ok := cfg.Databases[k.DB]
-		if !ok || db.PoolSize == 0 {
-			return nil
-		}
-		return &pool.Config{DefaultPoolSize: db.PoolSize}
-	})
+	mgr := pool.NewManager(defaultCfg, dialerFor).
+		WithConfigFor(func(k pool.Key) *pool.Config {
+			db, ok := cfg.Databases[k.DB]
+			if !ok {
+				return nil
+			}
+			ov := &pool.Config{}
+			set := false
+			if db.PoolSize > 0 {
+				ov.DefaultPoolSize = db.PoolSize
+				set = true
+			}
+			if db.ServerResetQuery != "" {
+				ov.ResetQuery = db.ServerResetQuery
+				set = true
+			}
+			if !set {
+				return nil
+			}
+			return ov
+		}).
+		WithGlobalLimits(cfg.Pool.MaxDBConn, cfg.Pool.MaxUserConn,
+			stats.OnGlobalLimitReject)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
 	// --- canned ParameterStatus ---
@@ -292,19 +347,31 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 
 	// --- handler ---
 	h := &client.PooledHandler{
-		Log:            log,
-		Manager:        mgr,
-		TLSConfig:      clientTLS,
-		Auth:           authOpts,
-		CancelTracker:  cancelTracker,
-		CannedParams:   cannedParams,
-		ResetOnRelease: true,
+		Log:               log,
+		Manager:           mgr,
+		TLSConfig:         clientTLS,
+		Auth:              authOpts,
+		CancelTracker:     cancelTracker,
+		CannedParams:      cannedParams,
+		ResetOnRelease:    true,
+		QueryTimeout:      cfg.Pool.QueryTimeout,
+		ClientIdleTimeout: cfg.Server.ClientIdle,
+		IdleTxTimeout:     cfg.Server.IdleTx,
 	}
 
 	// --- listener + signal-driven shutdown ---
+	// SIGINT + SIGTERM trigger shutdown via the cancel-context. SIGHUP is
+	// handled separately: it must NOT shut pgrouter down, only trigger a
+	// config reload + log the diff (live pool resize is post-MVP per the
+	// roadmap; this fixes the bug where SIGHUP killed the process).
 	ctx, signalCancel := signal.NotifyContext(context.Background(),
-		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		os.Interrupt, syscall.SIGTERM)
 	defer signalCancel()
+
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	defer signal.Stop(hupCh)
+	go runSighupReloader(ctx, hupCh, configPath, cfg, log)
 
 	ln, err := listener.New(listenAddr, log)
 	if err != nil {
@@ -374,6 +441,48 @@ func runServer(log *slog.Logger, listenAddr, backendAddr string) int {
 	}
 	log.Info("pgrouter stopped")
 	return 0
+}
+
+// runSighupReloader is the SIGHUP handler goroutine. Each HUP re-reads
+// the config file off disk and logs a diff against the previous load.
+//
+// MVP scope (M.13.5 / spec gate 11 prep): SIGHUP no longer kills
+// pgrouter. Live pool resize + db-registry diff applied to running pools
+// remains post-MVP — applying those would require Manager.Reconfigure
+// surface that doesn't exist yet. We log the diff so operators can see
+// what WOULD have changed; the running pools stay on the boot config.
+func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
+	path string, current *config.Config, log *slog.Logger,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-hupCh:
+			if !ok {
+				return
+			}
+			next, err := config.Load(path)
+			if err != nil {
+				log.Error("SIGHUP reload failed", "path", path, "err", err)
+				stats.OnSighupReload("fail")
+				continue
+			}
+			log.Info("SIGHUP reload (logged; live apply post-MVP)",
+				"path", path,
+				"databases_before", len(current.Databases),
+				"databases_after", len(next.Databases),
+				"default_pool_size_before", current.Pool.DefaultPoolSize,
+				"default_pool_size_after", next.Pool.DefaultPoolSize,
+				"pool_mode_before", string(current.Pool.Mode),
+				"pool_mode_after", string(next.Pool.Mode),
+				"query_timeout_before", current.Pool.QueryTimeout,
+				"query_timeout_after", next.Pool.QueryTimeout,
+			)
+			current = next
+			stats.OnSighupReload("ok")
+		}
+	}
 }
 
 func newLogger(format, level string) *slog.Logger {

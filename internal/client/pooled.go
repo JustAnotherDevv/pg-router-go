@@ -37,12 +37,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/proto"
+	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -52,15 +54,22 @@ type PooledConn struct {
 	// Pool is the (db, user) pool to Acquire / Release from.
 	Pool *pool.Pool
 
+	// Database + User are the labels used for per-(db, user) Prometheus
+	// metrics. Production paths set these from the StartupMessage; tests
+	// may leave them empty (metrics simply emit empty labels).
+	Database string
+	User     string
+
 	// CannedParams are the ParameterStatus values we report to clients
 	// before any real backend is attached. Production code populates
 	// these from the first successful upstream connect; tests can
 	// pass a minimal viable set.
 	CannedParams map[string]string
 
-	// ResetOnRelease, when true, sends DISCARD ALL on every Release.
-	// Defaults to TRUE in production (NewPooledConn) so a backend never
-	// carries session state across clients. Tests may override.
+	// ResetOnRelease, when true, sends the pool's configured ResetQuery
+	// on every Release (defaults to DISCARD ALL). True in production
+	// (NewPooledConn) so a backend never carries session state across
+	// clients. Tests may override.
 	ResetOnRelease bool
 
 	// WelcomePID + WelcomeSecret, if non-zero, are emitted in the
@@ -70,6 +79,23 @@ type PooledConn struct {
 	// values cause a one-shot random key to be generated locally.
 	WelcomePID    uint32
 	WelcomeSecret []byte
+
+	// QueryTimeout, if > 0, caps the wall-clock time we'll wait for a
+	// backend response between RFQ boundaries. Exceeding it closes the
+	// backend (PG detects the FE drop and aborts the query) and sends
+	// SQLSTATE 57014 "query timeout" to the client. The client connection
+	// itself stays open so the user can retry.
+	QueryTimeout time.Duration
+
+	// ClientIdleTimeout, if > 0, closes the client connection after this
+	// much wall-clock time with no client message AND no in-flight
+	// transaction. Mirrors PgBouncer client_idle_timeout. 0 = disabled.
+	ClientIdleTimeout time.Duration
+
+	// IdleTxTimeout, if > 0, closes the client connection after this
+	// much wall-clock time INSIDE a transaction with no client message.
+	// Mirrors PgBouncer idle_transaction_timeout. 0 = disabled.
+	IdleTxTimeout time.Duration
 
 	// resetOnReleaseSet is true once a caller has explicitly written to
 	// ResetOnRelease (including via the zero value of the bool — but
@@ -81,6 +107,10 @@ type PooledConn struct {
 // NewPooledConn returns a PooledConn with production defaults applied:
 // ResetOnRelease=true. Use this from cmd/pgrouter and any orchestration
 // code; direct struct literals are fine for tests that want to opt out.
+//
+// Database/User/timeouts are zero-valued — set them on the returned
+// struct or use the dispatcher's wiring path (PooledHandler.servePooled)
+// which fills them from config + StartupMessage.
 func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]string) *PooledConn {
 	return &PooledConn{
 		Log:               log,
@@ -139,14 +169,42 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		default:
 		}
 
+		// Apply idle-side deadline based on current tx state. We re-arm
+		// on every iteration: a fresh message clears the previous
+		// deadline; the deadline only fires while we're blocked here in
+		// Receive (which is exactly "client is idle from our POV").
+		h.applyIdleDeadline(conn, state)
+
 		msg, err := clientSide.Receive()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				log.Debug("client EOF")
 				return nil
 			}
+			if isTimeoutErr(err) {
+				inTx := !state.Tx().IsIdle()
+				which := "client_idle_timeout"
+				code := "57P05"
+				if inTx {
+					which = "idle_transaction_timeout"
+					code = "25P03"
+					stats.OnIdleTxTimeout(h.Database, h.User)
+				} else {
+					stats.OnClientIdleTimeout(h.Database, h.User)
+				}
+				log.Info("client closed by timeout", "kind", which)
+				// Short write deadline so a wedged client can't keep
+				// the Serve goroutine alive forever.
+				h.sendFatalErrorWithWriteDeadline(be, conn, code,
+					"pgrouter: "+which, 200*time.Millisecond)
+				return nil
+			}
 			return fmt.Errorf("client recv: %w", err)
 		}
+
+		// Clear the read deadline so subsequent in-loop reads aren't
+		// constrained by the idle limits.
+		_ = conn.SetReadDeadline(time.Time{})
 
 		// Terminate: tear down without a final round trip.
 		if proto.IsTerminate(msg) {
@@ -156,6 +214,19 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 
 		state.ObserveClientMessage(msg)
 		h.observeClientMessage(msg, gucCache, prepCache, &sessionPinned, log)
+		// Unrecognized SET (outside the GUC replay whitelist) forces
+		// session-pin: replaying an unknown variable across backends
+		// would be incorrect, so we hold the current backend instead.
+		if !sessionPinned && gucCache.HasUnrecognizedSet() {
+			sessionPinned = true
+			log.Info("session pinned (force-session)",
+				"reason", "SET of GUC outside replayable whitelist")
+		}
+		// Per-(db, user) Query/Parse counter.
+		switch msg.(type) {
+		case *pgproto3.Query, *pgproto3.Parse:
+			stats.OnQuery(h.Database, h.User)
+		}
 
 		// Acquire a backend lazily on the first traffic-generating message.
 		needsBackend := messageNeedsBackend(msg)
@@ -192,18 +263,51 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				return fmt.Errorf("server send: %w", err)
 			}
 
+			// query_timeout: arm a read deadline on the backend socket
+			// while we wait for ReadyForQuery. Clear on RFQ.
+			queryStart := time.Now()
+			if h.QueryTimeout > 0 {
+				_ = bConn.NetConn.SetReadDeadline(time.Now().Add(h.QueryTimeout))
+			}
+
 			// Drain backend response up to ReadyForQuery, forwarding each.
+			queryTimedOut := false
 			for {
 				bmsg, err := bConn.Frontend.Receive()
 				if err != nil {
+					if isTimeoutErr(err) && h.QueryTimeout > 0 {
+						queryTimedOut = true
+						stats.OnQueryTimeout(h.Database, h.User)
+						log.Info("query_timeout fired; closing backend",
+							"timeout", h.QueryTimeout,
+						)
+						break
+					}
 					return fmt.Errorf("server recv: %w", err)
 				}
 				be.Send(bmsg.(pgproto3.BackendMessage))
 				if err := be.Flush(); err != nil {
 					return fmt.Errorf("client send: %w", err)
 				}
-				state.ObserveBackendMessage(bmsg)
+				// Tx-state transitions → per-(db, user) counters.
+				prevTx := state.Tx()
+				if state.ObserveBackendMessage(bmsg) {
+					newTx := state.Tx()
+					switch {
+					case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
+						stats.OnTxStart(h.Database, h.User)
+					case prevTx == TxFailed && newTx == TxIdle:
+						stats.OnTxRollback(h.Database, h.User)
+					case prevTx == TxInBlock && newTx == TxIdle:
+						stats.OnTxCommit(h.Database, h.User)
+					}
+				}
 				if _, ok := proto.IsReadyForQuery(bmsg); ok {
+					if h.QueryTimeout > 0 {
+						_ = bConn.NetConn.SetReadDeadline(time.Time{})
+					}
+					stats.OnQueryDuration(h.Database, h.User,
+						time.Since(queryStart).Seconds())
 					// Release whenever the backend reports idle —
 					// covers explicit COMMIT/ROLLBACK boundaries AND
 					// implicit-transaction queries (e.g. bare SELECT
@@ -220,6 +324,21 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					}
 					break
 				}
+			}
+			if queryTimedOut {
+				// PG aborts the in-flight query when the FE socket
+				// closes; that's sufficient — no separate CancelRequest
+				// needed. The backend is now in an unknown state, so
+				// close + drop it; the next message will Acquire a
+				// fresh one.
+				_ = bConn.Close()
+				bConn = nil
+				stats.OnQueryDuration(h.Database, h.User,
+					time.Since(queryStart).Seconds())
+				h.sendFatalErrorWithWriteDeadline(be, conn, "57014",
+					fmt.Sprintf("pgrouter: query_timeout (%s) exceeded", h.QueryTimeout),
+					200*time.Millisecond)
+				// Connection survives; client may issue a new Query.
 			}
 			continue
 		}
@@ -390,6 +509,17 @@ func (h *PooledConn) sendFatalError(be *pgproto3.Backend, code, msg string) {
 	_ = be.Flush()
 }
 
+// sendFatalErrorWithWriteDeadline is sendFatalError variant that caps the
+// blocking flush time. Used from timeout-driven exit paths where the
+// client may have disappeared and we don't want the goroutine to hang.
+func (h *PooledConn) sendFatalErrorWithWriteDeadline(
+	be *pgproto3.Backend, conn net.Conn, code, msg string, d time.Duration,
+) {
+	_ = conn.SetWriteDeadline(time.Now().Add(d))
+	defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
+	h.sendFatalError(be, code, msg)
+}
+
 // messageNeedsBackend returns true if the client message implies we
 // must hold a real backend to satisfy it.
 //
@@ -414,6 +544,47 @@ func messageNeedsBackend(msg pgproto3.FrontendMessage) bool {
 		// Safe default: forward to a backend rather than synthesize.
 		return true
 	}
+}
+
+// applyIdleDeadline sets a SetReadDeadline on `conn` based on the
+// current tx state + the handler's two idle limits:
+//
+//	state.Tx() == 'I' → ClientIdleTimeout (PgBouncer client_idle_timeout)
+//	state.Tx() == 'T' or 'E' → IdleTxTimeout (idle_transaction_timeout)
+//
+// 0 (disabled) → clear any prior deadline. The deadline is re-armed on
+// every Serve-loop iteration so a fresh client message keeps the
+// connection alive.
+func (h *PooledConn) applyIdleDeadline(conn net.Conn, state *ClientState) {
+	if h.ClientIdleTimeout <= 0 && h.IdleTxTimeout <= 0 {
+		_ = conn.SetReadDeadline(time.Time{})
+		return
+	}
+	var d time.Duration
+	if state.Tx().IsIdle() {
+		d = h.ClientIdleTimeout
+	} else {
+		d = h.IdleTxTimeout
+	}
+	if d <= 0 {
+		_ = conn.SetReadDeadline(time.Time{})
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(d))
+}
+
+// isTimeoutErr reports whether err is a deadline / i/o-timeout error.
+// Both net.Error.Timeout() and errors.Is(os.ErrDeadlineExceeded) cover
+// the wrapped variants pgproto3 produces.
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 // randomBackendKey is a copy of the helper in conn.go; kept here so

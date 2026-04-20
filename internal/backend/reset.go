@@ -7,31 +7,44 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
-// ResetQuery is sent to a backend before returning it to the pool. It
-// clears any per-session state the previous client may have set:
+// ResetQuery is the default reset query sent to a backend before
+// returning it to the pool. It clears any per-session state the previous
+// client may have set:
 //
 //   - DISCARD ALL: temp tables, prepared statements, listening
 //     channels, cursors, advisory locks, session GUCs, sequence
 //     state. Equivalent to PgBouncer's server_reset_query default.
-//   - SET extra_float_digits = 3: a parity GUC pgx clients always
-//     set; pre-setting it avoids one round-trip per acquired conn.
-//     Optional — omit if you want strict reset semantics.
 //
-// MVP M.7.3 keeps it simple: just DISCARD ALL.
+// Operators can override per-pool via config.Pool.ServerResetQuery or
+// per-database via config.Databases[name].ServerResetQuery.
 const ResetQuery = "DISCARD ALL"
 
-// ResetState sends ResetQuery on the connection and drains the response
-// up to and including ReadyForQuery. Returns an error if the backend
-// reported an error or if the connection died.
+// ResetState sends the default ResetQuery (DISCARD ALL) and drains the
+// response. Equivalent to ResetStateWith("").
+func (c *Conn) ResetState() error {
+	return c.ResetStateWith("")
+}
+
+// ResetStateWith sends `query` on the connection and drains the response
+// up to and including ReadyForQuery. If `query` is empty, uses the default
+// ResetQuery (DISCARD ALL). Returns an error if the backend reported an
+// error or if the connection died.
 //
 // Must be called on an IDLE backend (between transactions). Caller is
 // responsible for that — see internal/client.ClientState.Tx().
-func (c *Conn) ResetState() error {
+//
+// Multi-statement queries (e.g. "DELETE FROM tmp; DISCARD ALL") are
+// honoured: PostgreSQL parses the whole string as a simple Query and we
+// drain CommandComplete frames until ReadyForQuery.
+func (c *Conn) ResetStateWith(query string) error {
 	if c == nil || c.NetConn == nil {
 		return errors.New("reset: nil backend")
 	}
+	if query == "" {
+		query = ResetQuery
+	}
 
-	c.Frontend.Send(&pgproto3.Query{String: ResetQuery})
+	c.Frontend.Send(&pgproto3.Query{String: query})
 	if err := c.Frontend.Flush(); err != nil {
 		return fmt.Errorf("reset send: %w", err)
 	}
@@ -43,7 +56,7 @@ func (c *Conn) ResetState() error {
 		}
 		switch m := msg.(type) {
 		case *pgproto3.CommandComplete:
-			// "DISCARD ALL" -> CommandTag "DISCARD ALL". Just absorb.
+			// e.g. "DISCARD ALL" / "DELETE 0" / "SET". Absorb.
 		case *pgproto3.ErrorResponse:
 			return fmt.Errorf("reset error %s: %s", m.Severity, m.Message)
 		case *pgproto3.NoticeResponse:
