@@ -326,7 +326,11 @@ func TestGUCReplayPropagatesError(t *testing.T) {
 	require.Contains(t, err.Error(), "unrecognized parameter")
 }
 
-// TestPrepareCacheObservesParse: Parse messages populate the prepare cache.
+// TestPrepareCacheObservesParse: Parse messages populate the prepare
+// cache. PgRouter now buffers Parse on the backend (no drain) and only
+// drains on Sync — mirroring real Postgres extended-protocol semantics
+// — so the test fake responds to Parse with ParseComplete only, and to
+// Sync with RFQ.
 func TestPrepareCacheObservesParse(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
 	p := pool.New("prep-test", fleet.Dial, pool.Config{
@@ -337,13 +341,20 @@ func TestPrepareCacheObservesParse(t *testing.T) {
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
 
-	// The fake backend treats Parse like any frontend message; we just
-	// echo ParseComplete + RFQ.
 	go func() {
 		require.Eventually(t, func() bool { return fleet.Count() >= 1 },
 			2*time.Second, 5*time.Millisecond)
-		fleet.Backend(0).expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
+		// expect#1: Parse → ParseComplete (no RFQ).
+		fleet.Backend(0).expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+			_, ok := msg.(*pgproto3.Parse)
+			require.True(t, ok, "expected Parse, got %T", msg)
 			be.Send(&pgproto3.ParseComplete{})
+			_ = be.Flush()
+		})
+		// expect#2: Sync → RFQ.
+		fleet.Backend(0).expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+			_, ok := msg.(*pgproto3.Sync)
+			require.True(t, ok, "expected Sync, got %T", msg)
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 			_ = be.Flush()
 		})
@@ -357,6 +368,5 @@ func TestPrepareCacheObservesParse(t *testing.T) {
 			break
 		}
 	}
-	// Coverage: confirmed the Parse path executed without crashing.
 	require.Equal(t, 1, fleet.Count())
 }

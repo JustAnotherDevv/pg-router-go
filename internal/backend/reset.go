@@ -65,6 +65,11 @@ func (c *Conn) ResetStateWith(query string) error {
 			if m.TxStatus != 'I' {
 				return fmt.Errorf("reset left tx_status=%c (expected I)", m.TxStatus)
 			}
+			// DISCARD ALL / DEALLOCATE ALL drops every named prepared
+			// statement on the backend; flush our view to match. Custom
+			// reset queries that DON'T DEALLOCATE will desync the cache
+			// — operators replacing the default should know that.
+			c.Prepared.Clear()
 			return nil
 		case *pgproto3.RowDescription, *pgproto3.DataRow:
 			// Unexpected for DISCARD ALL but harmless; drain.
