@@ -152,7 +152,8 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 		case *pgproto3.StartupMessage:
 			user := m.Parameters["user"]
 			db := m.Parameters["database"]
-			log = log.With("user", user, "database", db)
+			app := m.Parameters["application_name"]
+			log = log.With("user", user, "database", db, "app", app)
 			log.Info("StartupMessage received",
 				"protocol_version", fmt.Sprintf("%d.%d",
 					m.ProtocolVersion>>16, m.ProtocolVersion&0xFFFF),
@@ -166,7 +167,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 			}
 
 			p := h.Manager.Get(pool.Key{DB: db, User: user})
-			h.servePooled(ctx, conn, p, db, user, log)
+			h.servePooled(ctx, conn, p, db, user, app, log)
 			return
 
 		default:
@@ -177,7 +178,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 }
 
 // servePooled is the hand-off from startup to PooledConn.Serve.
-func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.Pool, db, user string, log *slog.Logger) {
+func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.Pool, db, user, app string, log *slog.Logger) {
 	var (
 		welcomePID    uint32
 		welcomeSecret []byte
@@ -212,6 +213,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		Pool:              p,
 		Database:          db,
 		User:              user,
+		App:               app,
 		CannedParams:      h.CannedParams,
 		ResetOnRelease:    h.ResetOnRelease,
 		WelcomePID:        welcomePID,

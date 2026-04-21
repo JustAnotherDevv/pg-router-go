@@ -59,39 +59,41 @@ func OnPoolEvict(_ string, n int) {
 	}
 }
 
-// OnQuery increments the per-(database, user) query counter. Fired from
-// PooledConn each time a Query or Parse is forwarded to a backend.
-func OnQuery(db, user string) {
+// OnQuery increments the per-(database, user, application_name) query
+// counter. Fired from PooledConn each time a Query or Parse is
+// forwarded to a backend. `app` is the application_name the client
+// sent in StartupMessage; empty string when not provided.
+func OnQuery(db, user, app string) {
 	if Active != nil {
-		Active.QueriesTotal.WithLabelValues(db, user).Inc()
+		Active.QueriesTotal.WithLabelValues(db, user, app).Inc()
 	}
 }
 
-// OnTxStart increments the per-(db, user) transaction-start counter.
-func OnTxStart(db, user string) {
+// OnTxStart increments the per-(db, user, app) transaction-start counter.
+func OnTxStart(db, user, app string) {
 	if Active != nil {
-		Active.TxStarts.WithLabelValues(db, user).Inc()
+		Active.TxStarts.WithLabelValues(db, user, app).Inc()
 	}
 }
 
-// OnTxCommit increments the per-(db, user) commit counter.
-func OnTxCommit(db, user string) {
+// OnTxCommit increments the per-(db, user, app) commit counter.
+func OnTxCommit(db, user, app string) {
 	if Active != nil {
-		Active.TxCommits.WithLabelValues(db, user).Inc()
+		Active.TxCommits.WithLabelValues(db, user, app).Inc()
 	}
 }
 
-// OnTxRollback increments the per-(db, user) rollback counter.
-func OnTxRollback(db, user string) {
+// OnTxRollback increments the per-(db, user, app) rollback counter.
+func OnTxRollback(db, user, app string) {
 	if Active != nil {
-		Active.TxRollbacks.WithLabelValues(db, user).Inc()
+		Active.TxRollbacks.WithLabelValues(db, user, app).Inc()
 	}
 }
 
-// OnQueryDuration observes a per-(db, user) query duration in seconds.
-func OnQueryDuration(db, user string, seconds float64) {
+// OnQueryDuration observes a per-(db, user, app) query duration in seconds.
+func OnQueryDuration(db, user, app string, seconds float64) {
 	if Active != nil {
-		Active.QueryDurationSec.WithLabelValues(db, user).Observe(seconds)
+		Active.QueryDurationSec.WithLabelValues(db, user, app).Observe(seconds)
 	}
 }
 
@@ -104,23 +106,23 @@ func OnGlobalLimitReject(scope, name string) {
 }
 
 // OnQueryTimeout counts queries killed by query_timeout.
-func OnQueryTimeout(db, user string) {
+func OnQueryTimeout(db, user, app string) {
 	if Active != nil {
-		Active.QueryTimeouts.WithLabelValues(db, user).Inc()
+		Active.QueryTimeouts.WithLabelValues(db, user, app).Inc()
 	}
 }
 
 // OnClientIdleTimeout counts clients evicted by client_idle_timeout.
-func OnClientIdleTimeout(db, user string) {
+func OnClientIdleTimeout(db, user, app string) {
 	if Active != nil {
-		Active.ClientIdleTimeouts.WithLabelValues(db, user).Inc()
+		Active.ClientIdleTimeouts.WithLabelValues(db, user, app).Inc()
 	}
 }
 
 // OnIdleTxTimeout counts clients killed by idle_transaction_timeout.
-func OnIdleTxTimeout(db, user string) {
+func OnIdleTxTimeout(db, user, app string) {
 	if Active != nil {
-		Active.IdleTxTimeouts.WithLabelValues(db, user).Inc()
+		Active.IdleTxTimeouts.WithLabelValues(db, user, app).Inc()
 	}
 }
 
@@ -140,28 +142,28 @@ func OnSighupUserlistReload(outcome string) {
 	}
 }
 
-// OnPreparedHit increments the per-(db, user) prepared-statement cache
-// hit counter (Parse for a SQL whose server-side name is already
+// OnPreparedHit increments the per-(db, user, app) prepared-statement
+// cache hit counter (Parse for a SQL whose server-side name is already
 // cached on the backend → no extra Parse round trip).
-func OnPreparedHit(db, user string) {
+func OnPreparedHit(db, user, app string) {
 	if Active != nil {
-		Active.PreparedHits.WithLabelValues(db, user).Inc()
+		Active.PreparedHits.WithLabelValues(db, user, app).Inc()
 	}
 }
 
-// OnPreparedMiss increments the per-(db, user) prepared-statement cache
-// miss counter (first Parse for this SQL on this backend).
-func OnPreparedMiss(db, user string) {
+// OnPreparedMiss increments the per-(db, user, app) prepared-statement
+// cache miss counter (first Parse for this SQL on this backend).
+func OnPreparedMiss(db, user, app string) {
 	if Active != nil {
-		Active.PreparedMisses.WithLabelValues(db, user).Inc()
+		Active.PreparedMisses.WithLabelValues(db, user, app).Inc()
 	}
 }
 
-// OnPreparedEviction increments the per-(db, user) eviction counter
+// OnPreparedEviction increments the per-(db, user, app) eviction counter
 // (LRU pushed out an entry, prompting an automatic DEALLOCATE).
-func OnPreparedEviction(db, user string) {
+func OnPreparedEviction(db, user, app string) {
 	if Active != nil {
-		Active.PreparedEvictions.WithLabelValues(db, user).Inc()
+		Active.PreparedEvictions.WithLabelValues(db, user, app).Inc()
 	}
 }
 
@@ -281,24 +283,24 @@ func New() *Metrics {
 		QueriesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_queries_total",
 			Help: "Total Query + Parse messages forwarded.",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		TxStarts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_tx_starts_total",
 			Help: "Transactions opened (BEGIN observed).",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		TxCommits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_tx_commits_total",
 			Help: "Transactions committed (T -> I via success).",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		TxRollbacks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_tx_rollbacks_total",
 			Help: "Transactions rolled back (E -> I, or explicit ROLLBACK).",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		QueryDurationSec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "pgrouter_query_duration_seconds",
 			Help:    "Per-query duration, from first byte to ReadyForQuery.",
 			Buckets: defaultBuckets,
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 
 		AuthAttempts: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "pgrouter_auth_attempts_total",
@@ -329,15 +331,15 @@ func New() *Metrics {
 		QueryTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_query_timeouts_total",
 			Help: "Queries killed by query_timeout.",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		ClientIdleTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_client_idle_timeouts_total",
 			Help: "Clients evicted by client_idle_timeout.",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		IdleTxTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_idle_transaction_timeouts_total",
 			Help: "Clients killed by idle_transaction_timeout.",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		SighupReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_sighup_reloads_total",
 			Help: "SIGHUP-driven config reloads.",
@@ -350,15 +352,15 @@ func New() *Metrics {
 		PreparedHits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_prepared_cache_hits_total",
 			Help: "Parse messages whose server-side name was already cached on the backend.",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		PreparedMisses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_prepared_cache_misses_total",
 			Help: "Parse messages requiring a backend round trip (first time on this backend).",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 		PreparedEvictions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_prepared_cache_evictions_total",
 			Help: "Prepared-statement LRU evictions (DEALLOCATE sent to backend).",
-		}, []string{"database", "user"}),
+		}, []string{"database", "user", "application_name"}),
 	}
 
 	// Add Go runtime + process collectors so the standard

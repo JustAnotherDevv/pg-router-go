@@ -54,11 +54,14 @@ type PooledConn struct {
 	// Pool is the (db, user) pool to Acquire / Release from.
 	Pool *pool.Pool
 
-	// Database + User are the labels used for per-(db, user) Prometheus
-	// metrics. Production paths set these from the StartupMessage; tests
-	// may leave them empty (metrics simply emit empty labels).
+	// Database + User + App are the labels used for per-(db, user, app)
+	// Prometheus metrics. Production paths set these from the
+	// StartupMessage; tests may leave them empty (metrics simply emit
+	// empty labels). App is the StartupMessage `application_name`
+	// parameter — empty when the client didn't supply one.
 	Database string
 	User     string
+	App      string
 
 	// CannedParams are the ParameterStatus values we report to clients
 	// before any real backend is attached. Production code populates
@@ -207,9 +210,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				if inTx {
 					which = "idle_transaction_timeout"
 					code = "25P03"
-					stats.OnIdleTxTimeout(h.Database, h.User)
+					stats.OnIdleTxTimeout(h.Database, h.User, h.App)
 				} else {
-					stats.OnClientIdleTimeout(h.Database, h.User)
+					stats.OnClientIdleTimeout(h.Database, h.User, h.App)
 				}
 				log.Info("client closed by timeout", "kind", which)
 				// Short write deadline so a wedged client can't keep
@@ -256,7 +259,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// Per-(db, user) Query/Parse counter.
 		switch msg.(type) {
 		case *pgproto3.Query, *pgproto3.Parse:
-			stats.OnQuery(h.Database, h.User)
+			stats.OnQuery(h.Database, h.User, h.App)
 		}
 
 		// Acquire a backend lazily on the first traffic-generating message.
@@ -339,7 +342,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				if err != nil {
 					if isTimeoutErr(err) && h.QueryTimeout > 0 {
 						queryTimedOut = true
-						stats.OnQueryTimeout(h.Database, h.User)
+						stats.OnQueryTimeout(h.Database, h.User, h.App)
 						log.Info("query_timeout fired; closing backend",
 							"timeout", h.QueryTimeout,
 						)
@@ -363,11 +366,11 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					newTx := state.Tx()
 					switch {
 					case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
-						stats.OnTxStart(h.Database, h.User)
+						stats.OnTxStart(h.Database, h.User, h.App)
 					case prevTx == TxFailed && newTx == TxIdle:
-						stats.OnTxRollback(h.Database, h.User)
+						stats.OnTxRollback(h.Database, h.User, h.App)
 					case prevTx == TxInBlock && newTx == TxIdle:
-						stats.OnTxCommit(h.Database, h.User)
+						stats.OnTxCommit(h.Database, h.User, h.App)
 					}
 				}
 				// CopyInResponse — backend is now waiting for client
@@ -382,7 +385,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					if h.QueryTimeout > 0 {
 						_ = bConn.NetConn.SetReadDeadline(time.Time{})
 					}
-					stats.OnQueryDuration(h.Database, h.User,
+					stats.OnQueryDuration(h.Database, h.User, h.App,
 						time.Since(queryStart).Seconds())
 					// Release whenever the backend reports idle —
 					// covers explicit COMMIT/ROLLBACK boundaries AND
@@ -419,7 +422,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				// fresh one.
 				_ = bConn.Close()
 				bConn = nil
-				stats.OnQueryDuration(h.Database, h.User,
+				stats.OnQueryDuration(h.Database, h.User, h.App,
 					time.Since(queryStart).Seconds())
 				h.sendFatalErrorWithWriteDeadline(be, conn, "57014",
 					fmt.Sprintf("pgrouter: query_timeout (%s) exceeded", h.QueryTimeout),
@@ -809,12 +812,12 @@ func (h *PooledConn) prepareInterceptForward(
 			// CACHE HIT — backend already has this Parse; synthesize
 			// ParseComplete for the client and skip the round trip.
 			bConn.Prepared.Touch(server)
-			stats.OnPreparedHit(h.Database, h.User)
+			stats.OnPreparedHit(h.Database, h.User, h.App)
 			be.Send(&pgproto3.ParseComplete{})
 			return nil, true, nil
 		}
 		// CACHE MISS — rewrite Name and forward.
-		stats.OnPreparedMiss(h.Database, h.User)
+		stats.OnPreparedMiss(h.Database, h.User, h.App)
 		if bConn.Prepared != nil {
 			if evicted := bConn.Prepared.Add(server); evicted != "" {
 				// LRU pushed an entry out. Tell the backend to drop the
@@ -827,7 +830,7 @@ func (h *PooledConn) prepareInterceptForward(
 					Name:       evicted,
 				})
 				*pendingEvictCloseCompletes++
-				stats.OnPreparedEviction(h.Database, h.User)
+				stats.OnPreparedEviction(h.Database, h.User, h.App)
 				log.Debug("prepared cache LRU eviction",
 					"evicted", evicted, "incoming", server)
 			}
