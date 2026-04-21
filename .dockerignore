@@ -1,0 +1,40 @@
+# Keep the docker build context tiny so layer caches stay efficient.
+
+# Build artefacts.
+/bin
+/dist
+*.test
+*.out
+
+# Test infra not needed in the image.
+/test
+/deploy/docker-compose.test.yml
+docker-compose*.yml
+
+# Git + tooling.
+.git
+.github
+.gitignore
+.golangci.yml
+.goreleaser.yaml
+*.md
+LICENSE
+
+# IDE / OS noise.
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Local config / secrets that should not bake in.
+pgrouter.yaml
+userlist.txt
+*.pem
+*.key
+*.crt
+.env
+.env.*
+
+# Build script output.
+coverage.out
+profile.out

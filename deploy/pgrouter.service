@@ -1,0 +1,92 @@
+# systemd unit for pgrouter.
+#
+# Install:
+#   sudo install -m 0755 -o root -g root pgrouter /usr/local/bin/pgrouter
+#   sudo install -d -m 0755 /etc/pgrouter
+#   sudo install -m 0640 -o root -g pgrouter pgrouter.yaml /etc/pgrouter/pgrouter.yaml
+#   sudo install -m 0644 deploy/pgrouter.service /etc/systemd/system/pgrouter.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pgrouter
+#
+# Reload config without restart (re-reads pgrouter.yaml + userlist.txt):
+#   sudo systemctl reload pgrouter
+#
+# Tail logs:
+#   journalctl -u pgrouter -f
+#
+# User: create a non-login system user before first start:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin pgrouter
+
+[Unit]
+Description=pgrouter — Modern PostgreSQL connection pooler
+Documentation=https://github.com/JustAnotherDevv/pgrouter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated unprivileged user.
+User=pgrouter
+Group=pgrouter
+
+# Main process. `run` blocks until SIGINT/SIGTERM.
+ExecStart=/usr/local/bin/pgrouter run --config /etc/pgrouter/pgrouter.yaml
+
+# Pre-flight validation: refuses to start with a broken config so a
+# bad apply doesn't take down the listener silently.
+ExecStartPre=/usr/local/bin/pgrouter validate /etc/pgrouter/pgrouter.yaml
+
+# SIGHUP triggers config + userlist reload (no process restart).
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Lifecycle.
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+KillMode=mixed
+
+# Hardening. distroless equivalents — strict by default.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Filesystem allow-list. /etc/pgrouter holds the config + userlist.txt.
+# If you write a Unix socket (server.unix_socket_dir), add the path here.
+ReadOnlyPaths=/etc/pgrouter
+# Example: ReadWritePaths=/var/run/pgrouter
+
+# Resource limits.
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Watchdog / readiness: pgrouter does not yet implement sd_notify, so
+# we rely on healthcheck via the metrics endpoint instead. A
+# /healthz probe is exposed on the same listener as /metrics.
+
+# Logging — slog text/json output goes to stderr → captured by journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pgrouter
+
+[Install]
+WantedBy=multi-user.target

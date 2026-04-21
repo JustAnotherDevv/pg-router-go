@@ -1,0 +1,26 @@
+# Release-time Dockerfile consumed by goreleaser's `dockers:` stanza.
+#
+# goreleaser builds the pgrouter binary itself (cross-compiled per
+# goarch), then copies it into this single-stage distroless image —
+# no `go build` happens here.
+#
+# For local dev / hand-built images, use deploy/Dockerfile instead
+# (multi-stage with golang:1.26-alpine builder).
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+LABEL org.opencontainers.image.title="pgrouter" \
+      org.opencontainers.image.description="Modern PostgreSQL connection pooler" \
+      org.opencontainers.image.source="https://github.com/JustAnotherDevv/pgrouter" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# goreleaser drops the cross-compiled binary in the build context root.
+COPY pgrouter /usr/local/bin/pgrouter
+
+EXPOSE 6432 9090
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/pgrouter", "version"]
+
+ENTRYPOINT ["/usr/local/bin/pgrouter"]
+CMD ["run", "--config", "/etc/pgrouter/pgrouter.yaml"]

@@ -37,7 +37,16 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
-var version = "0.2.0-mvp"
+var (
+	// version is the release tag, ldflags-stamped at build time
+	// (`-X main.version=...`). Defaults reflect the current dev tip.
+	version = "0.2.0-mvp"
+
+	// commit is the short git SHA the binary was built from, also
+	// ldflags-stamped. Surfaces in `pgrouter version` and in the
+	// pgrouter_build_info Prometheus gauge.
+	commit = "unknown"
+)
 
 func main() {
 	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
@@ -58,7 +67,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	case "validate":
 		return cmdValidate(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
-		fmt.Fprintln(stdout, "pgrouter", version)
+		fmt.Fprintf(stdout, "pgrouter %s (%s)\n", version, commit)
 		return 0
 	case "help", "--help", "-h":
 		printUsage(stdout)
@@ -150,6 +159,8 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	)
 
 	// --- metrics ---
+	stats.Build.Version = version
+	stats.Build.Commit = commit
 	_ = stats.New() // sets stats.Active
 	metricsCtx, metricsCancel := context.WithCancel(context.Background())
 	defer metricsCancel()
