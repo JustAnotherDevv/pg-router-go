@@ -84,6 +84,13 @@ func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthO
 		}
 		return doServerPeer(be, conn, log, username)
 
+	case config.AuthCert:
+		if conn == nil {
+			return sendAuthFailed(be, log,
+				"cert auth requires a TLS connection")
+		}
+		return doServerCert(be, conn, log, username)
+
 	default:
 		return fmt.Errorf("auth type %q not supported in MVP", opts.Type)
 	}
