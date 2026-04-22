@@ -158,17 +158,12 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		"databases", len(cfg.Databases),
 	)
 
-	// --- metrics ---
+	// --- metrics + admin API ---
 	stats.Build.Version = version
 	stats.Build.Commit = commit
 	_ = stats.New() // sets stats.Active
 	metricsCtx, metricsCancel := context.WithCancel(context.Background())
 	defer metricsCancel()
-	go func() {
-		if err := stats.ServeMetrics(metricsCtx, cfg.Metrics.Listen, cfg.Metrics.Path, log); err != nil {
-			log.Error("metrics server", "err", err)
-		}
-	}()
 
 	// --- TLS configs ---
 	clientTLS, _, err := listener.BuildServerTLSConfig(cfg.TLS)
@@ -335,6 +330,54 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 			stats.OnGlobalLimitReject)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
+	// adminReloadCh fires a synthetic SIGHUP into the same reloader
+	// goroutine the OS signal handler uses, so POST /api/v1/reload
+	// runs identical code.
+	adminReloadCh := make(chan os.Signal, 1)
+	startTime := time.Now()
+	adminAPI := &stats.AdminAPI{
+		Pools: func() ([]stats.PoolSnapshot, error) {
+			out := []stats.PoolSnapshot{}
+			for _, ps := range mgr.AllStats() {
+				db, user, _ := splitPoolName(ps.Name)
+				out = append(out, stats.PoolSnapshot{
+					Name:    ps.Name,
+					DB:      db,
+					User:    user,
+					Idle:    ps.Idle,
+					Active:  ps.Active,
+					Waiters: ps.Waiters,
+				})
+			}
+			return out, nil
+		},
+		Stats: func() (stats.StatsSnapshot, error) {
+			return stats.SnapshotFromRegistry(time.Since(startTime)), nil
+		},
+		Drain: func(deadline time.Duration) error {
+			return mgr.CloseWithDeadline(time.Now().Add(deadline))
+		},
+		Reload: func() error {
+			select {
+			case adminReloadCh <- syscall.SIGHUP:
+				return nil
+			default:
+				return fmt.Errorf("reload channel busy")
+			}
+		},
+	}
+	go func() {
+		err := stats.ServeMetricsAndAdmin(metricsCtx, stats.AdminServerOptions{
+			Addr:        cfg.Metrics.Listen,
+			MetricsPath: cfg.Metrics.Path,
+			AuthToken:   cfg.Metrics.AdminToken,
+			Admin:       adminAPI,
+		}, log)
+		if err != nil {
+			log.Error("metrics+admin server", "err", err)
+		}
+	}()
+
 	// --- canned ParameterStatus ---
 	// First-client cold-start fallback: pool.CachedParams will be
 	// populated on the first successful upstream dial and override
@@ -395,7 +438,10 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	hupCh := make(chan os.Signal, 1)
 	signal.Notify(hupCh, syscall.SIGHUP)
 	defer signal.Stop(hupCh)
-	go runSighupReloader(ctx, hupCh, configPath, cfg, userlist, log)
+	// Fan-in: OS SIGHUP + admin-API /reload POST share the same goroutine.
+	mergedHup := make(chan os.Signal, 4)
+	go fanInSignals(ctx, mergedHup, hupCh, adminReloadCh)
+	go runSighupReloader(ctx, mergedHup, configPath, cfg, userlist, log)
 
 	ln, err := listener.New(listenAddr, log)
 	if err != nil {
@@ -565,6 +611,40 @@ func reloadUserlist(ul *auth.Userlist, log *slog.Logger) {
 		"rotated", len(diff.Rotated),
 	)
 	stats.OnSighupUserlistReload("ok")
+}
+
+// splitPoolName turns "db/user" into (db, user, true). Returns ("", name, false)
+// if the format is unexpected — admin API still emits the row.
+func splitPoolName(name string) (db, user string, ok bool) {
+	for i := 0; i < len(name); i++ {
+		if name[i] == '/' {
+			return name[:i], name[i+1:], true
+		}
+	}
+	return "", name, false
+}
+
+// fanInSignals forwards both source channels into dst until ctx fires.
+// Used to merge OS SIGHUP and admin-API reload triggers.
+func fanInSignals(ctx context.Context, dst chan<- os.Signal, sources ...<-chan os.Signal) {
+	for _, src := range sources {
+		go func(c <-chan os.Signal) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case s, ok := <-c:
+					if !ok {
+						return
+					}
+					select {
+					case dst <- s:
+					default:
+					}
+				}
+			}
+		}(src)
+	}
 }
 
 func newLogger(format, level string) *slog.Logger {
