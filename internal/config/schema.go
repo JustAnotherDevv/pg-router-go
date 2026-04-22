@@ -26,6 +26,12 @@ type ServerConfig struct {
 	ListenPort     int           `yaml:"listen_port"`      // default 6432
 	UnixSocketDir  string        `yaml:"unix_socket_dir,omitempty"`
 	UnixSocketMode string        `yaml:"unix_socket_mode,omitempty"` // "0777"
+
+	// ProxyProtocol enables HAProxy PROXY v1/v2 preamble parsing on
+	// every accepted TCP conn. Required when pgrouter sits behind an
+	// L4 load balancer that prefixes the real client addr.
+	ProxyProtocol bool `yaml:"proxy_protocol,omitempty"`
+
 	MaxClientConn  int           `yaml:"max_client_conn"`            // default 1000
 	ClientIdle     time.Duration `yaml:"client_idle_timeout"`        // 0 = disabled
 	ClientLogin    time.Duration `yaml:"client_login_timeout"`       // default 60s
