@@ -202,11 +202,48 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		hba = h
 		log.Info("hba loaded", "path", cfg.Auth.HBAFile)
 	}
+	var fetcher *auth.AuthQueryFetcher
+	if cfg.Auth.AuthQuery != "" {
+		fetcher = auth.NewAuthQueryFetcher(
+			func(ctx context.Context, dbAlias string) (auth.QueryConn, error) {
+				db, ok := cfg.Databases[dbAlias]
+				if !ok {
+					return nil, fmt.Errorf("auth_query: unknown db %q", dbAlias)
+				}
+				addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
+				dbName := db.DBName
+				if dbName == "" {
+					dbName = dbAlias
+				}
+				c, err := backend.Dial(ctx, backend.DialOptions{
+					Addr:        addr,
+					User:        cfg.Auth.AuthUser,
+					Database:    dbName,
+					AppName:     "pgrouter-auth_query",
+					Password:    db.Password,
+					TLSConfig:   backendTLS,
+					TLSRequired: backendTLSRequired,
+					Log:         log,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return &auth.FrontendAdapter{
+					Frontend: c.Frontend,
+					Closer:   c.Close,
+				}, nil
+			},
+			cfg.Auth.AuthQuery,
+			60*time.Second,
+		)
+		log.Info("auth_query configured", "user", cfg.Auth.AuthUser)
+	}
 	if cfg.Auth.Type != config.AuthTrust {
 		authOpts = &auth.ServerAuthOptions{
 			Type:     cfg.Auth.Type,
 			Userlist: userlist,
 			HBA:      hba,
+			Fetcher:  fetcher,
 			Log:      log,
 		}
 	}
