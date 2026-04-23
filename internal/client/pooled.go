@@ -45,6 +45,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/proto"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -108,6 +109,12 @@ type PooledConn struct {
 	// duration exceeds this threshold. SQL is rendered through the
 	// LogSQL mode (off/redacted/full).
 	SlowQuery time.Duration
+
+	// QPSLimiter, if non-nil, is the shared per-(db, user) token bucket
+	// consulted before forwarding each Query/Parse. Empty bucket →
+	// reject with SQLSTATE 53300 ("too_many_connections" — closest
+	// canonical code for transient overload).
+	QPSLimiter *util.TokenBucket
 
 	// PoolMode is one of: "session" | "transaction" | "statement". Empty
 	// defaults to "transaction" (MVP default). In statement mode the
@@ -269,9 +276,23 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// Per-(db, user) Query/Parse counter + slow-query stash.
 		switch m := msg.(type) {
 		case *pgproto3.Query:
+			if !h.takeQPS() {
+				log.Info("qps_limit: rejected", "kind", "query")
+				h.sendErrorWithRFQ(be, "53300",
+					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
+						h.Database, h.User))
+				continue
+			}
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.String, "query", ""
 		case *pgproto3.Parse:
+			if !h.takeQPS() {
+				log.Info("qps_limit: rejected", "kind", "parse")
+				h.sendErrorWithRFQ(be, "53300",
+					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
+						h.Database, h.User))
+				continue
+			}
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.Query, "parse", m.Name
 		}
@@ -664,6 +685,24 @@ func (h *PooledConn) sendErrorWithRFQ(be *pgproto3.Backend, code, msg string) {
 func (h *PooledConn) isStatementMode() bool {
 	return h.PoolMode == "statement"
 }
+
+// takeQPS consumes one token from the per-tenant bucket if one is
+// configured. Returns true when the request may proceed (or when no
+// limiter is set). On reject, fires OnQPSReject.
+func (h *PooledConn) takeQPS() bool {
+	if h.QPSLimiter == nil {
+		return true
+	}
+	if h.QPSLimiter.Take() {
+		return true
+	}
+	stats.OnQPSReject("db", h.Database)
+	stats.OnQPSReject("user", h.User)
+	return false
+}
+
+// silence unused import linter when only ratelimit type is used via field
+var _ = util.NewTokenBucket
 
 // clientExplicitBegin recognises an explicit transaction-open coming
 // from the client.

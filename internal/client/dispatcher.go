@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -27,6 +28,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 // PooledHandler is the production dispatcher. Fields can be nil for
@@ -89,6 +91,40 @@ type PooledHandler struct {
 	//     analytics: { pool_mode: statement }
 	// without storing every override in every PooledHandler field.
 	PoolModeFor func(db string) string
+
+	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
+	// 0 disables rate-limiting for that tenant. Buckets are shared
+	// across all PooledConns of the same (db, user) so the cap is
+	// genuinely per-tenant, not per-conn.
+	QPSCapFor func(db, user string) float64
+
+	qpsMu     sync.Mutex
+	qpsBuckets map[string]*util.TokenBucket
+}
+
+// qpsBucketFor returns a shared TokenBucket for the (db, user). Lazily
+// creates one with capacity = rate = cap. Returns nil if cap is 0
+// (rate-limit disabled).
+func (h *PooledHandler) qpsBucketFor(db, user string) *util.TokenBucket {
+	if h.QPSCapFor == nil {
+		return nil
+	}
+	cap := h.QPSCapFor(db, user)
+	if cap <= 0 {
+		return nil
+	}
+	key := db + "/" + user
+	h.qpsMu.Lock()
+	defer h.qpsMu.Unlock()
+	if h.qpsBuckets == nil {
+		h.qpsBuckets = map[string]*util.TokenBucket{}
+	}
+	if b, ok := h.qpsBuckets[key]; ok {
+		return b
+	}
+	b := util.NewTokenBucket(cap, cap)
+	h.qpsBuckets[key] = b
+	return b
 }
 
 // NewPooledHandler returns a PooledHandler with production defaults
@@ -230,6 +266,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		SlowQuery:         h.SlowQuery,
 		LogSQL:            h.LogSQL,
 		PoolMode:          mode,
+		QPSLimiter:        h.qpsBucketFor(db, user),
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)
