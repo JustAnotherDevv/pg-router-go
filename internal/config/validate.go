@@ -84,14 +84,15 @@ func Validate(cfg *Config) error {
 
 	// Auth.
 	switch cfg.Auth.Type {
-	case AuthTrust, AuthSCRAM, AuthMD5, AuthPeer, AuthCert:
+	case AuthTrust, AuthSCRAM, AuthMD5, AuthPeer, AuthCert, AuthHBA:
 		// supported in MVP/v1.0
-	case AuthHBA:
-		errs = errs.add("auth.type",
-			"%q is post-MVP; supported types: trust, scram-sha-256, md5, peer, cert", cfg.Auth.Type)
 	default:
 		errs = errs.add("auth.type",
 			"unknown auth type %q", cfg.Auth.Type)
+	}
+	if cfg.Auth.Type == AuthHBA && cfg.Auth.HBAFile == "" {
+		errs = errs.add("auth.hba_file",
+			"required when auth.type=hba")
 	}
 	if cfg.Auth.Type == AuthCert {
 		switch cfg.TLS.ClientMode {

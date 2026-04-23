@@ -192,10 +192,21 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		userlist = ul
 		log.Info("userlist loaded", "path", cfg.Auth.UserlistFile, "entries", ul.Len())
 	}
+	var hba *auth.HBAFile
+	if cfg.Auth.HBAFile != "" {
+		h, err := auth.NewHBAFile(cfg.Auth.HBAFile)
+		if err != nil {
+			log.Error("hba load", "err", err)
+			return 1
+		}
+		hba = h
+		log.Info("hba loaded", "path", cfg.Auth.HBAFile)
+	}
 	if cfg.Auth.Type != config.AuthTrust {
 		authOpts = &auth.ServerAuthOptions{
 			Type:     cfg.Auth.Type,
 			Userlist: userlist,
+			HBA:      hba,
 			Log:      log,
 		}
 	}
