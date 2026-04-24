@@ -452,6 +452,14 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	if logSQLMode == string(config.LogSQLFull) {
 		log.Warn("logging.log_sql=full enabled — raw SQL (with literals) will be logged. Use only in dev.")
 	}
+	auditWriter, err := client.OpenAuditFile(cfg.Logging.AuditFile)
+	if err != nil {
+		log.Error("audit file", "err", err)
+		return 1
+	}
+	if auditWriter != nil {
+		log.Info("audit log enabled", "path", cfg.Logging.AuditFile)
+	}
 	h := &client.PooledHandler{
 		Log:               log,
 		Manager:           mgr,
@@ -465,6 +473,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		IdleTxTimeout:     cfg.Server.IdleTx,
 		SlowQuery:         cfg.Logging.SlowQuery,
 		LogSQL:            logSQLMode,
+		Audit:             auditWriter,
 		PoolMode:          string(cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
 			if d, ok := cfg.Databases[db]; ok && d.PoolMode != "" {

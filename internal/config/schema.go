@@ -142,6 +142,12 @@ type LoggingConfig struct {
 	// SlowQuery is the duration above which a per-query WARN line is
 	// emitted (with redacted SQL). 0 disables.
 	SlowQuery time.Duration `yaml:"slow_query"`
+
+	// AuditFile, if non-empty, opens an append-only JSON-lines log
+	// that captures every per-query event (ts, req_id, db, user,
+	// app, kind, duration_ms, sql). SQL is rendered through LogSQL
+	// mode. Intended for compliance / billing pipelines.
+	AuditFile string `yaml:"audit_file,omitempty"`
 }
 
 // LogSQLMode normalises LoggingConfig.LogSQL into one of the three
