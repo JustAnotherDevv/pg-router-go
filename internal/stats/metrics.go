@@ -134,6 +134,21 @@ func OnSighupReload(outcome string) {
 	}
 }
 
+// OnBytesIn adds n bytes to the per-(db, user) inbound byte counter.
+// Wired from the CountingConn wrap installed by PooledHandler.
+func OnBytesIn(db, user string, n int) {
+	if Active != nil && n > 0 {
+		Active.BytesInPerTenant.WithLabelValues(db, user).Add(float64(n))
+	}
+}
+
+// OnBytesOut adds n bytes to the per-(db, user) outbound byte counter.
+func OnBytesOut(db, user string, n int) {
+	if Active != nil && n > 0 {
+		Active.BytesOutPerTenant.WithLabelValues(db, user).Add(float64(n))
+	}
+}
+
 // OnQPSReject counts per-tenant token-bucket rejections.
 // `scope` is "db" or "user"; `name` is the db or user name.
 func OnQPSReject(scope, name string) {
@@ -228,6 +243,10 @@ type Metrics struct {
 
 	// QPS rate-limit rejections (#116).
 	QPSRejects *prometheus.CounterVec // {"scope": "db"|"user", "name": <db|user>}
+
+	// Per-tenant bandwidth (#117).
+	BytesInPerTenant  *prometheus.CounterVec // {database, user}
+	BytesOutPerTenant *prometheus.CounterVec // {database, user}
 
 	// Prepared statement cross-backend cache (M.11.2).
 	PreparedHits      *prometheus.CounterVec // {database, user}
@@ -363,6 +382,14 @@ func New() *Metrics {
 			Name: "pgrouter_qps_rejects_total",
 			Help: "Queries rejected by per-tenant max_qps token bucket.",
 		}, []string{"scope", "name"}),
+		BytesInPerTenant: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_tenant_bytes_in_total",
+			Help: "Bytes received from clients, per (database, user).",
+		}, []string{"database", "user"}),
+		BytesOutPerTenant: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_tenant_bytes_out_total",
+			Help: "Bytes sent to clients, per (database, user).",
+		}, []string{"database", "user"}),
 
 		PreparedHits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_prepared_cache_hits_total",
@@ -395,6 +422,7 @@ func New() *Metrics {
 		m.GlobalLimitRejects, m.QueryTimeouts,
 		m.ClientIdleTimeouts, m.IdleTxTimeouts,
 		m.SighupReloads, m.SighupUserlistReloads, m.QPSRejects,
+		m.BytesInPerTenant, m.BytesOutPerTenant,
 		m.PreparedHits, m.PreparedMisses, m.PreparedEvictions,
 	)
 	Active = m
