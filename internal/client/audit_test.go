@@ -53,6 +53,7 @@ func TestOpenAuditFileAppends(t *testing.T) {
 	require.NotNil(t, a)
 	a.Write("r1", "db", "u", "", "query", "SELECT 1", time.Millisecond)
 	a.Write("r2", "db", "u", "", "parse", "SELECT $1", 2*time.Millisecond)
+	require.NoError(t, a.Close())
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
