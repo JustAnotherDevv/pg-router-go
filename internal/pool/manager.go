@@ -279,6 +279,57 @@ func (m *Manager) Pools() []*Pool {
 	return out
 }
 
+// ApplyDefaultSize updates the per-pool default cap. `defaultSize`
+// is the new global DefaultPoolSize; perKey, if non-nil, returns the
+// per-(db, user) override (0 = use default). Resizes that don't change
+// the current cap are skipped. Returns a summary slice of pools that
+// actually changed.
+func (m *Manager) ApplyDefaultSize(defaultSize int, perKey func(k Key) int) []ResizeRecord {
+	pools := m.Pools()
+	var out []ResizeRecord
+	for _, p := range pools {
+		k := keyFromName(p.Name())
+		want := defaultSize
+		if perKey != nil {
+			if v := perKey(k); v > 0 {
+				want = v
+			}
+		}
+		if want <= 0 {
+			continue
+		}
+		prev := p.Size()
+		if prev == want {
+			continue
+		}
+		p.Resize(want)
+		out = append(out, ResizeRecord{Key: k, From: prev, To: want})
+	}
+	// Also bump the Manager's default so future Get() calls use it.
+	m.mu.Lock()
+	m.defaultCfg.DefaultPoolSize = defaultSize
+	m.mu.Unlock()
+	return out
+}
+
+// ResizeRecord is one row in ApplyDefaultSize's return value.
+type ResizeRecord struct {
+	Key  Key
+	From int
+	To   int
+}
+
+// keyFromName reverses Key.String — splits "db/user" back into a Key.
+// Tolerant: a name without "/" goes into DB.
+func keyFromName(name string) Key {
+	for i := 0; i < len(name); i++ {
+		if name[i] == '/' {
+			return Key{DB: name[:i], User: name[i+1:]}
+		}
+	}
+	return Key{DB: name}
+}
+
 // AllStats is a single-shot snapshot across every pool.
 func (m *Manager) AllStats() []Stats {
 	pools := m.Pools()

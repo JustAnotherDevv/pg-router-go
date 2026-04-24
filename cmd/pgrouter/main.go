@@ -509,7 +509,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	// Fan-in: OS SIGHUP + admin-API /reload POST share the same goroutine.
 	mergedHup := make(chan os.Signal, 4)
 	go fanInSignals(ctx, mergedHup, hupCh, adminReloadCh)
-	go runSighupReloader(ctx, mergedHup, configPath, cfg, userlist, log)
+	go runSighupReloader(ctx, mergedHup, configPath, cfg, userlist, mgr, log)
 
 	ln, err := listener.New(listenAddr, log)
 	if err != nil {
@@ -625,7 +625,7 @@ func runServer(log *slog.Logger, listenAddr, backendAddr string) int {
 // config.
 func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 	path string, current *config.Config, userlist *auth.Userlist,
-	log *slog.Logger,
+	mgr *pool.Manager, log *slog.Logger,
 ) {
 	for {
 		select {
@@ -644,7 +644,7 @@ func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 				reloadUserlist(userlist, log)
 				continue
 			}
-			log.Info("SIGHUP reload (logged; live apply post-MVP)",
+			log.Info("SIGHUP reload",
 				"path", path,
 				"databases_before", len(current.Databases),
 				"databases_after", len(next.Databases),
@@ -655,6 +655,23 @@ func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 				"query_timeout_before", current.Pool.QueryTimeout,
 				"query_timeout_after", next.Pool.QueryTimeout,
 			)
+
+			// Apply live pool resize.
+			if mgr != nil {
+				changes := mgr.ApplyDefaultSize(next.Pool.DefaultPoolSize,
+					func(k pool.Key) int {
+						if d, ok := next.Databases[k.DB]; ok && d.PoolSize > 0 {
+							return d.PoolSize
+						}
+						return 0
+					})
+				for _, c := range changes {
+					log.Info("pool resized",
+						"pool", c.Key.String(),
+						"from", c.From, "to", c.To)
+				}
+			}
+
 			current = next
 			stats.OnSighupReload("ok")
 			reloadUserlist(userlist, log)

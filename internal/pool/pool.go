@@ -174,6 +174,47 @@ func New(name string, dial Dialer, cfg Config) *Pool {
 // Name is the (db, user) key this pool is registered under.
 func (p *Pool) Name() string { return p.name }
 
+// Resize updates the live DefaultPoolSize cap. Growing wakes any
+// blocked waiters; shrinking lets the janitor's next sweep evict
+// excess idle backends. Returns the previous size.
+//
+// Active checkouts above the new cap are NOT yanked — they finish
+// normally and just don't return to the idle stack on Release.
+func (p *Pool) Resize(newSize int) int {
+	if newSize < 1 {
+		newSize = 1
+	}
+	p.mu.Lock()
+	prev := p.cfg.DefaultPoolSize
+	p.cfg.DefaultPoolSize = newSize
+	// MinPoolSize must stay <= DefaultPoolSize.
+	if p.cfg.MinPoolSize > newSize {
+		p.cfg.MinPoolSize = newSize
+	}
+	// On shrink, immediately evict excess idle backends so they don't
+	// hang around forever (the janitor would also do this).
+	excess := (p.active + len(p.idle)) - newSize
+	for excess > 0 && len(p.idle) > 0 {
+		pc := p.idle[0]
+		p.idle = p.idle[1:]
+		go pc.Conn.Close()
+		excess--
+		p.totalEvicted++
+	}
+	p.mu.Unlock()
+	// Wake parked waiters; growth may have created free slots.
+	p.cond.Broadcast()
+	return prev
+}
+
+// Size returns the current DefaultPoolSize cap. Useful for the admin
+// API + config-reload diff display.
+func (p *Pool) Size() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg.DefaultPoolSize
+}
+
 // Acquire returns a backend ready for use, blocking until one is
 // available or ctx fires.
 //
