@@ -29,6 +29,8 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
@@ -157,6 +159,17 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		"pool_mode", string(cfg.Pool.Mode),
 		"databases", len(cfg.Databases),
 	)
+
+	// --- OTel tracing (no-op when OTEL_EXPORTER_OTLP_ENDPOINT unset) ---
+	tracerShutdown, err := tracing.Init(context.Background(), version, commit)
+	if err != nil {
+		log.Warn("tracing init failed; continuing without tracing", "err", err)
+	}
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerShutdown(shutCtx)
+	}()
 
 	// --- metrics + admin API ---
 	stats.Build.Version = version
