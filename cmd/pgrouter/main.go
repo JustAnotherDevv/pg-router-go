@@ -475,6 +475,14 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		SlowQuery:         cfg.Logging.SlowQuery,
 		LogSQL:            logSQLMode,
 		Audit:             auditWriter,
+		AdminReload: func() error {
+			select {
+			case adminReloadCh <- syscall.SIGHUP:
+				return nil
+			default:
+				return fmt.Errorf("reload channel busy")
+			}
+		},
 		PoolMode:          string(cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
 			if d, ok := cfg.Databases[db]; ok && d.PoolMode != "" {
