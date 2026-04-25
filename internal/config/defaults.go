@@ -95,6 +95,15 @@ func applyDefaults(cfg *Config) {
 		if db.DBName == "" {
 			db.DBName = name
 		}
+		for i, r := range db.Replicas {
+			if r.Port == 0 {
+				r.Port = 5432
+			}
+			if r.Weight <= 0 {
+				r.Weight = 1
+			}
+			db.Replicas[i] = r
+		}
 		cfg.Databases[name] = db
 	}
 }

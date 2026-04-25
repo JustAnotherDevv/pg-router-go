@@ -168,6 +168,24 @@ func Validate(cfg *Config) error {
 			errs = errs.add(path+".pool_size",
 				"must be >= 0, got %d", db.PoolSize)
 		}
+		for i, r := range db.Replicas {
+			rp := fmt.Sprintf("%s.replicas[%d]", path, i)
+			if r.Host == "" {
+				errs = errs.add(rp+".host", "required")
+			}
+			if r.Port < 1 || r.Port > 65535 {
+				errs = errs.add(rp+".port",
+					"must be in [1, 65535], got %d", r.Port)
+			}
+			if r.Weight < 0 {
+				errs = errs.add(rp+".weight",
+					"must be >= 0, got %d", r.Weight)
+			}
+		}
+		if db.MaxReplicaLagBytes < 0 {
+			errs = errs.add(path+".max_replica_lag_bytes",
+				"must be >= 0, got %d", db.MaxReplicaLagBytes)
+		}
 	}
 
 	// Users.
