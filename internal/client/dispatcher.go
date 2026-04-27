@@ -100,6 +100,13 @@ type PooledHandler struct {
 	// closure as the HTTP /api/v1/reload handler.
 	AdminReload func() error
 
+	// ReplicaPickerFor, if non-nil, returns a pool.Pool to acquire
+	// READ-classified queries from for the given database. Returns
+	// nil to route to the primary (no replica available, none under
+	// lag cap, or db has no replicas). Wired by main from
+	// internal/replica.Manager.Pick.
+	ReplicaPickerFor func(db string) *pool.Pool
+
 	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
 	// 0 disables rate-limiting for that tenant. Buckets are shared
 	// across all PooledConns of the same (db, user) so the cap is
@@ -297,6 +304,12 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		QPSLimiter:        h.qpsBucketFor(db, user),
 		Audit:             h.Audit,
 		ReqID:             reqID,
+		ReplicaPicker: func() *pool.Pool {
+			if h.ReplicaPickerFor == nil {
+				return nil
+			}
+			return h.ReplicaPickerFor(db)
+		},
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)

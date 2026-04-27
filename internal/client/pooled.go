@@ -118,6 +118,12 @@ type PooledConn struct {
 	// Audit is the optional per-query audit log sink. nil = off.
 	Audit *AuditWriter
 
+	// ReplicaPicker, if non-nil, returns a replica pool to acquire
+	// READ-classified queries from. Returns nil to fall back to the
+	// primary Pool. Called per-acquire when state is idle (mid-tx
+	// reads stay on the currently-attached backend).
+	ReplicaPicker func() *pool.Pool
+
 	// ReqID is the connection-scoped request ID (stamped into log lines
 	// + audit records). Set by the dispatcher.
 	ReqID string
@@ -197,6 +203,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 
 	var bConn *backend.Conn
+	// bConnPool tracks which pool bConn was acquired from so Release
+	// goes back to the same pool (replica routing → replica's pool).
+	var bConnPool *pool.Pool
 	// `sessionPinned` flips on once we see LISTEN / advisory_lock / temp
 	// table / cursor — after which the backend stays attached for the
 	// rest of the client's session.
@@ -211,7 +220,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if bConn != nil {
 			// On client disconnect we always release. Reset is best-effort
 			// per the user's ResetOnRelease config.
-			h.Pool.Release(bConn, h.ResetOnRelease)
+			releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+			bConnPool = nil
 		}
 	}()
 
@@ -317,12 +327,25 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// Acquire a backend lazily on the first traffic-generating message.
 		needsBackend := messageNeedsBackend(msg)
 		if needsBackend && bConn == nil {
-			bConn, err = h.Pool.Acquire(ctx)
+			// Replica routing: at the start of a fresh tx, if the
+			// triggering message is a Read AND a replica is available
+			// AND no session-pin, route to the replica pool. Otherwise
+			// the primary pool wins.
+			acquirePool := h.Pool
+			if !sessionPinned && h.ReplicaPicker != nil {
+				if isReadMessage(msg) {
+					if rp := h.ReplicaPicker(); rp != nil {
+						acquirePool = rp
+					}
+				}
+			}
+			bConn, err = acquirePool.Acquire(ctx)
 			if err != nil {
 				h.sendFatalError(be, "08006",
 					fmt.Sprintf("pgrouter: cannot acquire backend: %v", err))
 				return err
 			}
+			bConnPool = acquirePool
 			log.Debug("backend acquired", "backend_pid", bConn.PostgresPID)
 
 			// Replay tracked GUCs on the fresh backend BEFORE the
@@ -483,7 +506,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					shouldRelease := !sessionPinned &&
 						(h.isStatementMode() || state.Tx().IsIdle())
 					if shouldRelease {
-						h.Pool.Release(bConn, h.ResetOnRelease)
+						releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+			bConnPool = nil
 						bConn = nil
 					}
 					break
@@ -733,6 +757,28 @@ func (h *PooledConn) takeQPS() bool {
 
 // silence unused import linter when only ratelimit type is used via field
 var _ = util.NewTokenBucket
+
+// releasePool returns p if non-nil else fallback. Used to pick the
+// pool to Release into (acquired-from pool — primary or replica).
+func releasePool(p *pool.Pool, fallback *pool.Pool) *pool.Pool {
+	if p != nil {
+		return p
+	}
+	return fallback
+}
+
+// isReadMessage classifies a fresh Query/Parse for replica-routing
+// purposes. Bind/Execute/Sync/Describe/Close are NOT classified here —
+// they ride on a prior Parse's pool decision.
+func isReadMessage(msg pgproto3.FrontendMessage) bool {
+	switch m := msg.(type) {
+	case *pgproto3.Query:
+		return ClassifySQL(m.String) == SQLOpRead
+	case *pgproto3.Parse:
+		return ClassifySQL(m.Query) == SQLOpRead
+	}
+	return false
+}
 
 // startQuerySpan opens an OTel span for one Query/Parse. Returns a
 // no-op span when tracing isn't configured. SQL is rendered through
