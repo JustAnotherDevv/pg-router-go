@@ -129,6 +129,12 @@ type PooledConn struct {
 	// 0 = always route reads to replicas.
 	StickyReadWindow time.Duration
 
+	// PrimaryHealthy reports the current health of the primary backing
+	// this conn's database. When false, new writes get 08006
+	// connection_failure (failover state). Reads route to replicas via
+	// ReplicaPicker. nil → always healthy.
+	PrimaryHealthy func() bool
+
 	// ReqID is the connection-scoped request ID (stamped into log lines
 	// + audit records). Set by the dispatcher.
 	ReqID string
@@ -348,11 +354,23 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// read-your-own-writes sticky window, route to the replica
 			// pool. Otherwise the primary pool wins.
 			acquirePool := h.Pool
+			isRead := isReadMessage(msg)
 			if !sessionPinned && h.ReplicaPicker != nil &&
-				isReadMessage(msg) && !h.stickyToPrimary(lastWriteAt) {
+				isRead && !h.stickyToPrimary(lastWriteAt) {
 				if rp := h.ReplicaPicker(); rp != nil {
 					acquirePool = rp
 				}
+			}
+			// Failover gate: when primary is down + we're about to
+			// hit it, fail-fast with 08006 instead of blocking on
+			// dial retries. Reads that already routed to a replica
+			// (acquirePool != h.Pool) bypass this.
+			if acquirePool == h.Pool && h.PrimaryHealthy != nil && !h.PrimaryHealthy() {
+				log.Info("failover: rejecting write — primary unhealthy",
+					"db", h.Database)
+				h.sendErrorWithRFQ(be, "08006",
+					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
+				continue
 			}
 			bConn, err = acquirePool.Acquire(ctx)
 			if err != nil {

@@ -113,6 +113,11 @@ type PooledHandler struct {
 	// pinned to the primary.
 	StickyReadWindowFor func(db string) time.Duration
 
+	// PrimaryHealthyFor reports whether the primary backing `db` is
+	// currently considered healthy by the failover monitor. nil →
+	// always healthy (no monitor configured).
+	PrimaryHealthyFor func(db string) bool
+
 	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
 	// 0 disables rate-limiting for that tenant. Buckets are shared
 	// across all PooledConns of the same (db, user) so the cap is
@@ -322,6 +327,12 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			}
 			return h.StickyReadWindowFor(db)
 		}(),
+		PrimaryHealthy: func() bool {
+			if h.PrimaryHealthyFor == nil {
+				return true
+			}
+			return h.PrimaryHealthyFor(db)
+		},
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)
