@@ -1,0 +1,102 @@
+## Default values for pgrouter.
+
+image:
+  repository: ghcr.io/justanotherdevv/pgrouter
+  tag: ""               # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+## Pod-level resource requests / limits.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+## Liveness + readiness via the /healthz endpoint on the metrics port.
+healthcheck:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+service:
+  type: ClusterIP
+  pgwirePort: 6432
+  metricsPort: 9090
+
+## Optional metrics-port Service + ServiceMonitor for prometheus-operator.
+metrics:
+  serviceMonitor:
+    enabled: false
+    namespace: ""        # default: chart namespace
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}           # extra labels on the ServiceMonitor
+
+## ConfigMap-backed pgrouter.yaml. Override `config` to put your own
+## YAML body in place; defaults below cover a single trust-auth db
+## pointing at host.docker.internal:5432 for local kind/minikube test.
+config: |
+  server:
+    listen_addr: 0.0.0.0
+    listen_port: 6432
+    max_client_conn: 1000
+  pool:
+    mode: transaction
+    default_pool_size: 20
+  auth:
+    type: trust
+  logging:
+    level: info
+    log_sql: redacted
+  metrics:
+    listen: ":9090"
+    path: /metrics
+  databases:
+    appdb:
+      host: host.docker.internal
+      port: 5432
+      dbname: appdb
+
+## Optional Secret holding userlist.txt + TLS material. When set,
+## pgrouter mounts these at /etc/pgrouter/secrets/ and the chart
+## stitches the paths into the rendered config above.
+secrets:
+  userlistFile: ""        # raw contents of PgBouncer-compat userlist.txt
+  tlsClientCert: ""       # PEM cert for server-facing TLS
+  tlsClientKey: ""        # PEM key
+  tlsClientCA: ""         # PEM CA for verify-ca/verify-full
+  adminToken: ""          # token for /api/v1/drain etc.
+
+## Pod scheduling.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## Pod security context — non-root by default (matches distroless image).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+## Optional PodDisruptionBudget.
+pdb:
+  enabled: false
+  minAvailable: 1
+
+## Annotations on the rendered Deployment + ConfigMap.
+annotations: {}
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"

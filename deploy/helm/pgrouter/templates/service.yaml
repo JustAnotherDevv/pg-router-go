@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgrouter.fullname" . }}
+  labels:
+    {{- include "pgrouter.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "pgrouter.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: pgwire
+      port: {{ .Values.service.pgwirePort }}
+      targetPort: pgwire
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
