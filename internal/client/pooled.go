@@ -316,34 +316,29 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				continue
 			}
 		}
-		// Per-(db, user) Query/Parse counter + slow-query stash.
-		switch m := msg.(type) {
-		case *pgproto3.Query:
+		// Per-(db, user) Query/Parse counter + slow-query stash +
+		// SQL classification (cached for the rest of the iteration so
+		// ClassifySQL doesn't run multiple times per message).
+		//
+		// curSQLOp + curROBegin flow into the lazy-acquire / routing
+		// decision below and the lastWriteAt stamp; isReadMessage no
+		// longer re-classifies.
+		var curSQLOp SQLOp
+		var curROBegin bool
+		if sql, kind, prepName, ok := extractClientQuery(msg); ok {
 			if !h.takeQPS() {
-				log.Info("qps_limit: rejected", "kind", "query")
+				log.Info("qps_limit: rejected", "kind", kind)
 				h.sendErrorWithRFQ(be, "53300",
 					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
 						h.Database, h.User))
 				continue
 			}
 			stats.OnQuery(h.Database, h.User, h.App)
-			lastSQL, lastKind, lastPrepName = m.String, "query", ""
-			curSpan = h.startQuerySpan(ctx, "query", m.String, "")
-			if ClassifySQL(m.String) == SQLOpWrite && !IsExplicitReadOnlyBeginSQL(m.String) {
-				lastWriteAt = time.Now()
-			}
-		case *pgproto3.Parse:
-			if !h.takeQPS() {
-				log.Info("qps_limit: rejected", "kind", "parse")
-				h.sendErrorWithRFQ(be, "53300",
-					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
-						h.Database, h.User))
-				continue
-			}
-			stats.OnQuery(h.Database, h.User, h.App)
-			lastSQL, lastKind, lastPrepName = m.Query, "parse", m.Name
-			curSpan = h.startQuerySpan(ctx, "parse", m.Query, m.Name)
-			if ClassifySQL(m.Query) == SQLOpWrite && !IsExplicitReadOnlyBeginSQL(m.Query) {
+			lastSQL, lastKind, lastPrepName = sql, kind, prepName
+			curSpan = h.startQuerySpan(ctx, kind, sql, prepName)
+			curSQLOp = ClassifySQL(sql)
+			curROBegin = IsExplicitReadOnlyBeginSQL(sql)
+			if curSQLOp == SQLOpWrite && !curROBegin {
 				lastWriteAt = time.Now()
 			}
 		}
@@ -357,7 +352,10 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// read-your-own-writes sticky window, route to the replica
 			// pool. Otherwise the primary pool wins.
 			acquirePool := h.Pool
-			isRead := isReadMessage(msg)
+			// Read routing: SELECT/etc. OR an explicit READ ONLY tx.
+			// curSQLOp / curROBegin were cached in the switch above
+			// so we don't re-run ClassifySQL.
+			isRead := curSQLOp == SQLOpRead || curROBegin
 			if !sessionPinned && h.ReplicaPicker != nil &&
 				isRead && !h.stickyToPrimary(lastWriteAt) {
 				if rp := h.ReplicaPicker(); rp != nil {
@@ -822,28 +820,35 @@ func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
 	return time.Since(lastWrite) < window
 }
 
-// isReadMessage classifies a fresh Query/Parse for replica-routing
-// purposes. Bind/Execute/Sync/Describe/Close are NOT classified here —
-// they ride on a prior Parse's pool decision.
+// extractClientQuery returns (sql, kind, prepName, true) for Query
+// and Parse messages. kind is "query" or "parse"; prepName is the
+// extended-protocol statement name (empty for simple Query).
 //
-// Explicit `BEGIN READ ONLY` / `START TRANSACTION READ ONLY` /
-// `SET TRANSACTION READ ONLY` are treated as Read even though the
-// generic classifier sees them as Write, because the operator has
-// promised no writes will happen — perfect for replica routing.
-func isReadMessage(msg pgproto3.FrontendMessage) bool {
+// Other frontend messages → ok=false; Serve skips the per-query
+// bookkeeping path entirely.
+func extractClientQuery(msg pgproto3.FrontendMessage) (sql, kind, prepName string, ok bool) {
 	switch m := msg.(type) {
 	case *pgproto3.Query:
-		if IsExplicitReadOnlyBeginSQL(m.String) {
-			return true
-		}
-		return ClassifySQL(m.String) == SQLOpRead
+		return m.String, "query", "", true
 	case *pgproto3.Parse:
-		if IsExplicitReadOnlyBeginSQL(m.Query) {
-			return true
-		}
-		return ClassifySQL(m.Query) == SQLOpRead
+		return m.Query, "parse", m.Name, true
 	}
-	return false
+	return "", "", "", false
+}
+
+// isReadMessage is retained for the existing test surface (#128
+// readonly_begin_test.go calls it directly). Serve's hot path uses
+// the cached curSQLOp/curROBegin pair to avoid re-running the
+// classifier 3× per message.
+func isReadMessage(msg pgproto3.FrontendMessage) bool {
+	sql, _, _, ok := extractClientQuery(msg)
+	if !ok {
+		return false
+	}
+	if IsExplicitReadOnlyBeginSQL(sql) {
+		return true
+	}
+	return ClassifySQL(sql) == SQLOpRead
 }
 
 // startQuerySpan opens an OTel span for one Query/Parse. Returns a
