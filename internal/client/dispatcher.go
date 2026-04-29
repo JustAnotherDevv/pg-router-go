@@ -321,12 +321,12 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			}
 			return h.ReplicaPickerFor(db)
 		},
-		StickyReadWindow: func() time.Duration {
+		StickyReadWindowFn: func() time.Duration {
 			if h.StickyReadWindowFor == nil {
 				return 0
 			}
 			return h.StickyReadWindowFor(db)
-		}(),
+		},
 		PrimaryHealthy: func() bool {
 			if h.PrimaryHealthyFor == nil {
 				return true
