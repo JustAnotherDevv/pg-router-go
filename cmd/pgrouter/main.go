@@ -407,13 +407,17 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}()
 
-	// Primary failover monitors (per-db).
+	// Primary failover monitors (per-db). Each monitor owns a
+	// dedicated probe conn (NOT borrowed from the client pool) so
+	// client traffic spikes can't starve the health check and trigger
+	// spurious failovers — and so the probe never appears in
+	// SHOW POOLS / Prometheus stats as a synthetic tenant.
 	primaryMonitors := map[string]*replica.PrimaryMonitor{}
 	for dbName := range cfg.Databases {
-		// One Pool key per dbName — pick any user that opens the pool
-		// later. For monitoring we use a synthetic system-user key.
-		primaryPool := mgr.Get(pool.Key{DB: dbName, User: "_pgrouter_health_"})
-		pm := replica.NewPrimaryMonitor(dbName, primaryPool,
+		dbName := dbName
+		probeDial := primaryProbeDialer(cfg, dbName, backendTLS,
+			backendTLSRequired, log)
+		pm := replica.NewPrimaryMonitor(dbName, probeDial,
 			cfg.Pool.ServerCheckDelay, 3, cfg.Pool.ServerCheckQuery, log)
 		pm.Start()
 		primaryMonitors[dbName] = pm
@@ -778,6 +782,43 @@ func reloadUserlist(ul *auth.Userlist, log *slog.Logger) {
 		"rotated", len(diff.Rotated),
 	)
 	stats.OnSighupUserlistReload("ok")
+}
+
+// primaryProbeDialer returns a closure that opens a dedicated probe
+// conn to the primary upstream of dbName. Resolves host/port/user/
+// password the same way the client-facing pool's dialer does, but
+// emits a distinct application_name so DBAs can spot the probes.
+//
+// Used by the failover monitor (#130). The probe owns its conn, so
+// client-traffic spikes can't starve health checks.
+func primaryProbeDialer(cfg *config.Config, dbName string,
+	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
+) func(context.Context) (*backend.Conn, error) {
+	return func(ctx context.Context) (*backend.Conn, error) {
+		db, ok := cfg.Databases[dbName]
+		if !ok {
+			return nil, fmt.Errorf("primary probe: unknown db %q", dbName)
+		}
+		addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
+		user := db.User
+		if user == "" {
+			user = "pgrouter"
+		}
+		dbReal := db.DBName
+		if dbReal == "" {
+			dbReal = dbName
+		}
+		return backend.Dial(ctx, backend.DialOptions{
+			Addr:        addr,
+			User:        user,
+			Database:    dbReal,
+			AppName:     "pgrouter-primary-health",
+			Password:    db.Password,
+			TLSConfig:   backendTLS,
+			TLSRequired: backendTLSRequired,
+			Log:         log,
+		})
+	}
 }
 
 // buildReplicaManagers iterates cfg.Databases and constructs one
