@@ -156,8 +156,12 @@ func (m *Manager) healthLoop(r *Replica) {
 
 // probe runs a single health check via Acquire + tiny pgwire round
 // trip. Updates r.healthy.
+//
+// The context is bounded by 2s OR cancelled when Manager.Stop fires
+// — whichever comes first — so a probe mid-flight at shutdown
+// doesn't extend the drain window.
 func (m *Manager) probe(r *Replica) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := m.probeCtx(2 * time.Second)
 	defer cancel()
 	c, err := r.Pool.Acquire(ctx)
 	if err != nil {
@@ -222,6 +226,21 @@ func (m *Manager) Pick() (*Replica, error) {
 		idx -= r.Spec.Weight
 	}
 	return snap.cands[0], nil
+}
+
+// probeCtx returns a context bounded by `timeout` AND tied to the
+// Manager's stopCh — whichever fires first. Used by health/lag
+// probes so Stop() doesn't have to wait for an in-flight 2s probe.
+func (m *Manager) probeCtx(timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	go func() {
+		select {
+		case <-m.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // rebuildSnapshot recomputes the candidate set + total weight under
