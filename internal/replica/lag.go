@@ -88,7 +88,16 @@ func (m *Manager) lagProbe(r *Replica) {
 			"db", m.db, "host", r.Spec.Host, "err", err)
 		return
 	}
-	r.lagBytes.Store(val)
+	prev := r.lagBytes.Swap(val)
+	// Rebuild Pick snapshot if the lag transition crosses the maxLag
+	// threshold (replica enters or leaves the candidate set).
+	if maxLag := m.maxLag.Load(); maxLag > 0 {
+		before := prev <= maxLag
+		after := val <= maxLag
+		if before != after {
+			m.rebuildSnapshot()
+		}
+	}
 }
 
 // scalarInt runs sql, expects one DataRow with one int column, returns it.
