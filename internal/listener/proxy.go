@@ -22,6 +22,7 @@ package listener
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -66,9 +67,9 @@ func ReadProxyHeader(r io.Reader) (ProxyInfo, *bufio.Reader, error) {
 		return ProxyInfo{}, br, fmt.Errorf("peek: %w", err)
 	}
 	switch {
-	case bytesEqual(head, v2Sig):
+	case bytes.Equal(head, v2Sig):
 		return parseProxyV2(br)
-	case bytesEqual(head[:6], v1Sig):
+	case bytes.Equal(head[:6], v1Sig):
 		return parseProxyV1(br)
 	default:
 		return ProxyInfo{}, br, ErrNoProxyHeader
@@ -170,18 +171,6 @@ func parseProxyV2(br *bufio.Reader) (ProxyInfo, *bufio.Reader, error) {
 		info.Family = fmt.Sprintf("UNKNOWN(%x)", famProto)
 	}
 	return info, br, nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // proxyConn wraps a net.Conn whose first PROXY-header bytes have
