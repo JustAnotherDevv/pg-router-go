@@ -745,27 +745,19 @@ func (h *PooledConn) cachedOrWarm(ctx context.Context) map[string]string {
 	return cached
 }
 
+// sendFatalError is a thin wrapper around proto.SendFatalError kept
+// as a method so the existing call sites stay legible; the actual
+// pgwire synth happens in internal/proto/synth.go (reusable from any
+// pgrouter component that needs a synthetic FATAL).
 func (h *PooledConn) sendFatalError(be *pgproto3.Backend, code, msg string) {
-	be.Send(&pgproto3.ErrorResponse{
-		Severity: "FATAL",
-		Code:     code,
-		Message:  msg,
-	})
-	_ = be.Flush()
+	proto.SendFatalError(be, code, msg)
 }
 
-// sendErrorWithRFQ sends a non-fatal ErrorResponse followed by a fresh
-// ReadyForQuery so the client can issue another statement. Used for
-// proxy-level rejections (statement-mode BEGIN guard, etc.) where the
-// connection stays usable.
+// sendErrorWithRFQ wraps proto.SendErrorRFQ. Used for proxy-level
+// rejections (statement-mode BEGIN guard, QPS cap hit, failover
+// write reject) where the connection stays usable.
 func (h *PooledConn) sendErrorWithRFQ(be *pgproto3.Backend, code, msg string) {
-	be.Send(&pgproto3.ErrorResponse{
-		Severity: "ERROR",
-		Code:     code,
-		Message:  msg,
-	})
-	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-	_ = be.Flush()
+	proto.SendErrorRFQ(be, code, msg)
 }
 
 // isStatementMode returns true when the handler is configured for

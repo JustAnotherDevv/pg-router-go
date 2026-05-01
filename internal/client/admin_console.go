@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/proto"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
@@ -215,55 +216,30 @@ func (a *AdminConsole) doReload(be *pgproto3.Backend) {
 	a.sendCommandComplete(be, "RELOAD", "RELOAD")
 }
 
-// ──────────────────────────────────────────────────────────────────
-// pgwire helpers
-// ──────────────────────────────────────────────────────────────────
+// Method wrappers delegate to internal/proto so the admin handlers
+// read naturally while the actual pgwire synth lives in one place
+// (also reusable by future code that needs to fabricate responses).
 
-func col(name string) pgproto3.FieldDescription {
-	return pgproto3.FieldDescription{
-		Name:                 []byte(name),
-		DataTypeOID:          25, // text
-		DataTypeSize:         -1,
-		Format:               0, // text
-		TypeModifier:         -1,
-	}
-}
+func col(name string) pgproto3.FieldDescription { return proto.TextCol(name) }
 
 func (a *AdminConsole) sendRowDesc(be *pgproto3.Backend, cols []pgproto3.FieldDescription) {
-	be.Send(&pgproto3.RowDescription{Fields: cols})
+	proto.SendRowDesc(be, cols)
 }
 
 func (a *AdminConsole) sendDataRow(be *pgproto3.Backend, vals ...string) {
-	row := make([][]byte, len(vals))
-	for i, v := range vals {
-		row[i] = []byte(v)
-	}
-	be.Send(&pgproto3.DataRow{Values: row})
+	proto.SendDataRow(be, vals...)
 }
 
 func (a *AdminConsole) completeAndRFQ(be *pgproto3.Backend, tag string) {
-	be.Send(&pgproto3.CommandComplete{CommandTag: []byte(tag)})
-	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-	_ = be.Flush()
+	proto.CompleteAndRFQ(be, tag)
 }
 
 func (a *AdminConsole) sendCommandComplete(be *pgproto3.Backend, tag, msg string) {
-	if msg != "" {
-		be.Send(&pgproto3.NoticeResponse{
-			Severity: "NOTICE", Code: "00000", Message: msg,
-		})
-	}
-	be.Send(&pgproto3.CommandComplete{CommandTag: []byte(tag)})
-	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-	_ = be.Flush()
+	proto.SendNoticeCompleteRFQ(be, tag, msg)
 }
 
 func (a *AdminConsole) sendError(be *pgproto3.Backend, code, msg string) {
-	be.Send(&pgproto3.ErrorResponse{
-		Severity: "ERROR", Code: code, Message: msg,
-	})
-	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-	_ = be.Flush()
+	proto.SendErrorRFQ(be, code, msg)
 }
 
 // splitName turns "db/user" into (db, user).
