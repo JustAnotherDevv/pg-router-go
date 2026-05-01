@@ -262,50 +262,43 @@ func (s *Server) Stop(deadline time.Duration) error {
 	return s.mgr.CloseWithDeadline(time.Now().Add(deadline))
 }
 
-// buildReplicaManagers mirrors the cmd-side helper. Kept here so the
-// library package is self-contained and doesn't depend on cmd/.
+// buildReplicaManagers projects cfg.Databases into the shared
+// replica.BuildManagersFromConfig — same code that cmd/pgrouter uses.
 func buildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
 	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
 ) map[string]*replica.Manager {
-	out := map[string]*replica.Manager{}
-	for dbName, db := range cfg.Databases {
+	dbs := make([]replica.DBDef, 0, len(cfg.Databases))
+	for name, db := range cfg.Databases {
 		if len(db.Replicas) == 0 {
 			continue
 		}
-		reps := make([]*replica.Replica, 0, len(db.Replicas))
-		for _, rspec := range db.Replicas {
-			addr := net.JoinHostPort(rspec.Host, strconv.Itoa(rspec.Port))
-			user := db.User
-			if user == "" {
-				user = cfg.Auth.AuthUser
-			}
-			dialer := func(ctx context.Context) (*backend.Conn, error) {
-				return backend.Dial(ctx, backend.DialOptions{
-					Addr:        addr,
-					User:        user,
-					Database:    db.DBName,
-					AppName:     "pgrouter-replica",
-					Password:    db.Password,
-					TLSConfig:   backendTLS,
-					TLSRequired: backendTLSRequired,
-					Log:         log,
-				})
-			}
-			p := pool.New(fmt.Sprintf("%s-replica-%s:%d", dbName, rspec.Host, rspec.Port),
-				dialer, defaultCfg)
-			reps = append(reps, &replica.Replica{
-				Spec: replica.ReplicaSpec{
-					Host:   rspec.Host,
-					Port:   rspec.Port,
-					Weight: rspec.Weight,
-				},
-				Pool: p,
+		reps := make([]replica.ReplicaDef, 0, len(db.Replicas))
+		for _, r := range db.Replicas {
+			reps = append(reps, replica.ReplicaDef{
+				Host: r.Host, Port: r.Port, Weight: r.Weight,
 			})
 		}
-		rm := replica.NewManager(dbName, reps,
-			cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
-		rm.SetMaxLag(db.MaxReplicaLagBytes)
-		out[dbName] = rm
+		dbs = append(dbs, replica.DBDef{
+			Name:               name,
+			DBName:             db.DBName,
+			User:               db.User,
+			Password:           db.Password,
+			Replicas:           reps,
+			MaxReplicaLagBytes: db.MaxReplicaLagBytes,
+		})
 	}
-	return out
+	dial := func(addr, user, dbname, password string) backend.DialOptions {
+		return backend.DialOptions{
+			Addr:        addr,
+			User:        user,
+			Database:    dbname,
+			AppName:     "pgrouter-replica",
+			Password:    password,
+			TLSConfig:   backendTLS,
+			TLSRequired: backendTLSRequired,
+			Log:         log,
+		}
+	}
+	return replica.BuildManagersFromConfig(dbs, defaultCfg, dial,
+		cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
 }
