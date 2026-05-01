@@ -495,30 +495,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 						_ = bConn.NetConn.SetReadDeadline(time.Time{})
 					}
 					queryDur := time.Since(queryStart)
-					stats.OnQueryDuration(h.Database, h.User, h.App,
-						queryDur.Seconds())
-					if h.SlowQuery > 0 && queryDur >= h.SlowQuery {
-						log.Warn("slow_query",
-							"kind", lastKind,
-							"duration", queryDur,
-							"threshold", h.SlowQuery,
-							"prepared_name", lastPrepName,
-							"sql", SQLForLog(h.LogSQL, lastSQL, 512),
-						)
-					}
-					if h.Audit != nil && lastKind != "" {
-						h.Audit.Write(h.ReqID, h.Database, h.User, h.App,
-							lastKind,
-							SQLForLog(h.LogSQL, lastSQL, 1024),
-							queryDur)
-					}
-					if curSpan != nil {
-						curSpan.SetAttributes(
-							attribute.Float64("pgrouter.duration_ms",
-								float64(queryDur.Microseconds())/1000.0))
-						curSpan.End()
-						curSpan = nil
-					}
+					h.onQueryComplete(log, lastKind, lastSQL,
+						lastPrepName, queryDur, curSpan)
+					curSpan = nil
 					// Release whenever the backend reports idle —
 					// covers explicit COMMIT/ROLLBACK boundaries AND
 					// implicit-transaction queries (e.g. bare SELECT
@@ -810,6 +789,60 @@ func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
 		return false
 	}
 	return time.Since(lastWrite) < window
+}
+
+// onQueryComplete is the single fan-out point for all per-query
+// observability after the backend reports ReadyForQuery:
+//
+//   1. stats.OnQueryDuration  (Prometheus histogram, always on)
+//   2. slow_query log         (when h.SlowQuery > 0 and dur >= it)
+//   3. audit JSON line        (when h.Audit != nil)
+//   4. OTel span end          (when curSpan != nil)
+//
+// The redacted SQL is rendered ONCE at the longest cap any sink needs
+// (1024 bytes for audit) and reused — previously slow_query + audit
+// each ran SQLForLog independently, doing the regex/scan twice per
+// query at the cost of an extra allocation.
+func (h *PooledConn) onQueryComplete(log *slog.Logger, kind, sql, prepName string,
+	dur time.Duration, span trace.Span,
+) {
+	stats.OnQueryDuration(h.Database, h.User, h.App, dur.Seconds())
+
+	wantSlow := h.SlowQuery > 0 && dur >= h.SlowQuery && kind != ""
+	wantAudit := h.Audit != nil && kind != ""
+
+	// Render SQL once if at least one sink will consume it. 1024 covers
+	// the audit cap; the slow_query log truncates further at emit time
+	// if needed.
+	var renderedSQL string
+	if wantSlow || wantAudit {
+		renderedSQL = SQLForLog(h.LogSQL, sql, 1024)
+	}
+
+	if wantSlow {
+		// Re-truncate to the slow_query cap (512) for terser log lines.
+		slowSQL := renderedSQL
+		if len(slowSQL) > 512 {
+			slowSQL = slowSQL[:512] + "…"
+		}
+		log.Warn("slow_query",
+			"kind", kind,
+			"duration", dur,
+			"threshold", h.SlowQuery,
+			"prepared_name", prepName,
+			"sql", slowSQL,
+		)
+	}
+	if wantAudit {
+		h.Audit.Write(h.ReqID, h.Database, h.User, h.App,
+			kind, renderedSQL, dur)
+	}
+	if span != nil {
+		span.SetAttributes(
+			attribute.Float64("pgrouter.duration_ms",
+				float64(dur.Microseconds())/1000.0))
+		span.End()
+	}
 }
 
 // extractClientQuery returns (sql, kind, prepName, true) for Query
