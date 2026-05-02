@@ -29,7 +29,13 @@ project_name: pgrouter
 before:
   hooks:
     - go mod tidy
-    - go test ./...
+    # NOT `go test ./...` — that would re-run unit tests inside the
+    # release pipeline, blocking it on TestDialTrust (which needs a
+    # live Postgres on :25432, never present in the goreleaser
+    # container). The ci.yml workflow runs the full unit + integration
+    # matrix BEFORE the tag push; if those pass, the release tag is
+    # gated naturally.
+    - go vet ./...
 
 builds:
   - id: pgrouter
