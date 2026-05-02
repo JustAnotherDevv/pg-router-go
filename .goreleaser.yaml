@@ -186,8 +186,6 @@ release:
   header: |
     ## pgrouter {{ .Version }}
 
-    {{ if .IsPrerelease }}⚠️ Pre-release — not for production use.{{ end }}
-
     See `docs/migration-from-pgbouncer.md` for the drop-in PgBouncer
     replacement guide and `docs/architecture.md` for the deep dive.
   footer: |
