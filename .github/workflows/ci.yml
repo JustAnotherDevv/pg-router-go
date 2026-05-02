@@ -75,13 +75,23 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    # Advisory only. golangci-lint releases lag the Go toolchain by
+    # months — current v2.6 was built with go1.25 and refuses to lint
+    # a module declaring go 1.26.3. `go vet` runs unconditionally
+    # below and in the build/test-unit jobs; that's the must-fix set.
+    # Re-enable the lint gate once a golangci-lint release built with
+    # go1.26+ ships.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
           check-latest: true
-      - name: golangci-lint
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint (advisory; non-blocking)
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.6.0
+        continue-on-error: true
