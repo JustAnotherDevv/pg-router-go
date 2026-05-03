@@ -660,24 +660,10 @@ func truncate(s string, n int) string {
 // ReadyForQuery. Returns an error on backend ErrorResponse — the caller
 // should treat the backend as poisoned and discard it.
 func (h *PooledConn) fireReplay(bConn *backend.Conn, sql string) error {
-	bConn.Frontend.Send(&pgproto3.Query{String: sql})
-	if err := bConn.Frontend.Flush(); err != nil {
-		return fmt.Errorf("replay flush: %w", err)
+	if err := proto.DrainSimpleQuery(bConn.Frontend, sql, nil); err != nil {
+		return fmt.Errorf("replay: %w", err)
 	}
-	for {
-		msg, err := bConn.Frontend.Receive()
-		if err != nil {
-			return fmt.Errorf("replay recv: %w", err)
-		}
-		switch m := msg.(type) {
-		case *pgproto3.ErrorResponse:
-			return fmt.Errorf("replay error %s: %s", m.Severity, m.Message)
-		case *pgproto3.ReadyForQuery:
-			return nil
-		default:
-			// CommandComplete, RowDescription, etc.: drain
-		}
-	}
+	return nil
 }
 
 // sendWelcome sends AuthOk + ParameterStatus + BackendKeyData +

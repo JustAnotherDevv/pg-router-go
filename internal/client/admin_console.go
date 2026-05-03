@@ -110,33 +110,52 @@ func (a *AdminConsole) Serve(ctx context.Context, conn net.Conn) error {
 	}
 }
 
+// adminHandler is one entry in the dispatch table.
+type adminHandler func(a *AdminConsole, be *pgproto3.Backend, upper string)
+
+// adminHandlers is the prefix → handler dispatch table. Replaces the
+// previous HasPrefix cascade. Adding a new SHOW command is now a
+// single-line registration.
+//
+// Lookup is linear (≤10 entries) so the lack of a real trie is fine;
+// HasPrefix on a small map beats nesting more if-else branches.
+var adminHandlers = []struct {
+	prefix string
+	fn     adminHandler
+}{
+	{"SHOW STATS", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showStats(be) }},
+	{"SHOW POOLS", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showPools(be) }},
+	{"SHOW DATABASES", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showDatabases(be) }},
+	{"SHOW LISTS", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showLists(be) }},
+	{"SHOW VERSION", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showVersion(be) }},
+	{"SHOW HELP", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showHelp(be) }},
+	{"PAUSE", func(a *AdminConsole, be *pgproto3.Backend, up string) {
+		a.sendCommandComplete(be, up, "PAUSE accepted (no-op in v1)")
+	}},
+	{"RESUME", func(a *AdminConsole, be *pgproto3.Backend, up string) {
+		a.sendCommandComplete(be, up, "RESUME accepted (no-op in v1)")
+	}},
+	{"RELOAD", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.doReload(be) }},
+}
+
 // handleQuery dispatches one SQL statement and emits the appropriate
 // rowset + RFQ.
 func (a *AdminConsole) handleQuery(be *pgproto3.Backend, sql string) {
 	trimmed := strings.TrimSpace(strings.TrimRight(sql, ";"))
 	upper := strings.ToUpper(trimmed)
-	switch {
-	case strings.HasPrefix(upper, "SHOW STATS"):
-		a.showStats(be)
-	case strings.HasPrefix(upper, "SHOW POOLS"):
-		a.showPools(be)
-	case strings.HasPrefix(upper, "SHOW DATABASES"):
-		a.showDatabases(be)
-	case strings.HasPrefix(upper, "SHOW LISTS"):
-		a.showLists(be)
-	case strings.HasPrefix(upper, "SHOW VERSION"):
-		a.showVersion(be)
-	case strings.HasPrefix(upper, "SHOW HELP"), upper == "HELP":
+	// `HELP` aliases SHOW HELP.
+	if upper == "HELP" {
 		a.showHelp(be)
-	case strings.HasPrefix(upper, "PAUSE"), strings.HasPrefix(upper, "RESUME"):
-		// Accept silently; live drain/resume is post-v1.
-		a.sendCommandComplete(be, upper, "PAUSE/RESUME accepted (no-op in v1)")
-	case strings.HasPrefix(upper, "RELOAD"):
-		a.doReload(be)
-	default:
-		a.sendError(be, "42601",
-			fmt.Sprintf("admin console: unknown command: %s", trimmed))
+		return
 	}
+	for _, h := range adminHandlers {
+		if strings.HasPrefix(upper, h.prefix) {
+			h.fn(a, be, upper)
+			return
+		}
+	}
+	a.sendError(be, "42601",
+		fmt.Sprintf("admin console: unknown command: %s", trimmed))
 }
 
 func (a *AdminConsole) showStats(be *pgproto3.Backend) {
@@ -273,12 +292,9 @@ func (a *AdminConsole) sendError(be *pgproto3.Backend, code, msg string) {
 	proto.SendErrorRFQ(be, code, msg)
 }
 
-// splitName turns "db/user" into (db, user).
+// splitName forwards to the canonical pool.SplitName. Local wrapper
+// kept so admin handlers read naturally.
 func splitName(s string) (string, string) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '/' {
-			return s[:i], s[i+1:]
-		}
-	}
-	return s, ""
+	k := pool.SplitName(s)
+	return k.DB, k.User
 }

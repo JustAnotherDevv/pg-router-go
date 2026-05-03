@@ -319,9 +319,13 @@ type ResizeRecord struct {
 	To   int
 }
 
-// keyFromName reverses Key.String — splits "db/user" back into a Key.
+// SplitName reverses Key.String — splits "db/user" back into a Key.
 // Tolerant: a name without "/" goes into DB.
-func keyFromName(name string) Key {
+//
+// Exported because admin_console + cmd both reverse pool names back
+// into (db, user) tuples; this used to live in three slightly-
+// different implementations.
+func SplitName(name string) Key {
 	for i := 0; i < len(name); i++ {
 		if name[i] == '/' {
 			return Key{DB: name[:i], User: name[i+1:]}
@@ -329,6 +333,10 @@ func keyFromName(name string) Key {
 	}
 	return Key{DB: name}
 }
+
+// keyFromName is the internal alias kept for back-compat with existing
+// call sites in this package.
+func keyFromName(name string) Key { return SplitName(name) }
 
 // AllStats is a single-shot snapshot across every pool.
 func (m *Manager) AllStats() []Stats {

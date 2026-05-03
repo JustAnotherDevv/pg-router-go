@@ -20,11 +20,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 // ReplicaSpec is the static description supplied by config.
@@ -61,10 +61,9 @@ type Manager struct {
 	healthCheckEvery time.Duration
 	checkQuery       string
 
-	startOnce sync.Once
-	stopOnce  sync.Once
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
+	// Daemon owns the lifecycle (startOnce + stopOnce + stopCh + wg).
+	// Shared with PrimaryMonitor + pkg/pgrouter.Server.
+	util.Daemon
 
 	// MaxLag, when > 0, excludes replicas whose lagBytes is above
 	// this value from Pick's candidate set. Updated by SetMaxLag.
@@ -105,7 +104,6 @@ func NewManager(db string, replicas []*Replica, healthInterval time.Duration, ch
 		replicas:         replicas,
 		healthCheckEvery: healthInterval,
 		checkQuery:       checkQuery,
-		stopCh:           make(chan struct{}),
 	}
 	// Seed the Pick snapshot from the initial healthy flags so unit
 	// tests that don't call Start (which would also seed) can still
@@ -125,27 +123,19 @@ func (m *Manager) Replicas() []*Replica { return m.replicas }
 // double-Start would spawn duplicate probe goroutines per replica and
 // Stop's wg.Wait would count incorrectly.
 func (m *Manager) Start() {
-	m.startOnce.Do(func() {
+	m.Daemon.Start(func() {
 		for _, r := range m.replicas {
 			r.healthy.Store(true)
 		}
 		m.rebuildSnapshot()
 		for _, r := range m.replicas {
 			r := r
-			m.wg.Add(1)
-			go m.healthLoop(r)
+			m.Daemon.Run(func() { m.healthLoop(r) })
 		}
 	})
 }
 
-// Stop signals all goroutines to exit and waits for them.
-func (m *Manager) Stop() {
-	m.stopOnce.Do(func() { close(m.stopCh) })
-	m.wg.Wait()
-}
-
 func (m *Manager) healthLoop(r *Replica) {
-	defer m.wg.Done()
 	t := time.NewTicker(m.healthCheckEvery)
 	defer t.Stop()
 	// One immediate probe so the first call to Pick doesn't have to
@@ -153,7 +143,7 @@ func (m *Manager) healthLoop(r *Replica) {
 	m.probe(r)
 	for {
 		select {
-		case <-m.stopCh:
+		case <-m.Daemon.StopCh():
 			return
 		case <-t.C:
 			m.probe(r)
@@ -208,11 +198,19 @@ var ErrNoHealthyReplica = errors.New("replica: no healthy replica available")
 // pickSnapshot is the precomputed candidate set served by Pick. It's
 // cheap to atomic-swap on each health / lag transition so Pick can
 // read lock-free even at 100k QPS.
+//
+// `expanded` is the weighted-round-robin ring: each replica appears
+// in it exactly Spec.Weight times. Pick indexes directly into it, so
+// the hot path is one atomic.Add + one mod + one slice read — no
+// per-call O(n) scan. Build cost is paid once per health/lag
+// transition (rare) instead of once per Pick (per-query).
 type pickSnapshot struct {
-	// cands holds healthy replicas under the lag cap; nil when the
-	// snapshot is empty (Pick fast-returns ErrNoHealthyReplica).
-	cands       []*Replica
-	totalWeight int
+	// cands holds the unique healthy replicas under the lag cap; nil
+	// when the snapshot is empty.
+	cands []*Replica
+	// expanded is each replica replicated Spec.Weight times in
+	// declaration order; cap is sum(weights).
+	expanded []*Replica
 }
 
 // Pick returns the next replica to route a read to.
@@ -220,19 +218,16 @@ type pickSnapshot struct {
 // Reads a precomputed candidate snapshot (atomic.Pointer) so the hot
 // path doesn't allocate per call. Snapshots are rebuilt by the
 // probe loops on every transition (healthy flip / lag update / start).
+//
+// O(1) — one atomic.Add + one modulo + one slice index. Previously
+// O(n) with a per-call modular scan over weighted cands.
 func (m *Manager) Pick() (*Replica, error) {
 	snap := m.snapshot.Load()
-	if snap == nil || len(snap.cands) == 0 {
+	if snap == nil || len(snap.expanded) == 0 {
 		return nil, ErrNoHealthyReplica
 	}
-	idx := int(m.rr.Add(1)-1) % snap.totalWeight
-	for _, r := range snap.cands {
-		if idx < r.Spec.Weight {
-			return r, nil
-		}
-		idx -= r.Spec.Weight
-	}
-	return snap.cands[0], nil
+	idx := int(m.rr.Add(1)-1) % len(snap.expanded)
+	return snap.expanded[idx], nil
 }
 
 // probeCtx returns a context bounded by `timeout` AND tied to the
@@ -242,7 +237,7 @@ func (m *Manager) probeCtx(timeout time.Duration) (context.Context, context.Canc
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	go func() {
 		select {
-		case <-m.stopCh:
+		case <-m.Daemon.StopCh():
 			cancel()
 		case <-ctx.Done():
 		}
@@ -260,6 +255,7 @@ func (m *Manager) probeCtx(timeout time.Duration) (context.Context, context.Canc
 func (m *Manager) rebuildSnapshot() {
 	maxLag := m.maxLag.Load()
 	snap := &pickSnapshot{cands: make([]*Replica, 0, len(m.replicas))}
+	totalWeight := 0
 	for _, r := range m.replicas {
 		if !r.Healthy() {
 			continue
@@ -268,7 +264,23 @@ func (m *Manager) rebuildSnapshot() {
 			continue
 		}
 		snap.cands = append(snap.cands, r)
-		snap.totalWeight += r.Spec.Weight
+		w := r.Spec.Weight
+		if w < 1 {
+			w = 1
+		}
+		totalWeight += w
+	}
+	// Pre-expand into the weighted ring so Pick is O(1). Capacity
+	// is exact — no resizes during the append loop.
+	snap.expanded = make([]*Replica, 0, totalWeight)
+	for _, r := range snap.cands {
+		w := r.Spec.Weight
+		if w < 1 {
+			w = 1
+		}
+		for i := 0; i < w; i++ {
+			snap.expanded = append(snap.expanded, r)
+		}
 	}
 	m.snapshot.Store(snap)
 }

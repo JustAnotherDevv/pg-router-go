@@ -840,15 +840,12 @@ func buildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
 		cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
 }
 
-// splitPoolName turns "db/user" into (db, user, true). Returns ("", name, false)
-// if the format is unexpected — admin API still emits the row.
+// splitPoolName forwards to pool.SplitName + indicates whether the
+// name was in "db/user" form (ok=false when no slash).
 func splitPoolName(name string) (db, user string, ok bool) {
-	for i := 0; i < len(name); i++ {
-		if name[i] == '/' {
-			return name[:i], name[i+1:], true
-		}
-	}
-	return "", name, false
+	k := pool.SplitName(name)
+	ok = k.User != "" || (len(name) > 0 && name[len(name)-1] == '/')
+	return k.DB, k.User, ok
 }
 
 // fanInSignals forwards both source channels into dst until ctx fires.

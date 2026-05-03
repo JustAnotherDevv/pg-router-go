@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/proto"
 )
 
 // lagQuery is the per-replica probe. seconds-of-replay-lag.
@@ -47,19 +48,17 @@ func (m *Manager) StartLagPolls(interval time.Duration) {
 	}
 	for _, r := range m.replicas {
 		r := r
-		m.wg.Add(1)
-		go m.lagLoop(r, interval)
+		m.Daemon.Run(func() { m.lagLoop(r, interval) })
 	}
 }
 
 func (m *Manager) lagLoop(r *Replica, interval time.Duration) {
-	defer m.wg.Done()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	m.lagProbe(r)
 	for {
 		select {
-		case <-m.stopCh:
+		case <-m.Daemon.StopCh():
 			return
 		case <-t.C:
 			m.lagProbe(r)
@@ -101,34 +100,25 @@ func (m *Manager) lagProbe(r *Replica) {
 
 // scalarInt runs sql, expects one DataRow with one int column, returns it.
 func scalarInt(c *backend.Conn, sql string) (int64, error) {
-	c.Frontend.Send(&pgproto3.Query{String: sql})
-	if err := c.Frontend.Flush(); err != nil {
-		return 0, fmt.Errorf("lag flush: %w", err)
-	}
 	var out int64
 	var got bool
-	for {
-		msg, err := c.Frontend.Receive()
-		if err != nil {
-			return 0, fmt.Errorf("lag recv: %w", err)
+	err := proto.DrainSimpleQuery(c.Frontend, sql, func(row *pgproto3.DataRow) error {
+		if got || len(row.Values) == 0 {
+			return nil
 		}
-		switch m := msg.(type) {
-		case *pgproto3.DataRow:
-			if len(m.Values) > 0 {
-				v, err := strconv.ParseInt(strings.TrimSpace(string(m.Values[0])), 10, 64)
-				if err != nil {
-					return 0, fmt.Errorf("lag parse %q: %w", m.Values[0], err)
-				}
-				out = v
-				got = true
-			}
-		case *pgproto3.ErrorResponse:
-			return 0, fmt.Errorf("lag error: %s", m.Message)
-		case *pgproto3.ReadyForQuery:
-			if !got {
-				return 0, fmt.Errorf("lag: no row")
-			}
-			return out, nil
+		v, perr := strconv.ParseInt(strings.TrimSpace(string(row.Values[0])), 10, 64)
+		if perr != nil {
+			return fmt.Errorf("parse %q: %w", row.Values[0], perr)
 		}
+		out = v
+		got = true
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("lag: %w", err)
 	}
+	if !got {
+		return 0, fmt.Errorf("lag: no row")
+	}
+	return out, nil
 }

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 // PrimaryMonitor tracks health of one primary via a dedicated probe
@@ -60,10 +61,8 @@ type PrimaryMonitor struct {
 	probeMu   sync.Mutex
 	probeConn *backend.Conn
 
-	startOnce sync.Once
-	stopOnce  sync.Once
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
+	// Daemon owns the lifecycle (startOnce + stopOnce + stopCh + wg).
+	util.Daemon
 }
 
 // NewPrimaryMonitor builds a monitor. `dial` is invoked to open the
@@ -94,7 +93,6 @@ func NewPrimaryMonitor(db string, dial func(context.Context) (*backend.Conn, err
 		probeQuery:  probeQuery,
 		probeEvery:  every,
 		maxFailures: maxFailures,
-		stopCh:      make(chan struct{}),
 	}
 	pm.state.healthy = true // optimistic — first probe will correct
 	pm.healthyAtomic.Store(true)
@@ -111,16 +109,14 @@ func (pm *PrimaryMonitor) Healthy() bool {
 // are no-ops. Without this guard a double-Start would spawn duplicate
 // probe goroutines that both read/write probeConn under probeMu.
 func (pm *PrimaryMonitor) Start() {
-	pm.startOnce.Do(func() {
-		pm.wg.Add(1)
-		go pm.loop()
+	pm.Daemon.Start(func() {
+		pm.Daemon.Run(pm.loop)
 	})
 }
 
 // Stop terminates the probe goroutine + closes the probe conn.
 func (pm *PrimaryMonitor) Stop() {
-	pm.stopOnce.Do(func() { close(pm.stopCh) })
-	pm.wg.Wait()
+	pm.Daemon.Stop()
 	pm.probeMu.Lock()
 	if pm.probeConn != nil {
 		_ = pm.probeConn.Close()
@@ -130,13 +126,12 @@ func (pm *PrimaryMonitor) Stop() {
 }
 
 func (pm *PrimaryMonitor) loop() {
-	defer pm.wg.Done()
 	t := time.NewTicker(pm.probeEvery)
 	defer t.Stop()
 	pm.probe()
 	for {
 		select {
-		case <-pm.stopCh:
+		case <-pm.Daemon.StopCh():
 			return
 		case <-t.C:
 			pm.probe()
@@ -177,7 +172,7 @@ func (pm *PrimaryMonitor) probeCtx() (context.Context, context.CancelFunc) {
 	// Tie to stopCh so probe dials are cancelled on shutdown.
 	go func() {
 		select {
-		case <-pm.stopCh:
+		case <-pm.Daemon.StopCh():
 			cancel()
 		case <-ctx.Done():
 		}
