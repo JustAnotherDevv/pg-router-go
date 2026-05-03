@@ -107,7 +107,11 @@ func (l *Listener) Serve(ctx context.Context, handler Handler) error {
 		go func(c net.Conn) {
 			defer l.wg.Done()
 			if l.proxyProtocol {
-				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+				// Tight deadline: PROXY preambles are ≤108 bytes (v1) or
+				// ≤16+~36 (v2) — a healthy LB ships them in one TCP
+				// segment. 1s is generous; slow-reads tying up
+				// max_client_conn goroutines for 5s each is a DoS path.
+				_ = c.SetReadDeadline(time.Now().Add(1 * time.Second))
 				info, br, err := ReadProxyHeader(c)
 				_ = c.SetReadDeadline(time.Time{})
 				if err == nil && info.SourceAddr != nil {

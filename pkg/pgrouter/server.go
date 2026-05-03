@@ -29,12 +29,13 @@ type Server struct {
 	cfg *config.Config
 	log *slog.Logger
 
-	mgr          *pool.Manager
-	listener     *listener.Listener
-	unixListener *listener.Listener
-	handler      *client.PooledHandler
-	replicaMgrs  map[string]*replica.Manager
-	auditWriter  *client.AuditWriter
+	mgr           *pool.Manager
+	listener      *listener.Listener
+	unixListener  *listener.Listener
+	handler       *client.PooledHandler
+	replicaMgrs   map[string]*replica.Manager
+	auditWriter   *client.AuditWriter
+	cancelTracker *cancel.Tracker
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -122,7 +123,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		if db.User != "" {
 			user = db.User
 		}
-		return func(ctx context.Context) (*backend.Conn, error) {
+		dialOnce := func(ctx context.Context) (*backend.Conn, error) {
 			return backend.Dial(ctx, backend.DialOptions{
 				Addr:        addr,
 				User:        user,
@@ -133,6 +134,13 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 				TLSRequired: backendTLSRequired,
 				Log:         log,
 			})
+		}
+		// Use the shared M.7.6 backoff schedule. Previously library
+		// mode skipped this — a backend going down had pgrouter
+		// hammer it once per client Acquire.
+		return func(ctx context.Context) (*backend.Conn, error) {
+			return backend.DialWithRetry(ctx, addr, log,
+				backend.DialRetryConfig{}, dialOnce)
 		}
 	}
 
@@ -204,15 +212,16 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:          cfg,
-		log:          log,
-		mgr:          mgr,
-		listener:     ln,
-		unixListener: unixLn,
-		handler:      h,
-		replicaMgrs:  replicaMgrs,
-		auditWriter:  auditWriter,
-		stopped:      make(chan struct{}),
+		cfg:           cfg,
+		log:           log,
+		mgr:           mgr,
+		listener:      ln,
+		unixListener:  unixLn,
+		handler:       h,
+		replicaMgrs:   replicaMgrs,
+		auditWriter:   auditWriter,
+		cancelTracker: cancelTracker,
+		stopped:       make(chan struct{}),
 	}, nil
 }
 
@@ -233,6 +242,9 @@ func (s *Server) Start(ctx context.Context) error {
 		rm.Start()
 		rm.StartLagPolls(5 * time.Second)
 	}
+
+	// Sweep orphan cancel-tracker entries. See cmd/pgrouter for rationale.
+	s.cancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- s.listener.Serve(ctx, s.handler.Handle) }()

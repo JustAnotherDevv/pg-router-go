@@ -308,43 +308,11 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 				Log:         log,
 			})
 		}
-		// Retry with capped exponential backoff. Spec M.7.6: handshake
-		// auth failures + transient TLS/network errors shouldn't kill
-		// the next Acquire instantly — back off so a dying backend
-		// doesn't get hammered. Cap at 6 attempts so wrong creds give up
-		// in seconds rather than minutes.
+		// Capped exponential backoff. See internal/backend/retry.go for
+		// schedule + rationale. Shared with pkg/pgrouter (library mode).
 		return func(ctx context.Context) (*backend.Conn, error) {
-			const maxAttempts = 6
-			backoff := 100 * time.Millisecond
-			var lastErr error
-			for attempt := 1; attempt <= maxAttempts; attempt++ {
-				c, err := dialOnce(ctx)
-				if err == nil {
-					if attempt > 1 {
-						log.Info("backend dial succeeded after retry",
-							"attempts", attempt, "addr", addr)
-					}
-					return c, nil
-				}
-				lastErr = err
-				if attempt == maxAttempts {
-					break
-				}
-				log.Warn("backend dial failed; backing off",
-					"attempt", attempt, "max", maxAttempts,
-					"backoff", backoff, "err", err)
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-				backoff *= 2
-				if backoff > 30*time.Second {
-					backoff = 30 * time.Second
-				}
-			}
-			return nil, fmt.Errorf("backend dial gave up after %d attempts: %w",
-				maxAttempts, lastErr)
+			return backend.DialWithRetry(ctx, addr, log,
+				backend.DialRetryConfig{}, dialOnce)
 		}
 	}
 
@@ -584,6 +552,14 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	ctx, signalCancel := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer signalCancel()
+
+	// Sweep orphan cancel-tracker entries. The normal Release path
+	// (servePooled defer) covers clean shutdowns; the sweeper catches
+	// the panic/crash path where Allocate() succeeds but the deferred
+	// Release never fires, leaving (PID, secret) entries pinned in the
+	// map forever. 5min tick + 1h ttl is generous — real cancels arrive
+	// within seconds of the originating query.
+	cancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
 
 	hupCh := make(chan os.Signal, 1)
 	signal.Notify(hupCh, syscall.SIGHUP)

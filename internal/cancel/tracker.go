@@ -21,10 +21,12 @@
 package cancel
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"sync"
+	"time"
 )
 
 // ErrNotFound is returned by Tracker.Lookup when the key is unknown.
@@ -61,11 +63,31 @@ type Target struct {
 type Tracker struct {
 	mu sync.RWMutex
 	m  map[Key]Target
+	// createdAt tracks when each Key was Allocate()'d. The normal path
+	// (Release at client disconnect) deletes both entries together.
+	// Sweep() drops entries that were Allocated but never Bound and
+	// are older than ttl — covers the panic/crash leak path where a
+	// servePooled goroutine dies between Allocate and Bind without
+	// the deferred Release firing.
+	createdAt map[Key]time.Time
+
+	// nowFn allows tests to override time. nil → time.Now.
+	nowFn func() time.Time
 }
 
 // NewTracker returns an empty tracker.
 func NewTracker() *Tracker {
-	return &Tracker{m: map[Key]Target{}}
+	return &Tracker{
+		m:         map[Key]Target{},
+		createdAt: map[Key]time.Time{},
+	}
+}
+
+func (t *Tracker) now() time.Time {
+	if t.nowFn != nil {
+		return t.nowFn()
+	}
+	return time.Now()
 }
 
 // Allocate generates a fresh (ProcessID, SecretKey) and returns it as a
@@ -91,6 +113,7 @@ func (t *Tracker) Allocate() (Key, error) {
 		t.mu.Lock()
 		if _, taken := t.m[k]; !taken {
 			t.m[k] = Target{}
+			t.createdAt[k] = t.now()
 			t.mu.Unlock()
 			return k, nil
 		}
@@ -128,6 +151,7 @@ func (t *Tracker) Lookup(k Key) (Target, error) {
 func (t *Tracker) Release(k Key) {
 	t.mu.Lock()
 	delete(t.m, k)
+	delete(t.createdAt, k)
 	t.mu.Unlock()
 }
 
@@ -136,4 +160,57 @@ func (t *Tracker) Len() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return len(t.m)
+}
+
+// SweepUnbound drops entries that were Allocate()'d but never Bind()'d
+// and are older than ttl. Returns the number of entries dropped.
+//
+// Intended to be called periodically by StartSweeper. Manual callers
+// (tests) can run it directly. Bound entries are NEVER swept — the
+// normal Release path handles those.
+func (t *Tracker) SweepUnbound(ttl time.Duration) int {
+	if ttl <= 0 {
+		return 0
+	}
+	cutoff := t.now().Add(-ttl)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dropped := 0
+	for k, created := range t.createdAt {
+		if !created.Before(cutoff) {
+			continue
+		}
+		tg, ok := t.m[k]
+		if !ok {
+			// Inconsistent state — clean up the stale createdAt entry.
+			delete(t.createdAt, k)
+			continue
+		}
+		if tg.BackendAddr != "" {
+			// Bound; keep. Lifetime managed by Release().
+			continue
+		}
+		delete(t.m, k)
+		delete(t.createdAt, k)
+		dropped++
+	}
+	return dropped
+}
+
+// StartSweeper spawns a goroutine that calls SweepUnbound every
+// `period` until ctx is done. Returns immediately. Pass ctx tied to
+// process lifetime; ttl=1h is a sensible default.
+func (t *Tracker) StartSweeper(ctx context.Context, period, ttl time.Duration) {
+	go func() {
+		tk := time.NewTicker(period)
+		defer tk.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tk.C:
+				_ = t.SweepUnbound(ttl)
+			}
+		}
+	}()
 }

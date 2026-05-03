@@ -53,6 +53,19 @@ var (
 // not a PROXY preamble. The conn is left unchanged.
 var ErrNoProxyHeader = errors.New("no PROXY protocol header")
 
+// MaxProxyV1Line caps the v1 ASCII line at 107 bytes per the PROXY
+// spec (worst case: "PROXY TCP6 <39+39> <5+5> \r\n"). We allow 128 for
+// trailing whitespace tolerance. Without this cap, a malicious client
+// can send "PROXY " + unbounded bytes without a "\n" and ReadString
+// allocates until OOM.
+const MaxProxyV1Line = 128
+
+// MaxProxyV2Addr caps the v2 binary address block. Per spec the TLV
+// section can extend the addr block; we cap at 1024 to allow modest
+// TLVs while preventing a malicious client from making us allocate
+// 64 KiB (max uint16) per accepted conn.
+const MaxProxyV2Addr = 1024
+
 // ReadProxyHeader peeks the first bytes off conn and, if they match a
 // PROXY preamble, consumes + parses it. On success the returned reader
 // is the remaining stream (header bytes already drained).
@@ -82,11 +95,24 @@ func ReadProxyHeader(r io.Reader) (ProxyInfo, *bufio.Reader, error) {
 //	PROXY TCP6 fe80::1 fe80::2 1024 8443\r\n
 //	PROXY UNKNOWN\r\n
 func parseProxyV1(br *bufio.Reader) (ProxyInfo, *bufio.Reader, error) {
-	line, err := br.ReadString('\n')
-	if err != nil {
-		return ProxyInfo{}, br, fmt.Errorf("v1 read line: %w", err)
+	// Read one byte at a time up to MaxProxyV1Line; refuse to grow
+	// beyond the spec'd worst case. ReadString('\n') would allocate
+	// unboundedly if the attacker sends "PROXY " + 100 MB no-newline.
+	var lineBuf []byte
+	for {
+		if len(lineBuf) >= MaxProxyV1Line {
+			return ProxyInfo{}, br, fmt.Errorf("v1 line exceeds %d bytes (no LF found)", MaxProxyV1Line)
+		}
+		b, err := br.ReadByte()
+		if err != nil {
+			return ProxyInfo{}, br, fmt.Errorf("v1 read byte: %w", err)
+		}
+		lineBuf = append(lineBuf, b)
+		if b == '\n' {
+			break
+		}
 	}
-	line = strings.TrimRight(line, "\r\n")
+	line := strings.TrimRight(string(lineBuf), "\r\n")
 	parts := strings.Split(line, " ")
 	if len(parts) < 2 {
 		return ProxyInfo{}, br, fmt.Errorf("v1 too short: %q", line)
@@ -127,6 +153,12 @@ func parseProxyV2(br *bufio.Reader) (ProxyInfo, *bufio.Reader, error) {
 	verCmd := hdr[12]
 	famProto := hdr[13]
 	addrLen := int(binary.BigEndian.Uint16(hdr[14:16]))
+	// Refuse silly-large addr blocks. Real TCP4/TCP6 fits in ≤36 bytes;
+	// TLV extensions cap at MaxProxyV2Addr. uint16 alone allows up to
+	// 65535 bytes per accepted conn — easy memory-amplification.
+	if addrLen > MaxProxyV2Addr {
+		return ProxyInfo{}, br, fmt.Errorf("v2 addr block too large: %d > %d", addrLen, MaxProxyV2Addr)
+	}
 	addrBuf := make([]byte, addrLen)
 	if _, err := io.ReadFull(br, addrBuf); err != nil {
 		return ProxyInfo{}, br, fmt.Errorf("v2 addr block: %w", err)

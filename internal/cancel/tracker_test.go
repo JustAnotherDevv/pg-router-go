@@ -12,6 +12,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// SweepUnbound drops Allocate()'d entries that were never Bind()'d and
+// are older than ttl. Covers the panic-leak path where servePooled
+// dies between Allocate and Bind without the deferred Release firing.
+func TestTrackerSweepUnboundDropsOrphans(t *testing.T) {
+	tr := NewTracker()
+	now := time.Unix(1_700_000_000, 0)
+	tr.nowFn = func() time.Time { return now }
+
+	// 3 unbound (orphan) + 1 bound.
+	orphan1, err := tr.Allocate()
+	require.NoError(t, err)
+	orphan2, err := tr.Allocate()
+	require.NoError(t, err)
+	_, err = tr.Allocate()
+	require.NoError(t, err)
+
+	bound, err := tr.Allocate()
+	require.NoError(t, err)
+	tr.Bind(bound, Target{BackendAddr: "10.0.0.1:5432", BackendProcessID: 42})
+
+	require.Equal(t, 4, tr.Len())
+
+	// Advance time past ttl. Sweep should drop the 3 unbound, keep
+	// the bound one (lifetime is Release()'s job).
+	now = now.Add(2 * time.Hour)
+	dropped := tr.SweepUnbound(time.Hour)
+	require.Equal(t, 3, dropped)
+	require.Equal(t, 1, tr.Len())
+
+	// Bound entry still resolvable.
+	_, err = tr.Lookup(bound)
+	require.NoError(t, err)
+
+	// Orphans gone.
+	_, err = tr.Lookup(orphan1)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = tr.Lookup(orphan2)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// SweepUnbound is a no-op when ttl <= 0; guards against accidental
+// mass-drop if a config goof feeds 0.
+func TestTrackerSweepZeroTTLNoOp(t *testing.T) {
+	tr := NewTracker()
+	_, err := tr.Allocate()
+	require.NoError(t, err)
+	require.Equal(t, 0, tr.SweepUnbound(0))
+	require.Equal(t, 1, tr.Len())
+}
+
 func TestTrackerAllocateUnique(t *testing.T) {
 	tr := NewTracker()
 	keys := map[Key]bool{}
