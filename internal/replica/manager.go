@@ -61,9 +61,10 @@ type Manager struct {
 	healthCheckEvery time.Duration
 	checkQuery       string
 
-	stopOnce sync.Once
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	startOnce sync.Once
+	stopOnce  sync.Once
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
 
 	// MaxLag, when > 0, excludes replicas whose lagBytes is above
 	// this value from Pick's candidate set. Updated by SetMaxLag.
@@ -119,16 +120,22 @@ func (m *Manager) Replicas() []*Replica { return m.replicas }
 // Start spawns the per-replica health-check goroutines. Also seeds
 // the initial Pick snapshot (initially: every configured replica is
 // optimistically healthy — first probe will correct).
+//
+// Idempotent: subsequent calls are no-ops. Without this guard a
+// double-Start would spawn duplicate probe goroutines per replica and
+// Stop's wg.Wait would count incorrectly.
 func (m *Manager) Start() {
-	for _, r := range m.replicas {
-		r.healthy.Store(true)
-	}
-	m.rebuildSnapshot()
-	for _, r := range m.replicas {
-		r := r
-		m.wg.Add(1)
-		go m.healthLoop(r)
-	}
+	m.startOnce.Do(func() {
+		for _, r := range m.replicas {
+			r.healthy.Store(true)
+		}
+		m.rebuildSnapshot()
+		for _, r := range m.replicas {
+			r := r
+			m.wg.Add(1)
+			go m.healthLoop(r)
+		}
+	})
 }
 
 // Stop signals all goroutines to exit and waits for them.

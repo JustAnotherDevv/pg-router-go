@@ -39,9 +39,18 @@ func TestVerifyMD5RejectsWrongLength(t *testing.T) {
 	require.False(t, VerifyMD5Password("u", "pwd", salt, "md5"+"x"))
 }
 
-func TestConstantTimeEqString(t *testing.T) {
-	require.True(t, constantTimeEqString("", ""))
-	require.True(t, constantTimeEqString("abc", "abc"))
-	require.False(t, constantTimeEqString("abc", "abd"))
-	require.False(t, constantTimeEqString("abc", "ab"))
+// constantTimeEqString was removed in favor of stdlib
+// crypto/subtle.ConstantTimeCompare; this test now exercises the
+// equivalent verifier behavior via VerifyMD5Password's compare path
+// (the only direct caller) so we keep the equality-semantic coverage.
+func TestVerifyMD5ConstantTimeMatchesEquality(t *testing.T) {
+	salt := [4]byte{1, 2, 3, 4}
+	resp := MD5PasswordResponse("u", "pwd", salt)
+	require.True(t, VerifyMD5Password("u", "pwd", salt, resp))
+	// Same length, last char differs.
+	bad := []byte(resp)
+	bad[len(bad)-1] ^= 0x01
+	require.False(t, VerifyMD5Password("u", "pwd", salt, string(bad)))
+	// Shorter (length-mismatch path of subtle.ConstantTimeCompare).
+	require.False(t, VerifyMD5Password("u", "pwd", salt, resp[:len(resp)-1]))
 }

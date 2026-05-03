@@ -60,9 +60,10 @@ type PrimaryMonitor struct {
 	probeMu   sync.Mutex
 	probeConn *backend.Conn
 
-	stopOnce sync.Once
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	startOnce sync.Once
+	stopOnce  sync.Once
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
 }
 
 // NewPrimaryMonitor builds a monitor. `dial` is invoked to open the
@@ -106,10 +107,14 @@ func (pm *PrimaryMonitor) Healthy() bool {
 	return pm.healthyAtomic.Load()
 }
 
-// Start spawns the probe goroutine.
+// Start spawns the probe goroutine. Idempotent — subsequent calls
+// are no-ops. Without this guard a double-Start would spawn duplicate
+// probe goroutines that both read/write probeConn under probeMu.
 func (pm *PrimaryMonitor) Start() {
-	pm.wg.Add(1)
-	go pm.loop()
+	pm.startOnce.Do(func() {
+		pm.wg.Add(1)
+		go pm.loop()
+	})
 }
 
 // Stop terminates the probe goroutine + closes the probe conn.

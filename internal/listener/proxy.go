@@ -208,8 +208,14 @@ func parseProxyV2(br *bufio.Reader) (ProxyInfo, *bufio.Reader, error) {
 // proxyConn wraps a net.Conn whose first PROXY-header bytes have
 // already been consumed. RemoteAddr returns the override addr (real
 // client) instead of the underlying TCP peer (LB).
+//
+// IMPORTANT: this type DOES NOT embed net.Conn. Embedding would let
+// callers type-assert the wrapped value to *net.TCPConn / syscall.Conn
+// and drain raw bytes from the underlying socket, bypassing the bufio
+// reader that holds the post-PROXY bytes still in flight. All net.Conn
+// methods are forwarded explicitly instead.
 type proxyConn struct {
-	net.Conn
+	conn   net.Conn
 	remote net.Addr
 	r      io.Reader // br ahead of the original conn; reads pull from here
 }
@@ -221,10 +227,13 @@ func (p *proxyConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 // RemoteAddr returns the parsed real client address.
 func (p *proxyConn) RemoteAddr() net.Addr { return p.remote }
 
-// SetReadDeadline must defer to the underlying conn so timeouts work.
-func (p *proxyConn) SetReadDeadline(t time.Time) error  { return p.Conn.SetReadDeadline(t) }
-func (p *proxyConn) SetWriteDeadline(t time.Time) error { return p.Conn.SetWriteDeadline(t) }
-func (p *proxyConn) SetDeadline(t time.Time) error      { return p.Conn.SetDeadline(t) }
+// All other net.Conn methods forward to the underlying socket.
+func (p *proxyConn) Write(b []byte) (int, error)        { return p.conn.Write(b) }
+func (p *proxyConn) Close() error                       { return p.conn.Close() }
+func (p *proxyConn) LocalAddr() net.Addr                { return p.conn.LocalAddr() }
+func (p *proxyConn) SetReadDeadline(t time.Time) error  { return p.conn.SetReadDeadline(t) }
+func (p *proxyConn) SetWriteDeadline(t time.Time) error { return p.conn.SetWriteDeadline(t) }
+func (p *proxyConn) SetDeadline(t time.Time) error      { return p.conn.SetDeadline(t) }
 
 // WithProxyAddr wraps conn so RemoteAddr returns the PROXY-parsed
 // source address. `r` is the bufio.Reader returned by ReadProxyHeader
@@ -233,5 +242,5 @@ func WithProxyAddr(conn net.Conn, remote net.Addr, r io.Reader) net.Conn {
 	if remote == nil {
 		return conn
 	}
-	return &proxyConn{Conn: conn, remote: remote, r: r}
+	return &proxyConn{conn: conn, remote: remote, r: r}
 }

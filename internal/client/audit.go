@@ -100,6 +100,16 @@ func (a *AuditWriter) Write(reqID, db, user, app, kind, sql string, dur time.Dur
 	}
 	b, err := json.Marshal(&ev)
 	if err != nil {
+		// Fallback: emit a marker record so the operator sees a gap
+		// in the audit log instead of silent loss. The original event
+		// is unrecoverable but the marker preserves the timestamp
+		// + req_id so the corresponding entry in slog can be matched.
+		fallback := fmt.Sprintf(
+			`{"ts":%q,"req_id":%q,"db":%q,"user":%q,"audit_error":"json.Marshal failed: %s"}`+"\n",
+			ev.TS, reqID, db, user, err.Error())
+		a.mu.Lock()
+		_, _ = a.w.Write([]byte(fallback))
+		a.mu.Unlock()
 		return
 	}
 	b = append(b, '\n')

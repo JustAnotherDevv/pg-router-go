@@ -630,10 +630,19 @@ func (p *Pool) CloseWithDeadline(deadline time.Time) error {
 		p.mu.Unlock()
 		close(done)
 	}()
+	// Clamp negative wait to 0 — time.After(negative) fires
+	// immediately, which would return ErrDrainTimeout even on a
+	// healthy pool. Callers passing deadline_seconds=0 (or a typo'd
+	// past timestamp) get "immediate drain attempt" semantics rather
+	// than instant failure.
+	wait := time.Until(deadline)
+	if wait < 0 {
+		wait = 0
+	}
 	select {
 	case <-done:
 		return nil
-	case <-time.After(time.Until(deadline)):
+	case <-time.After(wait):
 		return ErrDrainTimeout
 	}
 }

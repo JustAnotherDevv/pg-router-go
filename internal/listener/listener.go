@@ -17,12 +17,23 @@ import (
 // readerConn drains a pre-peeked bufio reader before falling through to
 // the underlying conn. Used when PROXY parsing peeked bytes that
 // weren't a PROXY header — those bytes have to feed pgwire startup.
+//
+// Does NOT embed net.Conn — same rationale as proxyConn: a downstream
+// type-assertion to the underlying TCPConn would drain raw bytes and
+// skip the bufio reader holding the peeked preamble bytes.
 type readerConn struct {
-	net.Conn
-	r io.Reader
+	conn net.Conn
+	r    io.Reader
 }
 
-func (rc *readerConn) Read(b []byte) (int, error) { return rc.r.Read(b) }
+func (rc *readerConn) Read(b []byte) (int, error)         { return rc.r.Read(b) }
+func (rc *readerConn) Write(b []byte) (int, error)        { return rc.conn.Write(b) }
+func (rc *readerConn) Close() error                       { return rc.conn.Close() }
+func (rc *readerConn) LocalAddr() net.Addr                { return rc.conn.LocalAddr() }
+func (rc *readerConn) RemoteAddr() net.Addr               { return rc.conn.RemoteAddr() }
+func (rc *readerConn) SetReadDeadline(t time.Time) error  { return rc.conn.SetReadDeadline(t) }
+func (rc *readerConn) SetWriteDeadline(t time.Time) error { return rc.conn.SetWriteDeadline(t) }
+func (rc *readerConn) SetDeadline(t time.Time) error      { return rc.conn.SetDeadline(t) }
 
 // Handler is called once per accepted connection. The implementation owns
 // the connection's lifetime; it MUST Close the conn before returning.
@@ -120,14 +131,14 @@ func (l *Listener) Serve(ctx context.Context, handler Handler) error {
 					// Strict mode (PROXY required) would reject here;
 					// we currently accept bare connections so misconfig
 					// during rollout doesn't drop traffic.
-					c = &readerConn{Conn: c, r: br}
+					c = &readerConn{conn: c, r: br}
 				} else if err != nil {
 					l.log.Warn("PROXY header parse failed; closing",
 						"err", err, "remote", c.RemoteAddr().String())
 					_ = c.Close()
 					return
 				} else {
-					c = &readerConn{Conn: c, r: br}
+					c = &readerConn{conn: c, r: br}
 				}
 			}
 			l.log.Debug("client accepted", "remote", c.RemoteAddr().String())

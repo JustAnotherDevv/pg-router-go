@@ -14,6 +14,7 @@ package auth
 
 import (
 	"crypto/md5" //nolint:gosec // protocol requires MD5
+	"crypto/subtle"
 	"encoding/hex"
 )
 
@@ -48,18 +49,10 @@ func VerifyMD5Password(username string, stored string, salt [4]byte, clientRespo
 	}
 	outer := md5.Sum(append([]byte(innerHex), salt[:]...)) //nolint:gosec
 	expected := "md5" + hex.EncodeToString(outer[:])
-	return constantTimeEqString(expected, clientResponse)
-}
-
-// constantTimeEqString returns true if a == b in constant time
-// (`crypto/subtle.ConstantTimeCompare` rejects unequal-length inputs).
-func constantTimeEqString(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var diff byte
-	for i := 0; i < len(a); i++ {
-		diff |= a[i] ^ b[i]
-	}
-	return diff == 0
+	// subtle.ConstantTimeCompare returns 1 iff slices are equal length
+	// AND byte-for-byte equal, in fixed time. Stdlib guarantees no
+	// length-derived timing channel; the previous hand-rolled compare
+	// did an unconditional length-check that was timing-observable
+	// before the XOR loop.
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(clientResponse)) == 1
 }
