@@ -24,6 +24,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
@@ -42,12 +43,16 @@ type PrimaryMonitor struct {
 
 	// state guards the healthy flag + consecutive-failure counter
 	// together so a concurrent recovery can't race with a failure
-	// transition.
+	// transition. The mutex is held ONLY by record{Success,Failure}
+	// (rare write path). Healthy() reads `healthyAtomic` lock-free
+	// — it's set inside the mutex'd write path so observers see the
+	// same value the writer just committed.
 	state struct {
 		mu      sync.Mutex
 		healthy bool
 		fails   int
 	}
+	healthyAtomic atomic.Bool
 
 	// probeConn is the dedicated conn used by probe(). Re-dialled
 	// after any failure that closes it. Guarded by probeMu so only
@@ -91,14 +96,14 @@ func NewPrimaryMonitor(db string, dial func(context.Context) (*backend.Conn, err
 		stopCh:      make(chan struct{}),
 	}
 	pm.state.healthy = true // optimistic — first probe will correct
+	pm.healthyAtomic.Store(true)
 	return pm
 }
 
-// Healthy returns the current primary health flag.
+// Healthy returns the current primary health flag. Lock-free read.
+// Called from PooledConn.Serve on the per-Acquire hot path.
 func (pm *PrimaryMonitor) Healthy() bool {
-	pm.state.mu.Lock()
-	defer pm.state.mu.Unlock()
-	return pm.state.healthy
+	return pm.healthyAtomic.Load()
 }
 
 // Start spawns the probe goroutine.
@@ -182,6 +187,7 @@ func (pm *PrimaryMonitor) recordSuccess() {
 	wasUnhealthy := !pm.state.healthy
 	pm.state.fails = 0
 	pm.state.healthy = true
+	pm.healthyAtomic.Store(true)
 	pm.state.mu.Unlock()
 	if wasUnhealthy {
 		pm.log.Info("primary recovered", "db", pm.db)
@@ -200,6 +206,7 @@ func (pm *PrimaryMonitor) recordFailure(stage string, err error) {
 	tripped := n >= pm.maxFailures && pm.state.healthy
 	if tripped {
 		pm.state.healthy = false
+		pm.healthyAtomic.Store(false)
 	}
 	pm.state.mu.Unlock()
 	if tripped {

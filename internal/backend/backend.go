@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -42,6 +43,13 @@ type Conn struct {
 	// caller opted out (PreparedCacheSize == -1 in DialOptions);
 	// otherwise Dial initialises it. Cleared on ResetStateWith.
 	Prepared *PreparedCache
+
+	// closeOnce makes Close idempotent. Janitor eviction + Serve error
+	// paths can both call Close on the same conn; without this guard the
+	// second SetWriteDeadline → Send(Terminate) → Flush sequence on an
+	// already-closed net.Conn races + can panic on some platforms.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // DialOptions controls how a backend connection is established.
@@ -217,12 +225,19 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 // We attempt a best-effort pgwire Terminate with a tight write deadline
 // so a dead / unresponsive upstream doesn't stall shutdown; the
 // underlying TCP socket is closed unconditionally.
+//
+// Idempotent: subsequent calls return the first call's result without
+// re-touching the socket. Concurrent calls from the janitor + Serve
+// error path are safe.
 func (c *Conn) Close() error {
 	if c == nil || c.NetConn == nil {
 		return nil
 	}
-	_ = c.NetConn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-	c.Frontend.Send(&pgproto3.Terminate{})
-	_ = c.Frontend.Flush()
-	return c.NetConn.Close()
+	c.closeOnce.Do(func() {
+		_ = c.NetConn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		c.Frontend.Send(&pgproto3.Terminate{})
+		_ = c.Frontend.Flush()
+		c.closeErr = c.NetConn.Close()
+	})
+	return c.closeErr
 }

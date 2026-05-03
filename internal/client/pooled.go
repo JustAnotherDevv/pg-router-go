@@ -241,6 +241,15 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
 			bConnPool = nil
 		}
+		// End any in-flight OTel span: error paths (Acquire fail, drain
+		// error, client recv error) return before onQueryComplete runs,
+		// so without this the span lives until GC with no telemetry End.
+		// Trace shows "hanging forever" in Jaeger/Tempo otherwise.
+		if curSpan != nil {
+			h.markSpanFailed(curSpan, "PGROUTER_ABORTED",
+				"serve loop aborted before query completion")
+			curSpan = nil
+		}
 	}()
 
 	for {
@@ -335,6 +344,14 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			}
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = sql, kind, prepName
+			// End any prior span before overwriting. Extended-protocol
+			// clients can send Parse-Parse without an intervening Sync
+			// (drain never fires); without this the first span never
+			// ends.
+			if curSpan != nil {
+				h.markSpanFailed(curSpan, "PGROUTER_SUPERSEDED",
+					"replaced by next Query/Parse before drain")
+			}
 			curSpan = h.startQuerySpan(ctx, kind, sql, prepName)
 			curSQLOp = ClassifySQL(sql)
 			curROBegin = IsExplicitReadOnlyBeginSQL(sql)
@@ -371,6 +388,12 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					"db", h.Database)
 				h.sendErrorWithRFQ(be, "08006",
 					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
+				// End the span we just opened for this rejected query —
+				// otherwise sustained failover rejections leak spans.
+				if curSpan != nil {
+					h.markSpanFailed(curSpan, "08006", "primary unhealthy (failover)")
+					curSpan = nil
+				}
 				continue
 			}
 			bConn, err = acquirePool.Acquire(ctx)

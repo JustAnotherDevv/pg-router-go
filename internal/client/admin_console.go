@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
@@ -46,11 +47,33 @@ type AdminConsole struct {
 	Reload func() error
 }
 
+// adminReceiveDeadline bounds each Receive() so a stalled / idle admin
+// conn doesn't block process shutdown. Plenty of headroom for slow
+// human-typed psql sessions; ctx cancel breaks the loop sooner.
+const adminReceiveDeadline = 30 * time.Second
+
 // Serve runs the admin protocol on an already-authenticated client.
 // Emits the AuthOK welcome itself; no upstream backend touched.
+//
+// Honors ctx — when the parent context is cancelled (SIGTERM / Stop),
+// the conn is closed and Serve returns. Without this an idle admin
+// client blocks on be.Receive() forever and gracefulshutdown stalls
+// past the drain deadline.
 func (a *AdminConsole) Serve(ctx context.Context, conn net.Conn) error {
 	defer conn.Close()
 	be := pgproto3.NewBackend(conn, conn)
+
+	// Close the conn when ctx fires — unblocks the Receive() loop.
+	// done channel guards the goroutine from outliving Serve.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
 
 	// Welcome.
 	be.Send(&pgproto3.AuthenticationOk{})
@@ -63,8 +86,16 @@ func (a *AdminConsole) Serve(ctx context.Context, conn net.Conn) error {
 	}
 
 	for {
+		// Per-message deadline; idle clients can't pin the goroutine
+		// indefinitely. Cleared after Receive so handleQuery doesn't
+		// inherit it.
+		_ = conn.SetReadDeadline(time.Now().Add(adminReceiveDeadline))
 		msg, err := be.Receive()
+		_ = conn.SetReadDeadline(time.Time{})
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil // shutdown
+			}
 			return err
 		}
 		switch m := msg.(type) {
