@@ -197,71 +197,10 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		cfg.TLS.ServerMode == config.SSLVerifyFull
 
 	// --- auth ---
-	var authOpts *auth.ServerAuthOptions
-	var userlist *auth.Userlist
-	if cfg.Auth.UserlistFile != "" {
-		ul, err := auth.NewUserlist(cfg.Auth.UserlistFile)
-		if err != nil {
-			log.Error("userlist load", "err", err)
-			return 1
-		}
-		userlist = ul
-		log.Info("userlist loaded", "path", cfg.Auth.UserlistFile, "entries", ul.Len())
-	}
-	var hba *auth.HBAFile
-	if cfg.Auth.HBAFile != "" {
-		h, err := auth.NewHBAFile(cfg.Auth.HBAFile)
-		if err != nil {
-			log.Error("hba load", "err", err)
-			return 1
-		}
-		hba = h
-		log.Info("hba loaded", "path", cfg.Auth.HBAFile)
-	}
-	var fetcher *auth.AuthQueryFetcher
-	if cfg.Auth.AuthQuery != "" {
-		fetcher = auth.NewAuthQueryFetcher(
-			func(ctx context.Context, dbAlias string) (auth.QueryConn, error) {
-				db, ok := cfg.Databases[dbAlias]
-				if !ok {
-					return nil, fmt.Errorf("auth_query: unknown db %q", dbAlias)
-				}
-				addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
-				dbName := db.DBName
-				if dbName == "" {
-					dbName = dbAlias
-				}
-				c, err := backend.Dial(ctx, backend.DialOptions{
-					Addr:        addr,
-					User:        cfg.Auth.AuthUser,
-					Database:    dbName,
-					AppName:     "pgrouter-auth_query",
-					Password:    db.Password,
-					TLSConfig:   backendTLS,
-					TLSRequired: backendTLSRequired,
-					Log:         log,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return &auth.FrontendAdapter{
-					Frontend: c.Frontend,
-					Closer:   c.Close,
-				}, nil
-			},
-			cfg.Auth.AuthQuery,
-			60*time.Second,
-		)
-		log.Info("auth_query configured", "user", cfg.Auth.AuthUser)
-	}
-	if cfg.Auth.Type != config.AuthTrust {
-		authOpts = &auth.ServerAuthOptions{
-			Type:     cfg.Auth.Type,
-			Userlist: userlist,
-			HBA:      hba,
-			Fetcher:  fetcher,
-			Log:      log,
-		}
+	authOpts, userlist, err := buildAuthOpts(cfg, backendTLS, backendTLSRequired, log)
+	if err != nil {
+		log.Error("auth init", "err", err)
+		return 1
 	}
 
 	// --- pool.Manager ---
@@ -375,21 +314,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}()
 
-	// Primary failover monitors (per-db). Each monitor owns a
-	// dedicated probe conn (NOT borrowed from the client pool) so
-	// client traffic spikes can't starve the health check and trigger
-	// spurious failovers — and so the probe never appears in
-	// SHOW POOLS / Prometheus stats as a synthetic tenant.
-	primaryMonitors := map[string]*replica.PrimaryMonitor{}
-	for dbName := range cfg.Databases {
-		dbName := dbName
-		probeDial := primaryProbeDialer(cfg, dbName, backendTLS,
-			backendTLSRequired, log)
-		pm := replica.NewPrimaryMonitor(dbName, probeDial,
-			cfg.Pool.ServerCheckDelay, 3, cfg.Pool.ServerCheckQuery, log)
-		pm.Start()
-		primaryMonitors[dbName] = pm
-	}
+	primaryMonitors := buildPrimaryMonitors(cfg, backendTLS, backendTLSRequired, log)
 	defer func() {
 		for _, pm := range primaryMonitors {
 			pm.Stop()
@@ -401,37 +326,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	// runs identical code.
 	adminReloadCh := make(chan os.Signal, 1)
 	startTime := time.Now()
-	adminAPI := &stats.AdminAPI{
-		Pools: func() ([]stats.PoolSnapshot, error) {
-			out := []stats.PoolSnapshot{}
-			for _, ps := range mgr.AllStats() {
-				db, user, _ := splitPoolName(ps.Name)
-				out = append(out, stats.PoolSnapshot{
-					Name:    ps.Name,
-					DB:      db,
-					User:    user,
-					Idle:    ps.Idle,
-					Active:  ps.Active,
-					Waiters: ps.Waiters,
-				})
-			}
-			return out, nil
-		},
-		Stats: func() (stats.StatsSnapshot, error) {
-			return stats.SnapshotFromRegistry(time.Since(startTime)), nil
-		},
-		Drain: func(deadline time.Duration) error {
-			return mgr.CloseWithDeadline(time.Now().Add(deadline))
-		},
-		Reload: func() error {
-			select {
-			case adminReloadCh <- syscall.SIGHUP:
-				return nil
-			default:
-				return fmt.Errorf("reload channel busy")
-			}
-		},
-	}
+	adminAPI := buildAdminAPI(mgr, adminReloadCh, startTime)
 	go func() {
 		err := stats.ServeMetricsAndAdmin(metricsCtx, stats.AdminServerOptions{
 			Addr:        cfg.Metrics.Listen,
@@ -479,70 +374,20 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		log.Info("audit log enabled", "path", cfg.Logging.AuditFile)
 		defer auditWriter.Close()
 	}
-	h := &client.PooledHandler{
-		Log:               log,
-		Manager:           mgr,
-		TLSConfig:         clientTLS,
-		Auth:              authOpts,
-		CancelTracker:     cancelTracker,
-		CannedParams:      cannedParams,
-		ResetOnRelease:    true,
-		QueryTimeout:      cfg.Pool.QueryTimeout,
-		ClientIdleTimeout: cfg.Server.ClientIdle,
-		IdleTxTimeout:     cfg.Server.IdleTx,
-		SlowQuery:         cfg.Logging.SlowQuery,
-		LogSQL:            logSQLMode,
-		Audit:             auditWriter,
-		AdminReload: func() error {
-			select {
-			case adminReloadCh <- syscall.SIGHUP:
-				return nil
-			default:
-				return fmt.Errorf("reload channel busy")
-			}
-		},
-		ReplicaPickerFor: func(db string) *pool.Pool {
-			rm, ok := replicaMgrs[db]
-			if !ok {
-				return nil
-			}
-			r, err := rm.Pick()
-			if err != nil {
-				return nil
-			}
-			return r.Pool
-		},
-		StickyReadWindowFor: func(db string) time.Duration {
-			if d, ok := cfg.Databases[db]; ok {
-				return d.StickyReadWindow
-			}
-			return 0
-		},
-		PrimaryHealthyFor: func(db string) bool {
-			pm, ok := primaryMonitors[db]
-			if !ok {
-				return true
-			}
-			return pm.Healthy()
-		},
-		PoolMode:          string(cfg.Pool.Mode),
-		PoolModeFor: func(db string) string {
-			if d, ok := cfg.Databases[db]; ok && d.PoolMode != "" {
-				return string(d.PoolMode)
-			}
-			return ""
-		},
-		QPSCapFor: func(db, user string) float64 {
-			// Per-user cap wins if set; else per-db; else 0 (disabled).
-			if u, ok := cfg.Users[user]; ok && u.MaxQPS > 0 {
-				return u.MaxQPS
-			}
-			if d, ok := cfg.Databases[db]; ok && d.MaxQPS > 0 {
-				return d.MaxQPS
-			}
-			return 0
-		},
-	}
+	h := buildPooledHandler(buildHandlerInput{
+		cfg:             cfg,
+		log:             log,
+		mgr:             mgr,
+		clientTLS:       clientTLS,
+		authOpts:        authOpts,
+		cancelTracker:   cancelTracker,
+		cannedParams:    cannedParams,
+		logSQLMode:      logSQLMode,
+		auditWriter:     auditWriter,
+		adminReloadCh:   adminReloadCh,
+		replicaMgrs:     replicaMgrs,
+		primaryMonitors: primaryMonitors,
+	})
 
 	// --- listener + signal-driven shutdown ---
 	// SIGINT + SIGTERM trigger shutdown via the cancel-context. SIGHUP is

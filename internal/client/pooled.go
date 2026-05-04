@@ -169,6 +169,15 @@ type PooledConn struct {
 	// lookup. Lazy-initialised on first Serve so tests that build a
 	// PooledConn struct literal don't have to populate it.
 	counters *stats.TenantCounters
+
+	// Hooks are user-provided callbacks invoked once per completed
+	// Query/Parse, AFTER the built-in stats + slow_query + audit + OTel
+	// sinks have run. See QueryHook in query_event.go. Empty by default.
+	//
+	// Hooks must be cheap; a slow hook blocks the per-conn drain. For
+	// external dispatch, push into a buffered channel and drain
+	// elsewhere.
+	Hooks []QueryHook
 }
 
 // NewPooledConn returns a PooledConn with production defaults applied:
@@ -379,22 +388,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// Acquire a backend lazily on the first traffic-generating message.
 		needsBackend := messageNeedsBackend(msg)
 		if needsBackend && bConn == nil {
-			// Replica routing: at the start of a fresh tx, if the
-			// triggering message is a Read AND a replica is available
-			// AND no session-pin AND we are NOT inside the
-			// read-your-own-writes sticky window, route to the replica
-			// pool. Otherwise the primary pool wins.
-			acquirePool := h.Pool
-			// Read routing: SELECT/etc. OR an explicit READ ONLY tx.
-			// curSQLOp / curROBegin were cached in the switch above
-			// so we don't re-run ClassifySQL.
-			isRead := curSQLOp == SQLOpRead || curROBegin
-			if !sessionPinned && h.ReplicaPicker != nil &&
-				isRead && !h.stickyToPrimary(lastWriteAt) {
-				if rp := h.ReplicaPicker(); rp != nil {
-					acquirePool = rp
-				}
-			}
+			acquirePool := h.selectPoolForMsg(sessionPinned,
+				curSQLOp, curROBegin, lastWriteAt)
 			// Failover gate: when primary is down + we're about to
 			// hit it, fail-fast with 08006 instead of blocking on
 			// dial retries. Reads that already routed to a replica
@@ -482,89 +477,29 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				_ = bConn.NetConn.SetReadDeadline(time.Now().Add(h.QueryTimeout))
 			}
 
-			// Drain backend response up to ReadyForQuery (or CopyInResponse
-			// — see drainReason).
-			queryTimedOut := false
-			for {
-				bmsg, err := bConn.Frontend.Receive()
-				if err != nil {
-					if isTimeoutErr(err) && h.QueryTimeout > 0 {
-						queryTimedOut = true
-						h.counters.OnQueryTimeout()
-						log.Info("query_timeout fired; closing backend",
-							"timeout", h.QueryTimeout,
-						)
-						break
-					}
-					return fmt.Errorf("server recv: %w", err)
-				}
-				// Filter out CloseComplete frames produced by our LRU
-				// evictions — the client never asked for them.
-				if _, isCC := bmsg.(*pgproto3.CloseComplete); isCC && pendingEvictCloseCompletes > 0 {
-					pendingEvictCloseCompletes--
-					continue
-				}
-				be.Send(bmsg.(pgproto3.BackendMessage))
-				if err := be.Flush(); err != nil {
-					return fmt.Errorf("client send: %w", err)
-				}
-				// Tx-state transitions → per-(db, user) counters.
-				prevTx := state.Tx()
-				if state.ObserveBackendMessage(bmsg) {
-					newTx := state.Tx()
-					switch {
-					case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
-						h.counters.OnTxStart()
-					case prevTx == TxFailed && newTx == TxIdle:
-						h.counters.OnTxRollback()
-					case prevTx == TxInBlock && newTx == TxIdle:
-						h.counters.OnTxCommit()
-					}
-				}
-				// CopyInResponse — backend is now waiting for client
-				// CopyData. Stop draining; loop back to receive client.
-				if _, ok := bmsg.(*pgproto3.CopyInResponse); ok {
-					if h.QueryTimeout > 0 {
-						_ = bConn.NetConn.SetReadDeadline(time.Time{})
-					}
-					break
-				}
-				if _, ok := proto.IsReadyForQuery(bmsg); ok {
-					if h.QueryTimeout > 0 {
-						_ = bConn.NetConn.SetReadDeadline(time.Time{})
-					}
-					queryDur := time.Since(queryStart)
-					h.onQueryComplete(log, lastKind, lastSQL,
-						lastPrepName, queryDur, curSpan)
-					curSpan = nil
-					// Release whenever the backend reports idle —
-					// covers explicit COMMIT/ROLLBACK boundaries AND
-					// implicit-transaction queries (e.g. bare SELECT
-					// outside BEGIN). PgBouncer's transaction mode
-					// behaves identically.
-					//
-					// EXCEPT when the client has triggered session-pin
-					// (LISTEN, advisory_lock, temp table, cursor) —
-					// then we hold the backend for the remainder of the
-					// session.
-					//
-					// In statement-mode we release on EVERY RFQ —
-					// including ones with TxStatus 'T' — because
-					// statement mode by definition forbids
-					// cross-statement state on the backend. Explicit
-					// BEGIN is already rejected upstream so we'd never
-					// observe 'T' in practice, but the guard makes the
-					// invariant explicit.
-					shouldRelease := !sessionPinned &&
-						(h.isStatementMode() || state.Tx().IsIdle())
-					if shouldRelease {
-						releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
-			bConnPool = nil
-						bConn = nil
-					}
-					break
-				}
+			out, updatedSpan, err := h.drainBackendUntilRFQ(drainInput{
+				bConn:          bConn,
+				be:             be,
+				log:            log,
+				state:          state,
+				pendingEvictCC: &pendingEvictCloseCompletes,
+				queryStart:     queryStart,
+				lastSQL:        lastSQL,
+				lastKind:       lastKind,
+				lastPrepName:   lastPrepName,
+				curSpan:        curSpan,
+				sessionPinned:  sessionPinned,
+			})
+			if err != nil {
+				return err
 			}
+			curSpan = updatedSpan
+			if out.shouldRelease {
+				releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+				bConnPool = nil
+				bConn = nil
+			}
+			queryTimedOut := out.queryTimedOut
 			if queryTimedOut {
 				// PG aborts the in-flight query when the FE socket
 				// closes; that's sufficient — no separate CancelRequest
@@ -587,6 +522,148 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if _, ok := msg.(*pgproto3.Sync); ok {
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 			_ = be.Flush()
+		}
+	}
+}
+
+// selectPoolForMsg returns the pool to Acquire from for the first
+// traffic-generating message of a new transaction.
+//
+// Primary wins by default. Replica wins when ALL of:
+//   - session not pinned (LISTEN/temp/lock etc.)
+//   - ReplicaPicker callback is configured + returns a non-nil pool
+//   - the message is read-classified or opens a READ ONLY tx
+//   - we're outside the read-your-own-writes sticky window
+//     (StickyReadWindow elapsed since the last observed write)
+func (h *PooledConn) selectPoolForMsg(
+	sessionPinned bool, curSQLOp SQLOp, curROBegin bool, lastWriteAt time.Time,
+) *pool.Pool {
+	isRead := curSQLOp == SQLOpRead || curROBegin
+	if sessionPinned || h.ReplicaPicker == nil || !isRead {
+		return h.Pool
+	}
+	if h.stickyToPrimary(lastWriteAt) {
+		return h.Pool
+	}
+	if rp := h.ReplicaPicker(); rp != nil {
+		return rp
+	}
+	return h.Pool
+}
+
+// drainInput collapses the dozen-plus parameters drainBackendUntilRFQ
+// needs into a single struct.
+type drainInput struct {
+	bConn          *backend.Conn
+	be             *pgproto3.Backend
+	log            *slog.Logger
+	state          *ClientState
+	pendingEvictCC *int
+	queryStart     time.Time
+	lastSQL        string
+	lastKind       string
+	lastPrepName   string
+	curSpan        trace.Span
+	sessionPinned  bool
+}
+
+// drainOutcome is what the outer loop needs to act on:
+//   - queryTimedOut: caller should Close + nil bConn + emit 57014
+//   - shouldRelease: caller should Release bConn back to its pool
+//   - sawRFQ:        diagnostic; both timeout + RFQ exit set it false/true
+type drainOutcome struct {
+	queryTimedOut bool
+	shouldRelease bool
+}
+
+// drainBackendUntilRFQ pulls backend frames until ReadyForQuery (or
+// CopyInResponse, where we stop and return control to the outer loop
+// so it can receive CopyData from the client). For every frame:
+//
+//   - CloseComplete frames produced by LRU evictions are filtered out
+//   - all other frames are forwarded to the client
+//   - tx-state transitions emit the appropriate counter
+//   - RFQ triggers onQueryComplete (which ends curSpan)
+//
+// Returns the updated curSpan (nil after RFQ-driven onQueryComplete).
+// The outer loop owns the bConn/bConnPool Release decision; this
+// helper only signals whether release is safe via outcome.shouldRelease.
+func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Span, error) {
+	out := drainOutcome{}
+	curSpan := in.curSpan
+	for {
+		bmsg, err := in.bConn.Frontend.Receive()
+		if err != nil {
+			if isTimeoutErr(err) && h.QueryTimeout > 0 {
+				out.queryTimedOut = true
+				h.counters.OnQueryTimeout()
+				in.log.Info("query_timeout fired; closing backend",
+					"timeout", h.QueryTimeout,
+				)
+				return out, curSpan, nil
+			}
+			return out, curSpan, fmt.Errorf("server recv: %w", err)
+		}
+		// Filter out CloseComplete frames produced by our LRU
+		// evictions — the client never asked for them.
+		if _, isCC := bmsg.(*pgproto3.CloseComplete); isCC && *in.pendingEvictCC > 0 {
+			*in.pendingEvictCC--
+			continue
+		}
+		in.be.Send(bmsg.(pgproto3.BackendMessage))
+		if err := in.be.Flush(); err != nil {
+			return out, curSpan, fmt.Errorf("client send: %w", err)
+		}
+		// Tx-state transitions → per-(db, user) counters.
+		prevTx := in.state.Tx()
+		if in.state.ObserveBackendMessage(bmsg) {
+			newTx := in.state.Tx()
+			switch {
+			case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
+				h.counters.OnTxStart()
+			case prevTx == TxFailed && newTx == TxIdle:
+				h.counters.OnTxRollback()
+			case prevTx == TxInBlock && newTx == TxIdle:
+				h.counters.OnTxCommit()
+			}
+		}
+		// CopyInResponse — backend is now waiting for client
+		// CopyData. Stop draining; outer loop will receive CopyData.
+		if _, ok := bmsg.(*pgproto3.CopyInResponse); ok {
+			if h.QueryTimeout > 0 {
+				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
+			}
+			return out, curSpan, nil
+		}
+		if _, ok := proto.IsReadyForQuery(bmsg); ok {
+			if h.QueryTimeout > 0 {
+				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
+			}
+			queryDur := time.Since(in.queryStart)
+			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
+				in.lastPrepName, queryDur, curSpan)
+			curSpan = nil
+			// Release whenever the backend reports idle —
+			// covers explicit COMMIT/ROLLBACK boundaries AND
+			// implicit-transaction queries (e.g. bare SELECT
+			// outside BEGIN). PgBouncer's transaction mode
+			// behaves identically.
+			//
+			// EXCEPT when the client has triggered session-pin
+			// (LISTEN, advisory_lock, temp table, cursor) —
+			// then we hold the backend for the remainder of the
+			// session.
+			//
+			// In statement-mode we release on EVERY RFQ —
+			// including ones with TxStatus 'T' — because
+			// statement mode by definition forbids
+			// cross-statement state on the backend. Explicit
+			// BEGIN is already rejected upstream so we'd never
+			// observe 'T' in practice, but the guard makes the
+			// invariant explicit.
+			out.shouldRelease = !in.sessionPinned &&
+				(h.isStatementMode() || in.state.Tx().IsIdle())
+			return out, curSpan, nil
 		}
 	}
 }
@@ -866,6 +943,19 @@ func (h *PooledConn) onQueryComplete(log *slog.Logger, kind, sql, prepName strin
 			attribute.Float64("pgrouter.duration_ms",
 				float64(dur.Microseconds())/1000.0))
 		span.End()
+	}
+	// User-provided extensibility hooks run last so a panicking hook
+	// can't corrupt the built-in observability state. RenderedSQL is
+	// reused so hooks don't re-run the LogSQL pipeline.
+	if len(h.Hooks) > 0 && kind != "" {
+		ev := QueryEvent{
+			Kind: kind, SQL: sql, RenderedSQL: renderedSQL,
+			PrepName: prepName, Duration: dur,
+			Database: h.Database, User: h.User, App: h.App, ReqID: h.ReqID,
+		}
+		for _, hook := range h.Hooks {
+			hook(ev)
+		}
 	}
 }
 
