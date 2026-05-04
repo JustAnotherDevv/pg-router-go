@@ -58,9 +58,11 @@ func startPooledClient(t *testing.T, p *pool.Pool, resetOnRelease bool) (net.Con
 	go func() {
 		defer close(doneC)
 		h := &PooledConn{
-			Log:            slog.New(slog.DiscardHandler),
-			Pool:           p,
-			ResetOnRelease: resetOnRelease,
+			PooledConfig: PooledConfig{
+				ResetOnRelease: resetOnRelease,
+			},
+			Log:  slog.New(slog.DiscardHandler),
+			Pool: p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()

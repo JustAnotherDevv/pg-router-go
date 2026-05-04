@@ -88,12 +88,14 @@ func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 	go func() {
 		defer close(serveDone)
 		h := &PooledConn{
-			Log:               slog.New(slog.DiscardHandler),
-			Pool:              p,
-			Database:          "appdb",
-			User:              "alice",
-			CannedParams:      map[string]string{"server_version": "16.0"},
-			ClientIdleTimeout: 100 * time.Millisecond,
+			PooledConfig: PooledConfig{
+				CannedParams:      map[string]string{"server_version": "16.0"},
+				ClientIdleTimeout: 100 * time.Millisecond,
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -139,16 +141,18 @@ func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 	go func() {
 		defer close(serveDone)
 		h := &PooledConn{
-			Log:               slog.New(slog.DiscardHandler),
-			Pool:              p,
-			Database:          "appdb",
-			User:              "alice",
-			CannedParams:      map[string]string{"server_version": "16.0"},
-			ClientIdleTimeout: 5 * time.Second, // ensure this doesn't fire
-			IdleTxTimeout:     100 * time.Millisecond,
-			// ResetOnRelease left false so the in-tx Release defer
-			// doesn't try to send DISCARD ALL through the fake
-			// backend (which has no scripted handler for it).
+			PooledConfig: PooledConfig{
+				CannedParams:      map[string]string{"server_version": "16.0"},
+				ClientIdleTimeout: 5 * time.Second, // ensure this doesn't fire
+				IdleTxTimeout:     100 * time.Millisecond,
+				// ResetOnRelease left false so the in-tx Release defer
+				// doesn't try to send DISCARD ALL through the fake
+				// backend (which has no scripted handler for it).
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -240,12 +244,14 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 	go func() {
 		defer close(serveDone)
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
-			QueryTimeout: 150 * time.Millisecond,
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+				QueryTimeout: 150 * time.Millisecond,
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -305,11 +311,13 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -390,11 +398,13 @@ func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
 
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()

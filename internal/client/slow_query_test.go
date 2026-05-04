@@ -69,12 +69,14 @@ func TestSlowQueryEmitsWarn(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:       captureLog,
-			Pool:      p,
-			Database:  "appdb",
-			User:      "alice",
-			SlowQuery: 5 * time.Millisecond,
-			LogSQL:    "redacted",
+			PooledConfig: PooledConfig{
+				SlowQuery: 5 * time.Millisecond,
+				LogSQL:    "redacted",
+			},
+			Log:      captureLog,
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -135,9 +137,9 @@ func TestSlowQueryDisabledByZero(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:       captureLog,
-			Pool:      p,
-			SlowQuery: 0, // disabled
+			PooledConfig: PooledConfig{SlowQuery: 0}, // disabled
+			Log:          captureLog,
+			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()

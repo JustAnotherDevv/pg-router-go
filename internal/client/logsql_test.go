@@ -20,7 +20,7 @@ func captureLogger(buf *bytes.Buffer) *slog.Logger {
 
 func TestLogSQLOffEmitsNoSQLField(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "off", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "off"}, Log: captureLogger(&buf)}
 	pc.logSQL(pc.Log, "query", "", "SELECT 'secret'")
 	out := buf.String()
 	require.NotContains(t, out, "secret")
@@ -29,7 +29,7 @@ func TestLogSQLOffEmitsNoSQLField(t *testing.T) {
 
 func TestLogSQLRedactedHidesLiterals(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "redacted", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
 	pc.logSQL(pc.Log, "query", "", "SELECT 'alice@example.com', 4111111111111111")
 	out := buf.String()
 	require.NotContains(t, out, "alice@example.com")
@@ -40,7 +40,7 @@ func TestLogSQLRedactedHidesLiterals(t *testing.T) {
 
 func TestLogSQLFullEmitsRawSQL(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "full", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "full"}, Log: captureLogger(&buf)}
 	pc.logSQL(pc.Log, "query", "", "SELECT 'secret'")
 	out := buf.String()
 	require.Contains(t, out, "secret")
@@ -56,7 +56,7 @@ func TestLogSQLEmptyDefaultsToRedacted(t *testing.T) {
 
 func TestLogSQLParseIncludesPrepName(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "redacted", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
 	pc.logSQL(pc.Log, "parse", "stmt7", "SELECT $1")
 	require.Contains(t, buf.String(), "prepared_name=stmt7")
 }
@@ -65,7 +65,7 @@ func TestLogSQLParseIncludesPrepName(t *testing.T) {
 // `kind=query` log entry; a Parse produces `kind=parse`.
 func TestObserveClientMessageEmitsQueryLog(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "redacted", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
 	guc := NewGUCCache()
 	prep := NewPrepareCache()
 	pinned := false
@@ -76,7 +76,7 @@ func TestObserveClientMessageEmitsQueryLog(t *testing.T) {
 
 func TestObserveClientMessageEmitsParseLog(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "redacted", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
 	guc := NewGUCCache()
 	prep := NewPrepareCache()
 	pinned := false
@@ -94,7 +94,7 @@ func TestObserveClientMessageEmitsParseLog(t *testing.T) {
 func TestRequestIDPropagatesThroughLogSQL(t *testing.T) {
 	var buf bytes.Buffer
 	base := captureLogger(&buf).With("req_id", "abc012345678")
-	pc := &PooledConn{LogSQL: "redacted", Log: base}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: base}
 	pc.logSQL(pc.Log, "query", "", "SELECT 1")
 	require.Contains(t, buf.String(), "req_id=abc012345678")
 }
@@ -108,7 +108,7 @@ func TestLogSQLPanicsOnNilLog(t *testing.T) {
 	defer func() {
 		_ = recover() // expected: nil logger panics; this test passes if recovered
 	}()
-	pc := &PooledConn{LogSQL: "redacted"}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}}
 	pc.logSQL(pc.Log, "query", "", "SELECT 1")
 }
 
@@ -124,7 +124,7 @@ func TestCaptureLoggerHonoursContext(t *testing.T) {
 // Long SQL gets truncated.
 func TestLogSQLTruncatesLongStatements(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{LogSQL: "full", Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "full"}, Log: captureLogger(&buf)}
 	long := strings.Repeat("X", 1024)
 	pc.logSQL(pc.Log, "query", "", long)
 	out := buf.String()

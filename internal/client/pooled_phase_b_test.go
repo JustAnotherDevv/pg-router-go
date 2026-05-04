@@ -67,11 +67,13 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -125,11 +127,13 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -178,11 +182,13 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -234,11 +240,13 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -306,11 +314,13 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -425,11 +435,13 @@ func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			Database:     "appdb",
-			User:         "alice",
-			CannedParams: map[string]string{"server_version": "16.0"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.0"},
+			},
+			Log:      slog.New(slog.DiscardHandler),
+			Pool:     p,
+			Database: "appdb",
+			User:     "alice",
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()

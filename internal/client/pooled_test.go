@@ -91,9 +91,11 @@ func TestPooledServeSelect(t *testing.T) {
 
 	go func() {
 		h := &PooledConn{
-			Log:          slog.New(slog.DiscardHandler),
-			Pool:         p,
-			CannedParams: map[string]string{"server_version": "16.4"},
+			PooledConfig: PooledConfig{
+				CannedParams: map[string]string{"server_version": "16.4"},
+			},
+			Log:  slog.New(slog.DiscardHandler),
+			Pool: p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()

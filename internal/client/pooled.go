@@ -53,22 +53,18 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// PooledConn is a transaction-mode pooled handler for one client.
-type PooledConn struct {
-	Log *slog.Logger
-
-	// Pool is the (db, user) pool to Acquire / Release from.
-	Pool *pool.Pool
-
-	// Database + User + App are the labels used for per-(db, user, app)
-	// Prometheus metrics. Production paths set these from the
-	// StartupMessage; tests may leave them empty (metrics simply emit
-	// empty labels). App is the StartupMessage `application_name`
-	// parameter — empty when the client didn't supply one.
-	Database string
-	User     string
-	App      string
-
+// PooledConfig is the immutable per-handler configuration shared
+// across every PooledConn served from a single PooledHandler.
+//
+// Extracted from PooledConn during the AL1 refactor: previously the
+// 21+ fields lived directly on PooledConn, conflating per-conn state
+// (Database, User, ReqID, callbacks) with shared config. Now Config
+// is one struct that PooledHandler can store + clone into each
+// PooledConn at construction time.
+//
+// Field access from inside PooledConn methods is unchanged thanks to
+// Go's field promotion: h.LogSQL still works as before.
+type PooledConfig struct {
 	// CannedParams are the ParameterStatus values we report to clients
 	// before any real backend is attached. Production code populates
 	// these from the first successful upstream connect; tests can
@@ -80,14 +76,6 @@ type PooledConn struct {
 	// (NewPooledConn) so a backend never carries session state across
 	// clients. Tests may override.
 	ResetOnRelease bool
-
-	// WelcomePID + WelcomeSecret, if non-zero, are emitted in the
-	// BackendKeyData portion of the welcome message. Callers wire the
-	// cancel.Tracker here so subsequent CancelRequest packets can be
-	// routed back to this client's currently-attached backend. Zero
-	// values cause a one-shot random key to be generated locally.
-	WelcomePID    uint32
-	WelcomeSecret []byte
 
 	// QueryTimeout, if > 0, caps the wall-clock time we'll wait for a
 	// backend response between RFQ boundaries. Exceeding it closes the
@@ -117,6 +105,61 @@ type PooledConn struct {
 
 	// Audit is the optional per-query audit log sink. nil = off.
 	Audit *AuditWriter
+
+	// PoolMode is one of: "session" | "transaction" | "statement". Empty
+	// defaults to "transaction" (MVP default). In statement mode the
+	// backend is released after EVERY ReadyForQuery — even ones with
+	// TxStatus 'T' — and explicit BEGIN / START TRANSACTION statements
+	// are rejected with SQLSTATE 25001 before reaching a backend.
+	// "session" is treated as "force session-pin from the first message"
+	// for clients that need it; the existing session-pin path covers
+	// LISTEN / advisory_lock / temp table / cursor.
+	PoolMode string
+
+	// Hooks are user-provided callbacks invoked once per completed
+	// Query/Parse, AFTER the built-in stats + slow_query + audit + OTel
+	// sinks have run. See QueryHook in query_event.go. Empty by default.
+	//
+	// Hooks must be cheap; a slow hook blocks the per-conn drain. For
+	// external dispatch, push into a buffered channel and drain
+	// elsewhere.
+	Hooks []QueryHook
+}
+
+// PooledConn is a transaction-mode pooled handler for one client.
+//
+// AL1 refactor: shared/immutable config lives on the embedded
+// PooledConfig; per-conn identity + routing state lives directly here.
+// Field promotion keeps existing call sites + struct literals working
+// for the embedded fields without the `Config: PooledConfig{...}`
+// wrap (struct literal assignment to embedded fields by name was
+// preserved in the migration).
+type PooledConn struct {
+	// PooledConfig holds the shared/immutable config copied from the
+	// owning PooledHandler. Read-only after Serve starts.
+	PooledConfig
+
+	Log *slog.Logger
+
+	// Pool is the (db, user) pool to Acquire / Release from.
+	Pool *pool.Pool
+
+	// Database + User + App are the labels used for per-(db, user, app)
+	// Prometheus metrics. Production paths set these from the
+	// StartupMessage; tests may leave them empty (metrics simply emit
+	// empty labels). App is the StartupMessage `application_name`
+	// parameter — empty when the client didn't supply one.
+	Database string
+	User     string
+	App      string
+
+	// WelcomePID + WelcomeSecret, if non-zero, are emitted in the
+	// BackendKeyData portion of the welcome message. Callers wire the
+	// cancel.Tracker here so subsequent CancelRequest packets can be
+	// routed back to this client's currently-attached backend. Zero
+	// values cause a one-shot random key to be generated locally.
+	WelcomePID    uint32
+	WelcomeSecret []byte
 
 	// ReplicaPicker, if non-nil, returns a replica pool to acquire
 	// READ-classified queries from. Returns nil to fall back to the
@@ -148,16 +191,6 @@ type PooledConn struct {
 	// canonical code for transient overload).
 	QPSLimiter *util.TokenBucket
 
-	// PoolMode is one of: "session" | "transaction" | "statement". Empty
-	// defaults to "transaction" (MVP default). In statement mode the
-	// backend is released after EVERY ReadyForQuery — even ones with
-	// TxStatus 'T' — and explicit BEGIN / START TRANSACTION statements
-	// are rejected with SQLSTATE 25001 before reaching a backend.
-	// "session" is treated as "force session-pin from the first message"
-	// for clients that need it; the existing session-pin path covers
-	// LISTEN / advisory_lock / temp table / cursor.
-	PoolMode string
-
 	// resetOnReleaseSet is true once a caller has explicitly written to
 	// ResetOnRelease (including via the zero value of the bool — but
 	// most production paths go via NewPooledConn which sets this).
@@ -169,15 +202,6 @@ type PooledConn struct {
 	// lookup. Lazy-initialised on first Serve so tests that build a
 	// PooledConn struct literal don't have to populate it.
 	counters *stats.TenantCounters
-
-	// Hooks are user-provided callbacks invoked once per completed
-	// Query/Parse, AFTER the built-in stats + slow_query + audit + OTel
-	// sinks have run. See QueryHook in query_event.go. Empty by default.
-	//
-	// Hooks must be cheap; a slow hook blocks the per-conn drain. For
-	// external dispatch, push into a buffered channel and drain
-	// elsewhere.
-	Hooks []QueryHook
 }
 
 // NewPooledConn returns a PooledConn with production defaults applied:
@@ -189,10 +213,12 @@ type PooledConn struct {
 // which fills them from config + StartupMessage.
 func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]string) *PooledConn {
 	return &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams:   cannedParams,
+			ResetOnRelease: true,
+		},
 		Log:               log,
 		Pool:              p,
-		CannedParams:      cannedParams,
-		ResetOnRelease:    true,
 		resetOnReleaseSet: true,
 	}
 }

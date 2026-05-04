@@ -51,12 +51,14 @@ func TestWelcomeUsesUpstreamParamsAfterFirstDial(t *testing.T) {
 	be := pgproto3.NewBackend(srv, srv)
 
 	pc := &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{
+				"server_version": "WRONG-fallback-value", // must be overridden
+				"DateStyle":      "ISO, MDY",             // canned-only fills gap
+			},
+		},
 		Log:  slog.New(slog.DiscardHandler),
 		Pool: p,
-		CannedParams: map[string]string{
-			"server_version": "WRONG-fallback-value", // must be overridden
-			"DateStyle":      "ISO, MDY",             // canned-only fills gap
-		},
 	}
 
 	doneCh := make(chan error, 1)
@@ -118,12 +120,14 @@ func TestWelcomeFallsBackToCannedWhenPoolEmpty(t *testing.T) {
 	be := pgproto3.NewBackend(srv, srv)
 
 	pc := &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{
+				"server_version":  "16.0 (canned)",
+				"client_encoding": "UTF8",
+			},
+		},
 		Log:  slog.New(slog.DiscardHandler),
 		Pool: p,
-		CannedParams: map[string]string{
-			"server_version": "16.0 (canned)",
-			"client_encoding": "UTF8",
-		},
 	}
 
 	doneCh := make(chan error, 1)
@@ -167,9 +171,11 @@ func TestWelcomeEagerWarmsOnColdStart(t *testing.T) {
 	require.Nil(t, p.CachedParams(), "fresh pool: nothing cached")
 
 	pc := &PooledConn{
-		Log:          slog.New(slog.DiscardHandler),
-		Pool:         p,
-		CannedParams: map[string]string{}, // forces eager warm
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{}, // forces eager warm
+		},
+		Log:  slog.New(slog.DiscardHandler),
+		Pool: p,
 	}
 	params := pc.welcomeParams(context.Background())
 	require.Equal(t, "16.1 (warmed)", params["server_version"])

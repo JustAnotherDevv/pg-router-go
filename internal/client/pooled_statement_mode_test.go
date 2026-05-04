@@ -40,9 +40,9 @@ func TestStatementModeRejectsExplicitBegin(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:      slog.New(slog.DiscardHandler),
-			Pool:     p,
-			PoolMode: "statement",
+			PooledConfig: PooledConfig{PoolMode: "statement"},
+			Log:          slog.New(slog.DiscardHandler),
+			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -101,9 +101,9 @@ func TestStatementModeAllowsImplicitSelect(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:      slog.New(slog.DiscardHandler),
-			Pool:     p,
-			PoolMode: "statement",
+			PooledConfig: PooledConfig{PoolMode: "statement"},
+			Log:          slog.New(slog.DiscardHandler),
+			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -170,9 +170,9 @@ func TestStatementModeRejectsBeginViaParse(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:      slog.New(slog.DiscardHandler),
-			Pool:     p,
-			PoolMode: "statement",
+			PooledConfig: PooledConfig{PoolMode: "statement"},
+			Log:          slog.New(slog.DiscardHandler),
+			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
@@ -221,9 +221,9 @@ func TestTransactionModeAllowsExplicitBegin(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:      slog.New(slog.DiscardHandler),
-			Pool:     p,
-			PoolMode: "transaction",
+			PooledConfig: PooledConfig{PoolMode: "transaction"},
+			Log:          slog.New(slog.DiscardHandler),
+			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
 	}()
