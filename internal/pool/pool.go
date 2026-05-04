@@ -240,6 +240,11 @@ func (p *Pool) Acquire(ctx context.Context) (*backend.Conn, error) {
 
 // acquireInternal is the original Acquire body. PreAcquire / PostRelease
 // orchestration is handled by the public Acquire wrapper above.
+//
+// Three paths, in order of fast→slow:
+//  1. Idle stack pop (no dial, no wait).
+//  2. Dial under DefaultPoolSize cap (dial, no wait).
+//  3. Park in wait queue with QueryWait timeout + reserve-pool kick.
 func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
 	start := time.Now()
 	p.mu.Lock()
@@ -247,52 +252,63 @@ func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
 		p.mu.Unlock()
 		return nil, ErrPoolClosed
 	}
-
-	// Fast path: pop an idle backend.
-	if n := len(p.idle); n > 0 {
-		pc := p.idle[n-1]
-		p.idle = p.idle[:n-1]
-		p.active++
-		p.totalAcquired++
-		pc.Lifecycle.MarkActive(time.Now())
+	if c, ok := p.popIdleLocked(start); ok {
 		p.mu.Unlock()
 		p.emitWait(start)
-		return pc.Conn, nil
+		return c, nil
 	}
-
-	// Room to dial?
 	if p.active < p.cfg.DefaultPoolSize {
 		return p.dialWithLockHeld(ctx, start)
 	}
+	w := p.parkWaiterLocked()
+	p.mu.Unlock()
+	return p.waitForBackend(ctx, w, start)
+}
 
-	// Park in wait queue.
+// popIdleLocked pops the most recently released backend off the LIFO
+// idle stack. Caller holds p.mu. Returns ok=false when idle is empty.
+func (p *Pool) popIdleLocked(now time.Time) (*backend.Conn, bool) {
+	n := len(p.idle)
+	if n == 0 {
+		return nil, false
+	}
+	pc := p.idle[n-1]
+	p.idle = p.idle[:n-1]
+	p.active++
+	p.totalAcquired++
+	pc.Lifecycle.MarkActive(time.Now())
+	_ = now
+	return pc.Conn, true
+}
+
+// parkWaiterLocked creates + enqueues a waiter on p.waiters. Caller
+// holds p.mu. Returns the waiter for the select loop.
+func (p *Pool) parkWaiterLocked() *waiter {
 	w := &waiter{
 		ch:       make(chan *pooledConn, 1),
 		canceled: make(chan struct{}),
 		parkedAt: time.Now(),
 	}
 	p.waiters = append(p.waiters, w)
-	p.mu.Unlock()
+	return w
+}
 
-	// Block on the wait channel, with optional reserve-pool kick at T.
-	totalTimeout := p.cfg.QueryWait
-	reserveAfter := p.cfg.ReservePoolTimeout
+// waitForBackend blocks on the waiter channel until one of:
+//   - Release hands us a backend → return it.
+//   - ctx fires → cancel + return ctx.Err.
+//   - QueryWait elapses → cancel + ErrAcquireTimeout.
+//   - ReservePoolTimeout elapses → attempt a reserve dial, return on
+//     success, otherwise resume waiting.
+func (p *Pool) waitForBackend(ctx context.Context, w *waiter, start time.Time) (*backend.Conn, error) {
+	totalCh, stopTotal := p.timerCh(p.cfg.QueryWait)
+	defer stopTotal()
 	useReserve := p.cfg.ReservePoolSize > 0
-	var totalCh <-chan time.Time
-	var totalT *time.Timer
-	if totalTimeout > 0 {
-		totalT = time.NewTimer(totalTimeout)
-		totalCh = totalT.C
-		defer totalT.Stop()
-	}
 	var reserveCh <-chan time.Time
-	var reserveT *time.Timer
+	var stopReserve func()
 	if useReserve {
-		reserveT = time.NewTimer(reserveAfter)
-		reserveCh = reserveT.C
-		defer reserveT.Stop()
+		reserveCh, stopReserve = p.timerCh(p.cfg.ReservePoolTimeout)
+		defer stopReserve()
 	}
-
 	for {
 		select {
 		case pc := <-w.ch:
@@ -329,6 +345,16 @@ func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
 			// keep waiting for a regular Release.
 		}
 	}
+}
+
+// timerCh returns a channel that fires after d, plus a stop fn. When
+// d ≤ 0 the channel is nil (never fires) + stop is a no-op.
+func (p *Pool) timerCh(d time.Duration) (<-chan time.Time, func()) {
+	if d <= 0 {
+		return nil, func() {}
+	}
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // dialWithLockHeld is called with p.mu held; it counts a regular-pool

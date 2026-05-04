@@ -104,8 +104,28 @@ func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthO
 	}
 }
 
+// hbaMethodHandler runs a single HBA method against an
+// already-matched rule. Implementations live below + are registered in
+// hbaMethods. Returning an error means auth failed; the wrapper has
+// already sent the FATAL ErrorResponse to the client (if needed).
+type hbaMethodHandler func(be *pgproto3.Backend, conn net.Conn,
+	opts ServerAuthOptions, log *slog.Logger, username string,
+	rule HBARule) error
+
+// hbaMethods maps method names to handlers. Replaces the previous
+// switch statement so adding a new method (gss, ldap, etc.) is a
+// single-line registration.
+var hbaMethods = map[string]hbaMethodHandler{
+	"trust":         hbaTrust,
+	"reject":        hbaReject,
+	"md5":           hbaMD5,
+	"scram-sha-256": hbaSCRAM,
+	"peer":          hbaPeer,
+	"cert":          hbaCert,
+}
+
 // doServerHBA matches (db, user, peer-ip, tls?) against the HBA
-// ruleset and dispatches to the rule's method handler.
+// ruleset and dispatches to the rule's method handler via hbaMethods.
 func doServerHBA(be *pgproto3.Backend, conn net.Conn, opts ServerAuthOptions, log *slog.Logger, username string) error {
 	var (
 		peerIP net.IP
@@ -129,38 +149,58 @@ func doServerHBA(be *pgproto3.Backend, conn net.Conn, opts ServerAuthOptions, lo
 	}
 	log.Debug("hba match", "rule_line", rule.LineNum, "method", rule.Method)
 
-	switch rule.Method {
-	case "trust":
-		return nil
-	case "reject":
-		return sendAuthFailed(be, log,
-			fmt.Sprintf("hba rule line %d rejects this conn", rule.LineNum))
-	case "md5":
-		if opts.Userlist == nil {
-			return sendAuthFailed(be, log, "hba md5 needs userlist")
-		}
-		entry, ok := opts.Userlist.Lookup(username)
-		if !ok {
-			return sendAuthFailed(be, log, fmt.Sprintf("user %q not found", username))
-		}
-		return doServerMD5(be, log, username, entry)
-	case "scram-sha-256":
-		if opts.Userlist == nil {
-			return sendAuthFailed(be, log, "hba scram needs userlist")
-		}
-		entry, ok := opts.Userlist.Lookup(username)
-		if !ok {
-			return sendAuthFailed(be, log, fmt.Sprintf("user %q not found", username))
-		}
-		return doServerSCRAM(be, log, username, entry)
-	case "peer":
-		return doServerPeer(be, conn, log, username)
-	case "cert":
-		return doServerCert(be, conn, log, username)
-	default:
+	h, ok := hbaMethods[rule.Method]
+	if !ok {
 		return sendAuthFailed(be, log,
 			fmt.Sprintf("hba method %q not supported", rule.Method))
 	}
+	return h(be, conn, opts, log, username, rule)
+}
+
+func hbaTrust(_ *pgproto3.Backend, _ net.Conn, _ ServerAuthOptions, _ *slog.Logger, _ string, _ HBARule) error {
+	return nil
+}
+
+func hbaReject(be *pgproto3.Backend, _ net.Conn, _ ServerAuthOptions, log *slog.Logger, _ string, rule HBARule) error {
+	return sendAuthFailed(be, log,
+		fmt.Sprintf("hba rule line %d rejects this conn", rule.LineNum))
+}
+
+func hbaMD5(be *pgproto3.Backend, _ net.Conn, opts ServerAuthOptions, log *slog.Logger, username string, _ HBARule) error {
+	entry, err := hbaResolveUserlistEntry(opts, username, "md5")
+	if err != nil {
+		return sendAuthFailed(be, log, err.Error())
+	}
+	return doServerMD5(be, log, username, entry)
+}
+
+func hbaSCRAM(be *pgproto3.Backend, _ net.Conn, opts ServerAuthOptions, log *slog.Logger, username string, _ HBARule) error {
+	entry, err := hbaResolveUserlistEntry(opts, username, "scram")
+	if err != nil {
+		return sendAuthFailed(be, log, err.Error())
+	}
+	return doServerSCRAM(be, log, username, entry)
+}
+
+func hbaPeer(be *pgproto3.Backend, conn net.Conn, _ ServerAuthOptions, log *slog.Logger, username string, _ HBARule) error {
+	return doServerPeer(be, conn, log, username)
+}
+
+func hbaCert(be *pgproto3.Backend, conn net.Conn, _ ServerAuthOptions, log *slog.Logger, username string, _ HBARule) error {
+	return doServerCert(be, conn, log, username)
+}
+
+// hbaResolveUserlistEntry centralises the "need userlist + user must
+// exist" precondition shared by HBA md5 + scram.
+func hbaResolveUserlistEntry(opts ServerAuthOptions, username, method string) (*UserEntry, error) {
+	if opts.Userlist == nil {
+		return nil, fmt.Errorf("hba %s needs userlist", method)
+	}
+	entry, ok := opts.Userlist.Lookup(username)
+	if !ok {
+		return nil, fmt.Errorf("user %q not found", username)
+	}
+	return entry, nil
 }
 
 // doServerPeer authenticates via SO_PEERCRED — the OS uid on the far

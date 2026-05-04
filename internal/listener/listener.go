@@ -118,28 +118,11 @@ func (l *Listener) Serve(ctx context.Context, handler Handler) error {
 		go func(c net.Conn) {
 			defer l.wg.Done()
 			if l.proxyProtocol {
-				// Tight deadline: PROXY preambles are ≤108 bytes (v1) or
-				// ≤16+~36 (v2) — a healthy LB ships them in one TCP
-				// segment. 1s is generous; slow-reads tying up
-				// max_client_conn goroutines for 5s each is a DoS path.
-				_ = c.SetReadDeadline(time.Now().Add(1 * time.Second))
-				info, br, err := ReadProxyHeader(c)
-				_ = c.SetReadDeadline(time.Time{})
-				if err == nil && info.SourceAddr != nil {
-					c = WithProxyAddr(c, info.SourceAddr, br)
-				} else if err == ErrNoProxyHeader {
-					// Strict mode (PROXY required) would reject here;
-					// we currently accept bare connections so misconfig
-					// during rollout doesn't drop traffic.
-					c = &readerConn{conn: c, r: br}
-				} else if err != nil {
-					l.log.Warn("PROXY header parse failed; closing",
-						"err", err, "remote", c.RemoteAddr().String())
-					_ = c.Close()
-					return
-				} else {
-					c = &readerConn{conn: c, r: br}
+				wrapped, ok := l.parsePROXYOrWrap(c)
+				if !ok {
+					return // parse failed; conn already closed.
 				}
+				c = wrapped
 			}
 			l.log.Debug("client accepted", "remote", c.RemoteAddr().String())
 			handler(ctx, c)
@@ -156,4 +139,36 @@ func (l *Listener) Serve(ctx context.Context, handler Handler) error {
 // Close stops the listener immediately. Prefer cancelling ctx in Serve.
 func (l *Listener) Close() error {
 	return l.ln.Close()
+}
+
+// parsePROXYOrWrap handles the 4-way PROXY-preamble outcome:
+//
+//	1. Valid PROXY header with real source addr → return proxyConn.
+//	2. Valid PROXY header without source (LOCAL/UNKNOWN) → return readerConn.
+//	3. No PROXY header (bare client during rollout) → return readerConn.
+//	4. Parse error → log + close + return ok=false.
+//
+// ok=false means the caller MUST return without invoking the handler;
+// the conn has already been closed.
+//
+// Tight deadline: PROXY preambles are ≤108 bytes (v1) or ≤16+~36 (v2);
+// a healthy LB ships them in one TCP segment. 1s is generous;
+// 5s gave slow-read attackers ~max_client_conn × 5s goroutine pin.
+func (l *Listener) parsePROXYOrWrap(c net.Conn) (net.Conn, bool) {
+	_ = c.SetReadDeadline(time.Now().Add(1 * time.Second))
+	info, br, err := ReadProxyHeader(c)
+	_ = c.SetReadDeadline(time.Time{})
+	switch {
+	case err == nil && info.SourceAddr != nil:
+		return WithProxyAddr(c, info.SourceAddr, br), true
+	case err == nil, errors.Is(err, ErrNoProxyHeader):
+		// LOCAL/UNKNOWN PROXY, or bare client (strict mode would
+		// reject the latter; we accept for rollout safety).
+		return &readerConn{conn: c, r: br}, true
+	default:
+		l.log.Warn("PROXY header parse failed; closing",
+			"err", err, "remote", c.RemoteAddr().String())
+		_ = c.Close()
+		return nil, false
+	}
 }

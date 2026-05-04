@@ -367,8 +367,10 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					"replaced by next Query/Parse before drain")
 			}
 			curSpan = h.startQuerySpan(ctx, kind, sql, prepName)
-			curSQLOp = ClassifySQL(sql)
-			curROBegin = IsExplicitReadOnlyBeginSQL(sql)
+			// ClassifyDetail does both classifications in a single
+			// stripLeadingNoise pass; the prior code paid that scan
+			// twice per Query/Parse.
+			curSQLOp, curROBegin = ClassifyDetail(sql)
 			if curSQLOp == SQLOpWrite && !curROBegin {
 				lastWriteAt = time.Now()
 			}

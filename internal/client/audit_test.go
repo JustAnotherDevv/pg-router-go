@@ -20,16 +20,19 @@ func TestAuditWriterEmitsJSONLine(t *testing.T) {
 
 	line := strings.TrimSpace(buf.String())
 	require.NotEmpty(t, line)
-	var ev auditEvent
+	// Parse via generic map — the auditEvent struct was deleted as
+	// part of the hand-formatted-JSON refactor; the wire format
+	// is still the same JSON keys.
+	var ev map[string]any
 	require.NoError(t, json.Unmarshal([]byte(line), &ev))
-	require.Equal(t, "abc123", ev.ReqID)
-	require.Equal(t, "appdb", ev.DB)
-	require.Equal(t, "alice", ev.User)
-	require.Equal(t, "myapp", ev.App)
-	require.Equal(t, "query", ev.Kind)
-	require.Equal(t, "SELECT ?", ev.SQL)
-	require.InDelta(t, 12.7, ev.DurationMs, 0.01)
-	require.NotEmpty(t, ev.TS)
+	require.Equal(t, "abc123", ev["req_id"])
+	require.Equal(t, "appdb", ev["db"])
+	require.Equal(t, "alice", ev["user"])
+	require.Equal(t, "myapp", ev["app"])
+	require.Equal(t, "query", ev["kind"])
+	require.Equal(t, "SELECT ?", ev["sql"])
+	require.InDelta(t, 12.7, ev["duration_ms"].(float64), 0.01)
+	require.NotEmpty(t, ev["ts"])
 }
 
 func TestAuditWriterNilSafe(t *testing.T) {

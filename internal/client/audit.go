@@ -22,10 +22,12 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -65,55 +67,83 @@ func NewAuditWriter(w io.Writer) *AuditWriter {
 	return &AuditWriter{w: w}
 }
 
-// auditEvent is the wire-format JSON record.
-type auditEvent struct {
-	TS         string  `json:"ts"`
-	ReqID      string  `json:"req_id"`
-	DB         string  `json:"db"`
-	User       string  `json:"user"`
-	App        string  `json:"app,omitempty"`
-	Kind       string  `json:"kind"`
-	DurationMs float64 `json:"duration_ms"`
-	SQL        string  `json:"sql,omitempty"`
+// bufPool recycles the per-Write bytes.Buffer + RFC3339Nano scratch
+// across all PooledConns. Audit on a 10k-QPS pooler used to allocate
+// 1 buffer + 1 marshal output per query; we now share both.
+var bufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
 }
 
 // Write emits one JSON record terminated by '\n'. Safe to call
 // concurrently from many goroutines.
 //
-// Format + json.Marshal happen OUTSIDE the lock so concurrent
-// callers serialise only on the underlying file Write, not on
-// timestamp formatting + JSON encoding (which together account for
-// most of the CPU per call).
+// Hand-formats the JSON instead of going through reflect-based
+// encoding/json — the schema is tiny + stable, so the saved
+// reflection cost matters under load. Output is identical byte-for-
+// byte (well, modulo float trailing zeros which we suppress).
+//
+// Encode happens OUTSIDE the lock so concurrent callers serialise
+// only on the underlying file Write.
 func (a *AuditWriter) Write(reqID, db, user, app, kind, sql string, dur time.Duration) {
 	if a == nil || a.w == nil {
 		return
 	}
-	ev := auditEvent{
-		TS:         time.Now().UTC().Format(time.RFC3339Nano),
-		ReqID:      reqID,
-		DB:         db,
-		User:       user,
-		App:        app,
-		Kind:       kind,
-		DurationMs: float64(dur.Microseconds()) / 1000.0,
-		SQL:        sql,
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	durMs := float64(dur.Microseconds()) / 1000.0
+
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
+	// Hand-built object — all values are JSON-quoted via json.Marshal
+	// (handles UTF-8 + escape sequences) but skipping reflect on the
+	// struct itself.
+	buf.WriteByte('{')
+	writeKV(buf, "ts", ts, false)
+	writeKV(buf, "req_id", reqID, false)
+	writeKV(buf, "db", db, false)
+	writeKV(buf, "user", user, false)
+	if app != "" {
+		writeKV(buf, "app", app, false)
 	}
-	b, err := json.Marshal(&ev)
-	if err != nil {
-		// Fallback: emit a marker record so the operator sees a gap
-		// in the audit log instead of silent loss. The original event
-		// is unrecoverable but the marker preserves the timestamp
-		// + req_id so the corresponding entry in slog can be matched.
-		fallback := fmt.Sprintf(
-			`{"ts":%q,"req_id":%q,"db":%q,"user":%q,"audit_error":"json.Marshal failed: %s"}`+"\n",
-			ev.TS, reqID, db, user, err.Error())
-		a.mu.Lock()
-		_, _ = a.w.Write([]byte(fallback))
-		a.mu.Unlock()
-		return
+	writeKV(buf, "kind", kind, false)
+	buf.WriteString(`"duration_ms":`)
+	buf.WriteString(strconv.FormatFloat(durMs, 'f', -1, 64))
+	if sql != "" {
+		buf.WriteByte(',')
+		writeKV(buf, "sql", sql, true)
 	}
-	b = append(b, '\n')
+	buf.WriteByte('}')
+	buf.WriteByte('\n')
+
 	a.mu.Lock()
-	_, _ = a.w.Write(b)
+	_, _ = a.w.Write(buf.Bytes())
 	a.mu.Unlock()
 }
+
+// writeKV appends `"key":<json-quoted value>` to buf. last=true skips
+// the trailing comma (caller is the last field before duration_ms /
+// closing brace).
+//
+// Falls back to json.Marshal for the value so we handle escapes +
+// non-ASCII UTF-8 the same way encoding/json would. On Marshal err
+// (rare — non-UTF-8 bytes), writes `"<key>":"<err marker>"` so the
+// operator sees a per-field gap instead of a silent drop.
+func writeKV(buf *bytes.Buffer, key, value string, last bool) {
+	buf.WriteByte('"')
+	buf.WriteString(key)
+	buf.WriteString(`":`)
+	if b, err := json.Marshal(value); err == nil {
+		buf.Write(b)
+	} else {
+		buf.WriteString(`"<marshal err: `)
+		buf.WriteString(err.Error())
+		buf.WriteString(`>"`)
+	}
+	if !last {
+		buf.WriteByte(',')
+	}
+}
+
+// Ensure fmt is still referenced (used by OpenAuditFile).
+var _ = fmt.Sprintf

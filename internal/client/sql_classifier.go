@@ -38,6 +38,12 @@ const (
 // Empty / whitespace-only input → Unknown.
 func ClassifySQL(sql string) SQLOp {
 	s := stripLeadingNoise(sql) // reused from statement_mode.go
+	return classifyStripped(s)
+}
+
+// classifyStripped is ClassifySQL on already-stripped input. Lets
+// ClassifyDetail share the strip pass with the BEGIN-READ-ONLY check.
+func classifyStripped(s string) SQLOp {
 	if s == "" {
 		return SQLOpUnknown
 	}
@@ -54,6 +60,17 @@ func ClassifySQL(sql string) SQLOp {
 	}
 	// Conservative default: everything else is a write.
 	return SQLOpWrite
+}
+
+// ClassifyDetail returns ClassifySQL + IsExplicitReadOnlyBeginSQL in
+// one stripLeadingNoise pass. PooledConn.Serve calls both per Query/
+// Parse; before this, the SQL prefix was scanned twice for whitespace
+// + comments per message.
+func ClassifyDetail(sql string) (op SQLOp, isROBegin bool) {
+	s := stripLeadingNoise(sql)
+	op = classifyStripped(s)
+	isROBegin = readOnlyBeginRE.MatchString(s)
+	return
 }
 
 // firstKeyword returns the first SQL token uppercased.
