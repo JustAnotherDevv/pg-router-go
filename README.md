@@ -2,7 +2,20 @@
 
 Modern PostgreSQL connection pooler written in Go.
 
-**Status: v0.2.0-mvp — feature-complete MVP primitives, single-host integration not yet wired end-to-end.** See "What's wired vs primitive-only" below.
+**Status: v1.0.3+ shipped — full feature set + 14 review-driven fixes + 16 refactors.** Signed multi-arch binaries + ghcr container image published per release. See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+
+```bash
+# Verify a release artefact (cosign keyless):
+cosign verify-blob \
+  --certificate-identity-regexp 'https://github.com/JustAnotherDevv/pgrouter/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  checksums.txt
+
+# Pull the container image:
+docker pull ghcr.io/justanotherdevv/pgrouter:1.0
+```
 
 ## What's here
 

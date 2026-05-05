@@ -38,6 +38,13 @@ func SendRowDesc(be *pgproto3.Backend, cols []pgproto3.FieldDescription) {
 
 // SendDataRow emits one DataRow whose values are stringified column
 // cells. nil-safe; an empty `vals` produces an empty-row DataRow.
+//
+// EFF3 note: a sync.Pool over the outer [][]byte holder was
+// considered but skipped — pgproto3.Backend.Send may retain the
+// Values slice until Flush, so recycling the header before flush
+// risks the next SendDataRow overwriting an in-flight buffer.
+// The per-call allocation (small slice header + per-cell []byte)
+// is dominated by network bandwidth in practice.
 func SendDataRow(be *pgproto3.Backend, vals ...string) {
 	row := make([][]byte, len(vals))
 	for i, v := range vals {

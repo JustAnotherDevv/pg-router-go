@@ -100,31 +100,15 @@ type PooledHandler struct {
 	// closure as the HTTP /api/v1/reload handler.
 	AdminReload func() error
 
-	// ReplicaPickerFor, if non-nil, returns a pool.Pool to acquire
-	// READ-classified queries from for the given database. Returns
-	// nil to route to the primary (no replica available, none under
-	// lag cap, or db has no replicas). Wired by main from
-	// internal/replica.Manager.Pick.
-	ReplicaPickerFor func(db string) *pool.Pool
+	// Router answers per-tenant routing questions (replica pick,
+	// sticky-read window, primary health, QPS cap). nil → routing
+	// disabled (always primary; healthy; no rate limit). Replaces
+	// the four separate callbacks (ReplicaPickerFor,
+	// StickyReadWindowFor, PrimaryHealthyFor, QPSCapFor) the
+	// pre-AL3 PooledHandler exposed.
+	Router Router
 
-	// StickyReadWindowFor, if non-nil, returns the per-database
-	// read-your-own-writes window. A read on this db within the
-	// window of a preceding write on the SAME client conn is
-	// pinned to the primary.
-	StickyReadWindowFor func(db string) time.Duration
-
-	// PrimaryHealthyFor reports whether the primary backing `db` is
-	// currently considered healthy by the failover monitor. nil →
-	// always healthy (no monitor configured).
-	PrimaryHealthyFor func(db string) bool
-
-	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
-	// 0 disables rate-limiting for that tenant. Buckets are shared
-	// across all PooledConns of the same (db, user) so the cap is
-	// genuinely per-tenant, not per-conn.
-	QPSCapFor func(db, user string) float64
-
-	qpsMu     sync.Mutex
+	qpsMu      sync.Mutex
 	qpsBuckets map[string]*util.TokenBucket
 }
 
@@ -132,10 +116,7 @@ type PooledHandler struct {
 // creates one with capacity = rate = cap. Returns nil if cap is 0
 // (rate-limit disabled).
 func (h *PooledHandler) qpsBucketFor(db, user string) *util.TokenBucket {
-	if h.QPSCapFor == nil {
-		return nil
-	}
-	cap := h.QPSCapFor(db, user)
+	cap := routerOr(h.Router).QPSCap(db, user)
 	if cap <= 0 {
 		return nil
 	}
@@ -317,24 +298,9 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		WelcomeSecret: welcomeSecret,
 		QPSLimiter:    h.qpsBucketFor(db, user),
 		ReqID:         reqID,
-		ReplicaPicker: func() *pool.Pool {
-			if h.ReplicaPickerFor == nil {
-				return nil
-			}
-			return h.ReplicaPickerFor(db)
-		},
-		StickyReadWindowFn: func() time.Duration {
-			if h.StickyReadWindowFor == nil {
-				return 0
-			}
-			return h.StickyReadWindowFor(db)
-		},
-		PrimaryHealthy: func() bool {
-			if h.PrimaryHealthyFor == nil {
-				return true
-			}
-			return h.PrimaryHealthyFor(db)
-		},
+		ReplicaPicker:      func() *pool.Pool { return routerOr(h.Router).ReplicaPool(db) },
+		StickyReadWindowFn: func() time.Duration { return routerOr(h.Router).StickyReadWindow(db) },
+		PrimaryHealthy:     func() bool { return routerOr(h.Router).PrimaryHealthy(db) },
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)

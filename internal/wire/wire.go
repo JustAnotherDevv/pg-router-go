@@ -393,47 +393,63 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 		LogSQL:            in.LogSQLMode,
 		Audit:             in.AuditWriter,
 		AdminReload:       in.AdminReload,
-		ReplicaPickerFor: func(db string) *pool.Pool {
-			rm, ok := in.ReplicaMgrs[db]
-			if !ok {
-				return nil
-			}
-			r, err := rm.Pick()
-			if err != nil {
-				return nil
-			}
-			return r.Pool
-		},
-		StickyReadWindowFor: func(db string) time.Duration {
-			if d, ok := in.Cfg.Databases[db]; ok {
-				return d.StickyReadWindow
-			}
-			return 0
-		},
-		PrimaryHealthyFor: func(db string) bool {
-			pm, ok := in.PrimaryMonitors[db]
-			if !ok {
-				return true
-			}
-			return pm.Healthy()
-		},
-		PoolMode: string(in.Cfg.Pool.Mode),
+		Router:            &cfgRouter{cfg: in.Cfg, replicas: in.ReplicaMgrs, primary: in.PrimaryMonitors},
+		PoolMode:          string(in.Cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
 			if d, ok := in.Cfg.Databases[db]; ok && d.PoolMode != "" {
 				return string(d.PoolMode)
 			}
 			return ""
 		},
-		QPSCapFor: func(db, user string) float64 {
-			if u, ok := in.Cfg.Users[user]; ok && u.MaxQPS > 0 {
-				return u.MaxQPS
-			}
-			if d, ok := in.Cfg.Databases[db]; ok && d.MaxQPS > 0 {
-				return d.MaxQPS
-			}
-			return 0
-		},
 	}
+}
+
+// cfgRouter is the production client.Router implementation. Reads
+// stay live against the cfg pointer + maps so SIGHUP reloads of
+// per-database fields (StickyReadWindow, MaxQPS) take effect on
+// already-connected clients without reconnect.
+type cfgRouter struct {
+	cfg      *config.Config
+	replicas map[string]*replica.Manager
+	primary  map[string]*replica.PrimaryMonitor
+}
+
+func (r *cfgRouter) ReplicaPool(db string) *pool.Pool {
+	rm, ok := r.replicas[db]
+	if !ok {
+		return nil
+	}
+	rep, err := rm.Pick()
+	if err != nil {
+		return nil
+	}
+	return rep.Pool
+}
+
+func (r *cfgRouter) StickyReadWindow(db string) time.Duration {
+	if d, ok := r.cfg.Databases[db]; ok {
+		return d.StickyReadWindow
+	}
+	return 0
+}
+
+func (r *cfgRouter) PrimaryHealthy(db string) bool {
+	pm, ok := r.primary[db]
+	if !ok {
+		return true
+	}
+	return pm.Healthy()
+}
+
+func (r *cfgRouter) QPSCap(db, user string) float64 {
+	// Per-user cap wins if set; else per-db; else 0 (disabled).
+	if u, ok := r.cfg.Users[user]; ok && u.MaxQPS > 0 {
+		return u.MaxQPS
+	}
+	if d, ok := r.cfg.Databases[db]; ok && d.MaxQPS > 0 {
+		return d.MaxQPS
+	}
+	return 0
 }
 
 // CannedParams returns the canned StartupMessage values pgrouter

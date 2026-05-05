@@ -57,17 +57,9 @@ type PoolSnapshot struct {
 	Waiters int    `json:"waiters"`  // clients queued in Acquire
 }
 
-// StatsSnapshot is a compact rollup for GET /api/v1/stats.
-type StatsSnapshot struct {
-	UptimeSeconds   float64 `json:"uptime_seconds"`
-	ClientsActive   int     `json:"clients_active"`
-	BackendsActive  int     `json:"backends_active"`
-	BackendsIdle    int     `json:"backends_idle"`
-	QueriesTotal    float64 `json:"queries_total"`
-	TxStartsTotal   float64 `json:"tx_starts_total"`
-	PreparedHits    float64 `json:"prepared_hits_total"`
-	PreparedMisses  float64 `json:"prepared_misses_total"`
-}
+// StatsSnapshot + SnapshotFromRegistry live in snapshot.go since the
+// AL8 refactor — admin.go strictly holds the AdminAPI surface + HTTP
+// handlers.
 
 // VersionInfo is GET /api/v1/version.
 type VersionInfo struct {
@@ -245,60 +237,3 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// SnapshotFromRegistry scrapes the package Reg for a few rollup counts.
-// Sums across all label values for vec metrics so the snapshot is
-// genuinely "across the whole pgrouter process."
-func SnapshotFromRegistry(uptime time.Duration) StatsSnapshot {
-	out := StatsSnapshot{UptimeSeconds: uptime.Seconds()}
-	families, err := Reg.Gather()
-	if err != nil {
-		return out
-	}
-	for _, mf := range families {
-		switch mf.GetName() {
-		case "pgrouter_client_active":
-			for _, m := range mf.GetMetric() {
-				if g := m.GetGauge(); g != nil {
-					out.ClientsActive = int(g.GetValue())
-				}
-			}
-		case "pgrouter_backend_active":
-			for _, m := range mf.GetMetric() {
-				if g := m.GetGauge(); g != nil {
-					out.BackendsActive = int(g.GetValue())
-				}
-			}
-		case "pgrouter_backend_idle":
-			for _, m := range mf.GetMetric() {
-				if g := m.GetGauge(); g != nil {
-					out.BackendsIdle = int(g.GetValue())
-				}
-			}
-		case "pgrouter_queries_total":
-			for _, m := range mf.GetMetric() {
-				if c := m.GetCounter(); c != nil {
-					out.QueriesTotal += c.GetValue()
-				}
-			}
-		case "pgrouter_tx_starts_total":
-			for _, m := range mf.GetMetric() {
-				if c := m.GetCounter(); c != nil {
-					out.TxStartsTotal += c.GetValue()
-				}
-			}
-		case "pgrouter_prepared_cache_hits_total":
-			for _, m := range mf.GetMetric() {
-				if c := m.GetCounter(); c != nil {
-					out.PreparedHits += c.GetValue()
-				}
-			}
-		case "pgrouter_prepared_cache_misses_total":
-			for _, m := range mf.GetMetric() {
-				if c := m.GetCounter(); c != nil {
-					out.PreparedMisses += c.GetValue()
-				}
-			}
-		}
-	}
-	return out
-}

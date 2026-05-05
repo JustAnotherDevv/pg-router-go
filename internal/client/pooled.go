@@ -1025,18 +1025,26 @@ func isReadMessage(msg pgproto3.FrontendMessage) bool {
 // On error paths (timeout, backend close) the deferred SetStatus +
 // End in the surrounding goroutine handle it.
 func (h *PooledConn) startQuerySpan(ctx context.Context, kind, sql, prepName string) trace.Span {
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.name", h.Database),
+		attribute.String("db.user", h.User),
+		attribute.String("pgrouter.req_id", h.ReqID),
+		attribute.String("pgrouter.app", h.App),
+		attribute.String("pgrouter.kind", kind),
+		attribute.String("pgrouter.prepared_name", prepName),
+	}
+	// EFF1: skip the SQLForLog call + the db.statement attribute when
+	// logging is off. Both wire payload (per-span attribute) and CPU
+	// (RedactSQL pass under "redacted", truncate under "full") are
+	// saved on the hot per-Query/Parse path.
+	if h.LogSQL != "off" {
+		if rendered := SQLForLog(h.LogSQL, sql, 512); rendered != "" {
+			attrs = append(attrs, attribute.String("db.statement", rendered))
+		}
+	}
 	_, span := tracing.Tracer().Start(ctx, "pgrouter."+kind,
-		trace.WithAttributes(
-			attribute.String("db.system", "postgresql"),
-			attribute.String("db.name", h.Database),
-			attribute.String("db.user", h.User),
-			attribute.String("pgrouter.req_id", h.ReqID),
-			attribute.String("pgrouter.app", h.App),
-			attribute.String("pgrouter.kind", kind),
-			attribute.String("pgrouter.prepared_name", prepName),
-			attribute.String("db.statement", SQLForLog(h.LogSQL, sql, 512)),
-		),
-	)
+		trace.WithAttributes(attrs...))
 	return span
 }
 
