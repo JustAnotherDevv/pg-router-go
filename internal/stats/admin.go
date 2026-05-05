@@ -99,91 +99,107 @@ func ServeMetricsAndAdmin(ctx context.Context, opts AdminServerOptions, log *slo
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/api/v1/version", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, VersionInfo{
-			Version: Build.Version, Commit: Build.Commit,
+
+	// Read-only GETs (no token check).
+	get := func(path, missing string, fn func() (any, error)) {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if fn == nil {
+				http.Error(w, missing, http.StatusNotImplemented)
+				return
+			}
+			v, err := fn()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError,
+					map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
 		})
-	})
+	}
+	// State-changing POSTs (token-gated, decodes a body via decoder if non-nil).
+	post := func(path, missing string, decoder func(*http.Request) error, fn func() (any, error)) {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if !checkToken(r, opts.AuthToken) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if fn == nil {
+				http.Error(w, missing, http.StatusNotImplemented)
+				return
+			}
+			if decoder != nil {
+				if err := decoder(r); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+			}
+			v, err := fn()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError,
+					map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+		})
+	}
 
-	mux.HandleFunc("/api/v1/pools", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if opts.Admin == nil || opts.Admin.Pools == nil {
-			http.Error(w, "pools API not wired", http.StatusNotImplemented)
-			return
-		}
-		ps, err := opts.Admin.Pools()
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, ps)
+	get("/api/v1/version", "version not wired", func() (any, error) {
+		return VersionInfo{Version: Build.Version, Commit: Build.Commit}, nil
 	})
-	mux.HandleFunc("/api/v1/stats", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+	get("/api/v1/pools", "pools API not wired", apiFn(opts.Admin, func(a *AdminAPI) (any, error) {
+		if a.Pools == nil {
+			return nil, nil // → 501 via fn-nil path; mapped below
 		}
-		if opts.Admin == nil || opts.Admin.Stats == nil {
-			http.Error(w, "stats API not wired", http.StatusNotImplemented)
-			return
+		return a.Pools()
+	}))
+	get("/api/v1/stats", "stats API not wired", apiFn(opts.Admin, func(a *AdminAPI) (any, error) {
+		if a.Stats == nil {
+			return nil, nil
 		}
-		s, err := opts.Admin.Stats()
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, s)
-	})
+		return a.Stats()
+	}))
 
-	mux.HandleFunc("/api/v1/drain", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !checkToken(r, opts.AuthToken) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if opts.Admin == nil || opts.Admin.Drain == nil {
-			http.Error(w, "drain API not wired", http.StatusNotImplemented)
-			return
-		}
-		var body struct {
-			DeadlineSeconds int `json:"deadline_seconds"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		deadline := time.Duration(body.DeadlineSeconds) * time.Second
-		if deadline == 0 {
-			deadline = 30 * time.Second
-		}
-		if err := opts.Admin.Drain(deadline); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "drained"})
-	})
-	mux.HandleFunc("/api/v1/reload", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !checkToken(r, opts.AuthToken) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if opts.Admin == nil || opts.Admin.Reload == nil {
-			http.Error(w, "reload API not wired", http.StatusNotImplemented)
-			return
-		}
-		if err := opts.Admin.Reload(); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
-	})
+	// /api/v1/drain accepts {"deadline_seconds": int}; 30s default.
+	deadline := 30 * time.Second
+	post("/api/v1/drain", "drain API not wired",
+		func(r *http.Request) error {
+			var body struct {
+				DeadlineSeconds int `json:"deadline_seconds"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.DeadlineSeconds > 0 {
+				deadline = time.Duration(body.DeadlineSeconds) * time.Second
+			}
+			return nil
+		},
+		apiFn(opts.Admin, func(a *AdminAPI) (any, error) {
+			if a.Drain == nil {
+				return nil, nil
+			}
+			if err := a.Drain(deadline); err != nil {
+				return nil, err
+			}
+			return map[string]string{"status": "drained"}, nil
+		}))
+
+	post("/api/v1/reload", "reload API not wired", nil,
+		apiFn(opts.Admin, func(a *AdminAPI) (any, error) {
+			if a.Reload == nil {
+				return nil, nil
+			}
+			if err := a.Reload(); err != nil {
+				return nil, err
+			}
+			return map[string]string{"status": "reloaded"}, nil
+		}))
 
 	srv := &http.Server{
 		Addr:              opts.Addr,
@@ -229,6 +245,16 @@ func checkToken(r *http.Request, want string) bool {
 		return false
 	}
 	return strings.TrimPrefix(h, prefix) == want
+}
+
+// apiFn returns nil when AdminAPI is nil so the get/post wrappers
+// treat "not wired" uniformly. Otherwise it binds the caller's
+// handler to the live AdminAPI.
+func apiFn(a *AdminAPI, h func(*AdminAPI) (any, error)) func() (any, error) {
+	if a == nil {
+		return nil
+	}
+	return func() (any, error) { return h(a) }
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/wire"
+
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
@@ -128,7 +130,7 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, path, cfg, nil, nil,
+		wire.RunSighupReloader(ctx, hupCh, path, cfg, nil, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
@@ -185,7 +187,7 @@ func TestSighupReloaderReloadsUserlist(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, cfgPath, cfg, ul, nil,
+		wire.RunSighupReloader(ctx, hupCh, cfgPath, cfg, ul, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
@@ -230,7 +232,7 @@ func TestSighupReloaderUserlistSkipWhenNil(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, cfgPath, cfg, nil, nil,
+		wire.RunSighupReloader(ctx, hupCh, cfgPath, cfg, nil, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 

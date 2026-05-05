@@ -176,31 +176,36 @@ func parseProxyV2(br *bufio.Reader) (ProxyInfo, *bufio.Reader, error) {
 	if cmd != 1 {
 		return info, br, fmt.Errorf("v2 unknown command %x", cmd)
 	}
-	switch famProto {
-	case 0x11: // TCP over IPv4
-		if len(addrBuf) < 12 {
-			return info, br, fmt.Errorf("v2 ipv4 addr block too short: %d", len(addrBuf))
-		}
-		src := net.IP(addrBuf[0:4])
-		dst := net.IP(addrBuf[4:8])
-		srcPort := binary.BigEndian.Uint16(addrBuf[8:10])
-		dstPort := binary.BigEndian.Uint16(addrBuf[10:12])
-		info.Family = "TCP4"
-		info.SourceAddr = &net.TCPAddr{IP: src, Port: int(srcPort)}
-		info.DestAddr = &net.TCPAddr{IP: dst, Port: int(dstPort)}
-	case 0x21: // TCP over IPv6
-		if len(addrBuf) < 36 {
-			return info, br, fmt.Errorf("v2 ipv6 addr block too short: %d", len(addrBuf))
-		}
-		src := net.IP(addrBuf[0:16])
-		dst := net.IP(addrBuf[16:32])
-		srcPort := binary.BigEndian.Uint16(addrBuf[32:34])
-		dstPort := binary.BigEndian.Uint16(addrBuf[34:36])
-		info.Family = "TCP6"
-		info.SourceAddr = &net.TCPAddr{IP: src, Port: int(srcPort)}
-		info.DestAddr = &net.TCPAddr{IP: dst, Port: int(dstPort)}
-	default:
+	// Table-driven IPv4/IPv6 parse: both shapes differ only in IP byte
+	// length + port offsets. proto 0x11 = TCPv4 (4+4+2+2 bytes);
+	// 0x21 = TCPv6 (16+16+2+2 bytes).
+	type famSpec struct {
+		family   string
+		ipLen    int
+		minBlock int
+	}
+	specs := map[byte]famSpec{
+		0x11: {"TCP4", 4, 12},
+		0x21: {"TCP6", 16, 36},
+	}
+	spec, ok := specs[famProto]
+	if !ok {
 		info.Family = fmt.Sprintf("UNKNOWN(%x)", famProto)
+		return info, br, nil
+	}
+	if len(addrBuf) < spec.minBlock {
+		return info, br, fmt.Errorf("v2 %s addr block too short: %d", spec.family, len(addrBuf))
+	}
+	srcEnd := spec.ipLen
+	dstEnd := 2 * spec.ipLen
+	info.Family = spec.family
+	info.SourceAddr = &net.TCPAddr{
+		IP:   net.IP(addrBuf[0:srcEnd]),
+		Port: int(binary.BigEndian.Uint16(addrBuf[dstEnd : dstEnd+2])),
+	}
+	info.DestAddr = &net.TCPAddr{
+		IP:   net.IP(addrBuf[srcEnd:dstEnd]),
+		Port: int(binary.BigEndian.Uint16(addrBuf[dstEnd+2 : dstEnd+4])),
 	}
 	return info, br, nil
 }

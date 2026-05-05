@@ -36,6 +36,29 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
+// dialEnv carries the per-process TLS + log defaults every backend
+// dial inherits. Avoids re-typing the 3 fields at every call site.
+type dialEnv struct {
+	tls         *tls.Config
+	tlsRequired bool
+	log         *slog.Logger
+}
+
+// opts builds a backend.DialOptions inheriting the env defaults. Callers
+// supply only what varies per call (addr, user, db, app, password).
+func (e dialEnv) opts(addr, user, db, appName, password string) backend.DialOptions {
+	return backend.DialOptions{
+		Addr:        addr,
+		User:        user,
+		Database:    db,
+		AppName:     appName,
+		Password:    password,
+		TLSConfig:   e.tls,
+		TLSRequired: e.tlsRequired,
+		Log:         e.log,
+	}
+}
+
 // BuildTLS returns (clientTLS, backendTLS, backendTLSRequired).
 // Both nil when TLS isn't configured; backendTLSRequired stays false
 // in that case as well.
@@ -90,6 +113,7 @@ func BuildAuthOpts(cfg *config.Config, backendTLS *tls.Config,
 		log.Info("hba loaded", "path", cfg.Auth.HBAFile)
 	}
 	if cfg.Auth.AuthQuery != "" {
+		env := dialEnv{tls: backendTLS, tlsRequired: backendTLSRequired, log: log}
 		fetcher = auth.NewAuthQueryFetcher(
 			func(ctx context.Context, dbAlias string) (auth.QueryConn, error) {
 				db, ok := cfg.Databases[dbAlias]
@@ -101,16 +125,7 @@ func BuildAuthOpts(cfg *config.Config, backendTLS *tls.Config,
 				if dbName == "" {
 					dbName = dbAlias
 				}
-				c, err := backend.Dial(ctx, backend.DialOptions{
-					Addr:        addr,
-					User:        cfg.Auth.AuthUser,
-					Database:    dbName,
-					AppName:     appName,
-					Password:    db.Password,
-					TLSConfig:   backendTLS,
-					TLSRequired: backendTLSRequired,
-					Log:         log,
-				})
+				c, err := backend.Dial(ctx, env.opts(addr, cfg.Auth.AuthUser, dbName, appName, db.Password))
 				if err != nil {
 					return nil, err
 				}
@@ -147,6 +162,7 @@ func BuildPoolDialer(cfg *config.Config, userlist *auth.Userlist,
 	backendTLS *tls.Config, backendTLSRequired bool, appName string,
 	log *slog.Logger,
 ) func(pool.Key) pool.Dialer {
+	env := dialEnv{tls: backendTLS, tlsRequired: backendTLSRequired, log: log}
 	return func(k pool.Key) pool.Dialer {
 		db, ok := cfg.Databases[k.DB]
 		if !ok {
@@ -170,16 +186,7 @@ func BuildPoolDialer(cfg *config.Config, userlist *auth.Userlist,
 			}
 		}
 		dialOnce := func(ctx context.Context) (*backend.Conn, error) {
-			return backend.Dial(ctx, backend.DialOptions{
-				Addr:        addr,
-				User:        upstreamUser,
-				Database:    dbName,
-				AppName:     appName,
-				Password:    password,
-				TLSConfig:   backendTLS,
-				TLSRequired: backendTLSRequired,
-				Log:         log,
-			})
+			return backend.Dial(ctx, env.opts(addr, upstreamUser, dbName, appName, password))
 		}
 		return func(ctx context.Context) (*backend.Conn, error) {
 			return backend.DialWithRetry(ctx, addr, log,
@@ -284,17 +291,9 @@ func BuildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
 			MaxReplicaLagBytes: db.MaxReplicaLagBytes,
 		})
 	}
+	env := dialEnv{tls: backendTLS, tlsRequired: backendTLSRequired, log: log}
 	dial := func(addr, user, dbname, password string) backend.DialOptions {
-		return backend.DialOptions{
-			Addr:        addr,
-			User:        user,
-			Database:    dbname,
-			AppName:     "pgrouter-replica",
-			Password:    password,
-			TLSConfig:   backendTLS,
-			TLSRequired: backendTLSRequired,
-			Log:         log,
-		}
+		return env.opts(addr, user, dbname, "pgrouter-replica", password)
 	}
 	return replica.BuildManagersFromConfig(dbs, defaultCfg, dial,
 		cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
@@ -306,6 +305,7 @@ func BuildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
 func PrimaryProbeDialer(cfg *config.Config, dbName string,
 	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
 ) func(context.Context) (*backend.Conn, error) {
+	env := dialEnv{tls: backendTLS, tlsRequired: backendTLSRequired, log: log}
 	return func(ctx context.Context) (*backend.Conn, error) {
 		db, ok := cfg.Databases[dbName]
 		if !ok {
@@ -320,16 +320,7 @@ func PrimaryProbeDialer(cfg *config.Config, dbName string,
 		if dbReal == "" {
 			dbReal = dbName
 		}
-		return backend.Dial(ctx, backend.DialOptions{
-			Addr:        addr,
-			User:        user,
-			Database:    dbReal,
-			AppName:     "pgrouter-primary-health",
-			Password:    db.Password,
-			TLSConfig:   backendTLS,
-			TLSRequired: backendTLSRequired,
-			Log:         log,
-		})
+		return backend.Dial(ctx, env.opts(addr, user, dbReal, "pgrouter-primary-health", db.Password))
 	}
 }
 
@@ -414,6 +405,16 @@ type cfgRouter struct {
 	primary  map[string]*replica.PrimaryMonitor
 }
 
+// db looks up a config.DatabaseConfig by alias. Returns nil when the db is
+// unknown — callers should use the zero value for the field they want.
+func (r *cfgRouter) db(name string) *config.DatabaseConfig {
+	d, ok := r.cfg.Databases[name]
+	if !ok {
+		return nil
+	}
+	return &d
+}
+
 func (r *cfgRouter) ReplicaPool(db string) *pool.Pool {
 	rm, ok := r.replicas[db]
 	if !ok {
@@ -427,7 +428,7 @@ func (r *cfgRouter) ReplicaPool(db string) *pool.Pool {
 }
 
 func (r *cfgRouter) StickyReadWindow(db string) time.Duration {
-	if d, ok := r.cfg.Databases[db]; ok {
+	if d := r.db(db); d != nil {
 		return d.StickyReadWindow
 	}
 	return 0
@@ -446,7 +447,7 @@ func (r *cfgRouter) QPSCap(db, user string) float64 {
 	if u, ok := r.cfg.Users[user]; ok && u.MaxQPS > 0 {
 		return u.MaxQPS
 	}
-	if d, ok := r.cfg.Databases[db]; ok && d.MaxQPS > 0 {
+	if d := r.db(db); d != nil && d.MaxQPS > 0 {
 		return d.MaxQPS
 	}
 	return 0

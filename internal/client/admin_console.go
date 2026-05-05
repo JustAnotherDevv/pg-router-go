@@ -158,100 +158,90 @@ func (a *AdminConsole) handleQuery(be *pgproto3.Backend, sql string) {
 		fmt.Sprintf("admin console: unknown command: %s", trimmed))
 }
 
-func (a *AdminConsole) showStats(be *pgproto3.Backend) {
-	cols := []pgproto3.FieldDescription{
-		col("database"), col("user"),
-		col("total_xact_count"), col("total_query_count"),
+// emitTable is the canonical SHOW emit pattern: row descriptor → row
+// stream → CommandComplete + RFQ. `colNames` defines the column shape;
+// `rowsFn` yields one row at a time as a slice of stringified cells
+// (length must match colNames).
+func (a *AdminConsole) emitTable(be *pgproto3.Backend, colNames []string, rowsFn func(emit func(...string))) {
+	cols := make([]pgproto3.FieldDescription, len(colNames))
+	for i, n := range colNames {
+		cols[i] = col(n)
 	}
 	a.sendRowDesc(be, cols)
-	for _, ps := range a.Manager.AllStats() {
-		db, user := splitName(ps.Name)
-		a.sendDataRow(be,
-			db, user,
-			fmt.Sprintf("%d", ps.TotalAcquired),
-			fmt.Sprintf("%d", ps.TotalSpawned),
-		)
-	}
+	rowsFn(func(vals ...string) { a.sendDataRow(be, vals...) })
 	a.completeAndRFQ(be, "SHOW")
+}
+
+func itoa(n int)    string { return fmt.Sprintf("%d", n) }
+func u64a(n uint64) string { return fmt.Sprintf("%d", n) }
+
+func (a *AdminConsole) showStats(be *pgproto3.Backend) {
+	a.emitTable(be, []string{"database", "user", "total_xact_count", "total_query_count"},
+		func(emit func(...string)) {
+			for _, ps := range a.Manager.AllStats() {
+				db, user := splitName(ps.Name)
+				emit(db, user, u64a(ps.TotalAcquired), u64a(ps.TotalSpawned))
+			}
+		})
 }
 
 func (a *AdminConsole) showPools(be *pgproto3.Backend) {
-	cols := []pgproto3.FieldDescription{
-		col("database"), col("user"),
-		col("cl_active"), col("cl_waiting"),
-		col("sv_active"), col("sv_idle"),
-		col("pool_size"),
-	}
-	a.sendRowDesc(be, cols)
-	for _, p := range a.Manager.Pools() {
-		ps := p.Stats()
-		db, user := splitName(ps.Name)
-		a.sendDataRow(be,
-			db, user,
-			fmt.Sprintf("%d", ps.Active),
-			fmt.Sprintf("%d", ps.Waiters),
-			fmt.Sprintf("%d", ps.Active),
-			fmt.Sprintf("%d", ps.Idle),
-			fmt.Sprintf("%d", p.Size()),
-		)
-	}
-	a.completeAndRFQ(be, "SHOW")
+	a.emitTable(be,
+		[]string{"database", "user", "cl_active", "cl_waiting", "sv_active", "sv_idle", "pool_size"},
+		func(emit func(...string)) {
+			for _, p := range a.Manager.Pools() {
+				ps := p.Stats()
+				db, user := splitName(ps.Name)
+				emit(db, user, itoa(ps.Active), itoa(ps.Waiters),
+					itoa(ps.Active), itoa(ps.Idle), itoa(p.Size()))
+			}
+		})
 }
 
 func (a *AdminConsole) showDatabases(be *pgproto3.Backend) {
-	cols := []pgproto3.FieldDescription{col("name"), col("backend_pools")}
-	a.sendRowDesc(be, cols)
-	// We don't keep raw config here — derive the set from active pools.
-	seen := map[string]int{}
-	for _, p := range a.Manager.Pools() {
-		db, _ := splitName(p.Name())
-		seen[db]++
-	}
-	for db, n := range seen {
-		a.sendDataRow(be, db, fmt.Sprintf("%d", n))
-	}
-	a.completeAndRFQ(be, "SHOW")
+	a.emitTable(be, []string{"name", "backend_pools"}, func(emit func(...string)) {
+		seen := map[string]int{}
+		for _, p := range a.Manager.Pools() {
+			db, _ := splitName(p.Name())
+			seen[db]++
+		}
+		for db, n := range seen {
+			emit(db, itoa(n))
+		}
+	})
 }
 
 func (a *AdminConsole) showLists(be *pgproto3.Backend) {
-	cols := []pgproto3.FieldDescription{col("list"), col("items")}
-	a.sendRowDesc(be, cols)
-	pools := a.Manager.Pools()
-	var dbs, users int
-	dbSet := map[string]struct{}{}
-	userSet := map[string]struct{}{}
-	for _, p := range pools {
-		db, user := splitName(p.Name())
-		dbSet[db] = struct{}{}
-		userSet[user] = struct{}{}
-	}
-	dbs = len(dbSet)
-	users = len(userSet)
-	a.sendDataRow(be, "databases", fmt.Sprintf("%d", dbs))
-	a.sendDataRow(be, "users", fmt.Sprintf("%d", users))
-	a.sendDataRow(be, "pools", fmt.Sprintf("%d", len(pools)))
-	a.completeAndRFQ(be, "SHOW")
+	a.emitTable(be, []string{"list", "items"}, func(emit func(...string)) {
+		pools := a.Manager.Pools()
+		dbSet, userSet := map[string]struct{}{}, map[string]struct{}{}
+		for _, p := range pools {
+			db, user := splitName(p.Name())
+			dbSet[db] = struct{}{}
+			userSet[user] = struct{}{}
+		}
+		emit("databases", itoa(len(dbSet)))
+		emit("users", itoa(len(userSet)))
+		emit("pools", itoa(len(pools)))
+	})
 }
 
 func (a *AdminConsole) showVersion(be *pgproto3.Backend) {
-	cols := []pgproto3.FieldDescription{col("version")}
-	a.sendRowDesc(be, cols)
-	a.sendDataRow(be,
-		fmt.Sprintf("pgrouter %s (%s)", stats.Build.Version, stats.Build.Commit))
-	a.completeAndRFQ(be, "SHOW")
+	a.emitTable(be, []string{"version"}, func(emit func(...string)) {
+		emit(fmt.Sprintf("pgrouter %s (%s)", stats.Build.Version, stats.Build.Commit))
+	})
 }
 
 func (a *AdminConsole) showHelp(be *pgproto3.Backend) {
-	cols := []pgproto3.FieldDescription{col("command")}
-	a.sendRowDesc(be, cols)
-	for _, c := range []string{
-		"SHOW STATS", "SHOW POOLS", "SHOW DATABASES",
-		"SHOW LISTS", "SHOW VERSION", "SHOW HELP",
-		"PAUSE", "RESUME", "RELOAD",
-	} {
-		a.sendDataRow(be, c)
-	}
-	a.completeAndRFQ(be, "SHOW")
+	a.emitTable(be, []string{"command"}, func(emit func(...string)) {
+		for _, c := range []string{
+			"SHOW STATS", "SHOW POOLS", "SHOW DATABASES",
+			"SHOW LISTS", "SHOW VERSION", "SHOW HELP",
+			"PAUSE", "RESUME", "RELOAD",
+		} {
+			emit(c)
+		}
+	})
 }
 
 func (a *AdminConsole) doReload(be *pgproto3.Backend) {

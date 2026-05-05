@@ -27,7 +27,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
 	"github.com/JustAnotherDevv/pgrouter/internal/wire"
@@ -321,8 +320,8 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	defer signal.Stop(hupCh)
 	// Fan-in: OS SIGHUP + admin-API /reload POST share the same goroutine.
 	mergedHup := make(chan os.Signal, 4)
-	go fanInSignals(ctx, mergedHup, hupCh, adminReloadCh)
-	go runSighupReloader(ctx, mergedHup, configPath, cfg, userlist, mgr, log)
+	wire.FanInSignals(ctx, mergedHup, hupCh, adminReloadCh)
+	go wire.RunSighupReloader(ctx, mergedHup, configPath, cfg, userlist, mgr, log)
 
 	ln, err := listener.New(listenAddr, log)
 	if err != nil {
@@ -423,127 +422,12 @@ func runServer(log *slog.Logger, listenAddr, backendAddr string) int {
 	return 0
 }
 
-// runSighupReloader is the SIGHUP handler goroutine. Each HUP re-reads
-// the config file off disk and the (optional) userlist.txt, logging a
-// diff against the previous state for each.
-//
-// MVP scope (M.13.5 + M.5.4 / spec gate 11 prep): SIGHUP no longer
-// kills pgrouter and the userlist atomically swaps under the lock
-// inside *auth.Userlist (new conns immediately see the new map; in
-// flight conns keep their already-authenticated identity). Live
-// pool resize + db-registry diff applied to running pools remains
-// post-MVP — applying those would require a Manager.Reconfigure
-// surface that doesn't exist yet. We log the config diff so operators
-// can see what WOULD have changed; the running pools stay on the boot
-// config.
-func runSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
-	path string, current *config.Config, userlist *auth.Userlist,
-	mgr *pool.Manager, log *slog.Logger,
-) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case _, ok := <-hupCh:
-			if !ok {
-				return
-			}
-			next, err := config.Load(path)
-			if err != nil {
-				log.Error("SIGHUP reload failed", "path", path, "err", err)
-				stats.OnSighupReload("fail")
-				// Even if the YAML failed, still attempt the userlist
-				// reload — its file is independent and may be valid.
-				reloadUserlist(userlist, log)
-				continue
-			}
-			log.Info("SIGHUP reload",
-				"path", path,
-				"databases_before", len(current.Databases),
-				"databases_after", len(next.Databases),
-				"default_pool_size_before", current.Pool.DefaultPoolSize,
-				"default_pool_size_after", next.Pool.DefaultPoolSize,
-				"pool_mode_before", string(current.Pool.Mode),
-				"pool_mode_after", string(next.Pool.Mode),
-				"query_timeout_before", current.Pool.QueryTimeout,
-				"query_timeout_after", next.Pool.QueryTimeout,
-			)
-
-			// Apply live pool resize.
-			if mgr != nil {
-				changes := mgr.ApplyDefaultSize(next.Pool.DefaultPoolSize,
-					func(k pool.Key) int {
-						if d, ok := next.Databases[k.DB]; ok && d.PoolSize > 0 {
-							return d.PoolSize
-						}
-						return 0
-					})
-				for _, c := range changes {
-					log.Info("pool resized",
-						"pool", c.Key.String(),
-						"from", c.From, "to", c.To)
-				}
-			}
-
-			current = next
-			stats.OnSighupReload("ok")
-			reloadUserlist(userlist, log)
-		}
-	}
-}
-
-// reloadUserlist re-reads the in-memory userlist (if one is configured)
-// and logs the diff. No-op when no userlist_file was set.
-func reloadUserlist(ul *auth.Userlist, log *slog.Logger) {
-	if ul == nil {
-		stats.OnSighupUserlistReload("skip")
-		return
-	}
-	diff, err := ul.ReloadDiff()
-	if err != nil {
-		log.Error("SIGHUP userlist reload failed", "err", err)
-		stats.OnSighupUserlistReload("fail")
-		return
-	}
-	log.Info("SIGHUP userlist reload",
-		"before", diff.Before,
-		"after", diff.After,
-		"added", len(diff.Added),
-		"removed", len(diff.Removed),
-		"rotated", len(diff.Rotated),
-	)
-	stats.OnSighupUserlistReload("ok")
-}
-
 // splitPoolName forwards to pool.SplitName + indicates whether the
 // name was in "db/user" form (ok=false when no slash).
 func splitPoolName(name string) (db, user string, ok bool) {
 	k := pool.SplitName(name)
 	ok = k.User != "" || (len(name) > 0 && name[len(name)-1] == '/')
 	return k.DB, k.User, ok
-}
-
-// fanInSignals forwards both source channels into dst until ctx fires.
-// Used to merge OS SIGHUP and admin-API reload triggers.
-func fanInSignals(ctx context.Context, dst chan<- os.Signal, sources ...<-chan os.Signal) {
-	for _, src := range sources {
-		go func(c <-chan os.Signal) {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case s, ok := <-c:
-					if !ok {
-						return
-					}
-					select {
-					case dst <- s:
-					default:
-					}
-				}
-			}
-		}(src)
-	}
 }
 
 func newLogger(format, level string) *slog.Logger {

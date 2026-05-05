@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -264,24 +265,26 @@ func (m *Manager) rebuildSnapshot() {
 			continue
 		}
 		snap.cands = append(snap.cands, r)
-		w := r.Spec.Weight
-		if w < 1 {
-			w = 1
-		}
-		totalWeight += w
+		totalWeight += normalizeWeight(r.Spec.Weight)
 	}
 	// Pre-expand into the weighted ring so Pick is O(1). Capacity
-	// is exact — no resizes during the append loop.
+	// is exact — no resizes during the append loop. slices.Repeat
+	// (Go 1.23+) replaces the inner counter loop.
 	snap.expanded = make([]*Replica, 0, totalWeight)
 	for _, r := range snap.cands {
-		w := r.Spec.Weight
-		if w < 1 {
-			w = 1
-		}
-		for i := 0; i < w; i++ {
-			snap.expanded = append(snap.expanded, r)
-		}
+		snap.expanded = append(snap.expanded,
+			slices.Repeat([]*Replica{r}, normalizeWeight(r.Spec.Weight))...)
 	}
 	m.snapshot.Store(snap)
+}
+
+// normalizeWeight clamps Spec.Weight to ≥1 — Pool weight=0 means
+// "default to 1" (declarative defaults are zero in YAML); negative
+// weights are operator bugs and treated the same.
+func normalizeWeight(w int) int {
+	if w < 1 {
+		return 1
+	}
+	return w
 }
 
