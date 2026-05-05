@@ -28,12 +28,10 @@ import (
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/replica"
 	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire"
 
-	"crypto/tls"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
@@ -182,22 +180,15 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	defer metricsCancel()
 
 	// --- TLS configs ---
-	clientTLS, _, err := listener.BuildServerTLSConfig(cfg.TLS)
+	clientTLS, backendTLS, backendTLSRequired, err := wire.BuildTLS(cfg)
 	if err != nil {
-		log.Error("client TLS init", "err", err)
+		log.Error("TLS init", "err", err)
 		return 1
 	}
-	backendTLS, err := listener.BuildBackendTLSConfig(cfg.TLS)
-	if err != nil {
-		log.Error("backend TLS init", "err", err)
-		return 1
-	}
-	backendTLSRequired := cfg.TLS.ServerMode == config.SSLRequire ||
-		cfg.TLS.ServerMode == config.SSLVerifyCA ||
-		cfg.TLS.ServerMode == config.SSLVerifyFull
 
 	// --- auth ---
-	authOpts, userlist, err := buildAuthOpts(cfg, backendTLS, backendTLSRequired, log)
+	authOpts, userlist, err := wire.BuildAuthOpts(cfg, backendTLS,
+		backendTLSRequired, "pgrouter-auth_query", log)
 	if err != nil {
 		log.Error("auth init", "err", err)
 		return 1
@@ -205,104 +196,14 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 
 	// --- pool.Manager ---
 	cancelTracker := cancel.NewTracker()
-
-	dialerFor := func(k pool.Key) pool.Dialer {
-		db, ok := cfg.Databases[k.DB]
-		if !ok {
-			// Unknown database — return a dialer that always errors so
-			// Acquire fails with a clear message.
-			return func(_ context.Context) (*backend.Conn, error) {
-				return nil, fmt.Errorf("unknown database %q", k.DB)
-			}
-		}
-		addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
-		// Per-DB upstream user override: if the config pins a user for
-		// this database, use it; otherwise forward the client's.
-		upstreamUser := k.User
-		if db.User != "" {
-			upstreamUser = db.User
-		}
-		dbName := db.DBName
-		if dbName == "" {
-			dbName = k.DB
-		}
-		password := db.Password
-		// If a userlist is loaded and we don't have a per-db password,
-		// look up the upstream user there. This matches PgBouncer's
-		// auth_file behaviour for the upstream side.
-		if password == "" && userlist != nil {
-			if entry, ok := userlist.Lookup(upstreamUser); ok && entry.PlainPassword != "" {
-				password = entry.PlainPassword
-			}
-		}
-		dialOnce := func(ctx context.Context) (*backend.Conn, error) {
-			return backend.Dial(ctx, backend.DialOptions{
-				Addr:        addr,
-				User:        upstreamUser,
-				Database:    dbName,
-				AppName:     "pgrouter",
-				Password:    password,
-				TLSConfig:   backendTLS,
-				TLSRequired: backendTLSRequired,
-				Log:         log,
-			})
-		}
-		// Capped exponential backoff. See internal/backend/retry.go for
-		// schedule + rationale. Shared with pkg/pgrouter (library mode).
-		return func(ctx context.Context) (*backend.Conn, error) {
-			return backend.DialWithRetry(ctx, addr, log,
-				backend.DialRetryConfig{}, dialOnce)
-		}
-	}
-
-	cbs := pool.Callbacks{
-		OnAcquireWait: func(name string, d time.Duration) {
-			stats.OnPoolAcquireWait(name, d.Seconds())
-		},
-		OnDial:      stats.OnPoolDial,
-		OnDialError: stats.OnPoolDialError,
-		OnEvict:     stats.OnPoolEvict,
-	}
-
-	defaultCfg := pool.Config{
-		DefaultPoolSize:    cfg.Pool.DefaultPoolSize,
-		MinPoolSize:        cfg.Pool.MinPoolSize,
-		ReservePoolSize:    cfg.Pool.ReservePoolSize,
-		ReservePoolTimeout: cfg.Pool.ReservePoolTimeout,
-		QueryWait:          cfg.Pool.QueryWaitTimeout,
-		ServerIdle:         cfg.Pool.ServerIdle,
-		ServerLifetime:     cfg.Pool.ServerLifetime,
-		ResetQuery:         cfg.Pool.ServerResetQuery,
-		Log:                log,
-		Callbacks:          cbs,
-	}
-	mgr := pool.NewManager(defaultCfg, dialerFor).
-		WithConfigFor(func(k pool.Key) *pool.Config {
-			db, ok := cfg.Databases[k.DB]
-			if !ok {
-				return nil
-			}
-			ov := &pool.Config{}
-			set := false
-			if db.PoolSize > 0 {
-				ov.DefaultPoolSize = db.PoolSize
-				set = true
-			}
-			if db.ServerResetQuery != "" {
-				ov.ResetQuery = db.ServerResetQuery
-				set = true
-			}
-			if !set {
-				return nil
-			}
-			return ov
-		}).
-		WithGlobalLimits(cfg.Pool.MaxDBConn, cfg.Pool.MaxUserConn,
-			stats.OnGlobalLimitReject)
+	dialerFor := wire.BuildPoolDialer(cfg, userlist, backendTLS,
+		backendTLSRequired, "pgrouter", log)
+	defaultCfg := wire.DefaultPoolConfig(cfg, log)
+	mgr := wire.BuildPoolManager(cfg, cancelTracker, dialerFor, log)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
 	// Per-database replica managers (R/W split).
-	replicaMgrs := buildReplicaManagers(cfg, defaultCfg, backendTLS,
+	replicaMgrs := wire.BuildReplicaManagers(cfg, defaultCfg, backendTLS,
 		backendTLSRequired, log)
 	for _, rm := range replicaMgrs {
 		rm.Start()
@@ -314,7 +215,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}()
 
-	primaryMonitors := buildPrimaryMonitors(cfg, backendTLS, backendTLSRequired, log)
+	primaryMonitors := wire.BuildPrimaryMonitors(cfg, backendTLS, backendTLSRequired, log)
 	defer func() {
 		for _, pm := range primaryMonitors {
 			pm.Stop()
@@ -327,6 +228,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	adminReloadCh := make(chan os.Signal, 1)
 	startTime := time.Now()
 	adminAPI := buildAdminAPI(mgr, adminReloadCh, startTime)
+	_ = adminAPI // referenced below; kept for symmetry with prior layout
 	go func() {
 		err := stats.ServeMetricsAndAdmin(metricsCtx, stats.AdminServerOptions{
 			Addr:        cfg.Metrics.Listen,
@@ -374,19 +276,27 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		log.Info("audit log enabled", "path", cfg.Logging.AuditFile)
 		defer auditWriter.Close()
 	}
-	h := buildPooledHandler(buildHandlerInput{
-		cfg:             cfg,
-		log:             log,
-		mgr:             mgr,
-		clientTLS:       clientTLS,
-		authOpts:        authOpts,
-		cancelTracker:   cancelTracker,
-		cannedParams:    cannedParams,
-		logSQLMode:      logSQLMode,
-		auditWriter:     auditWriter,
-		adminReloadCh:   adminReloadCh,
-		replicaMgrs:     replicaMgrs,
-		primaryMonitors: primaryMonitors,
+	adminReload := func() error {
+		select {
+		case adminReloadCh <- syscall.SIGHUP:
+			return nil
+		default:
+			return fmt.Errorf("reload channel busy")
+		}
+	}
+	h := wire.BuildPooledHandler(wire.HandlerInput{
+		Cfg:             cfg,
+		Log:             log,
+		Mgr:             mgr,
+		ClientTLS:       clientTLS,
+		AuthOpts:        authOpts,
+		CancelTracker:   cancelTracker,
+		CannedParams:    cannedParams,
+		LogSQLMode:      logSQLMode,
+		AuditWriter:     auditWriter,
+		AdminReload:     adminReload,
+		ReplicaMgrs:     replicaMgrs,
+		PrimaryMonitors: primaryMonitors,
 	})
 
 	// --- listener + signal-driven shutdown ---
@@ -603,86 +513,6 @@ func reloadUserlist(ul *auth.Userlist, log *slog.Logger) {
 		"rotated", len(diff.Rotated),
 	)
 	stats.OnSighupUserlistReload("ok")
-}
-
-// primaryProbeDialer returns a closure that opens a dedicated probe
-// conn to the primary upstream of dbName. Resolves host/port/user/
-// password the same way the client-facing pool's dialer does, but
-// emits a distinct application_name so DBAs can spot the probes.
-//
-// Used by the failover monitor (#130). The probe owns its conn, so
-// client-traffic spikes can't starve health checks.
-func primaryProbeDialer(cfg *config.Config, dbName string,
-	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
-) func(context.Context) (*backend.Conn, error) {
-	return func(ctx context.Context) (*backend.Conn, error) {
-		db, ok := cfg.Databases[dbName]
-		if !ok {
-			return nil, fmt.Errorf("primary probe: unknown db %q", dbName)
-		}
-		addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
-		user := db.User
-		if user == "" {
-			user = "pgrouter"
-		}
-		dbReal := db.DBName
-		if dbReal == "" {
-			dbReal = dbName
-		}
-		return backend.Dial(ctx, backend.DialOptions{
-			Addr:        addr,
-			User:        user,
-			Database:    dbReal,
-			AppName:     "pgrouter-primary-health",
-			Password:    db.Password,
-			TLSConfig:   backendTLS,
-			TLSRequired: backendTLSRequired,
-			Log:         log,
-		})
-	}
-}
-
-// buildReplicaManagers projects cfg.Databases into the shared
-// replica.BuildManagersFromConfig surface. The actual pool + manager
-// construction lives in internal/replica/build.go so pkg/pgrouter
-// (library mode) reuses the same code.
-func buildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
-	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
-) map[string]*replica.Manager {
-	dbs := make([]replica.DBDef, 0, len(cfg.Databases))
-	for name, db := range cfg.Databases {
-		if len(db.Replicas) == 0 {
-			continue
-		}
-		reps := make([]replica.ReplicaDef, 0, len(db.Replicas))
-		for _, r := range db.Replicas {
-			reps = append(reps, replica.ReplicaDef{
-				Host: r.Host, Port: r.Port, Weight: r.Weight,
-			})
-		}
-		dbs = append(dbs, replica.DBDef{
-			Name:               name,
-			DBName:             db.DBName,
-			User:               db.User,
-			Password:           db.Password,
-			Replicas:           reps,
-			MaxReplicaLagBytes: db.MaxReplicaLagBytes,
-		})
-	}
-	dial := func(addr, user, dbname, password string) backend.DialOptions {
-		return backend.DialOptions{
-			Addr:        addr,
-			User:        user,
-			Database:    dbname,
-			AppName:     "pgrouter-replica",
-			Password:    password,
-			TLSConfig:   backendTLS,
-			TLSRequired: backendTLSRequired,
-			Log:         log,
-		}
-	}
-	return replica.BuildManagersFromConfig(dbs, defaultCfg, dial,
-		cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
 }
 
 // splitPoolName forwards to pool.SplitName + indicates whether the

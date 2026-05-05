@@ -1,8 +1,14 @@
+// Package pgrouter is the library-mode pgrouter handle. Build a Server
+// from a parsed *config.Config, drive its lifecycle via Run (blocks)
+// or Start/Stop (async).
+//
+// Library mode is a thin wrapper around the internal/wire builders —
+// the same code cmd/pgrouter uses. cmd-mode adds signal handling +
+// SIGHUP reload + the admin HTTP API on top.
 package pgrouter
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,8 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
@@ -20,6 +24,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/replica"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire"
 )
 
 // Server is one embedded pgrouter instance. Build with New, drive
@@ -29,13 +34,14 @@ type Server struct {
 	cfg *config.Config
 	log *slog.Logger
 
-	mgr           *pool.Manager
-	listener      *listener.Listener
-	unixListener  *listener.Listener
-	handler       *client.PooledHandler
-	replicaMgrs   map[string]*replica.Manager
-	auditWriter   *client.AuditWriter
-	cancelTracker *cancel.Tracker
+	mgr             *pool.Manager
+	listener        *listener.Listener
+	unixListener    *listener.Listener
+	handler         *client.PooledHandler
+	replicaMgrs     map[string]*replica.Manager
+	primaryMonitors map[string]*replica.PrimaryMonitor
+	auditWriter     *client.AuditWriter
+	cancelTracker   *cancel.Tracker
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -60,97 +66,27 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	stats.Build.Commit = "lib"
 	_ = stats.New()
 
-	clientTLS, _, err := listener.BuildServerTLSConfig(cfg.TLS)
+	clientTLS, backendTLS, backendTLSRequired, err := wire.BuildTLS(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("client TLS: %w", err)
+		return nil, err
 	}
-	backendTLS, err := listener.BuildBackendTLSConfig(cfg.TLS)
-	if err != nil {
-		return nil, fmt.Errorf("backend TLS: %w", err)
-	}
-	backendTLSRequired := cfg.TLS.ServerMode == config.SSLRequire ||
-		cfg.TLS.ServerMode == config.SSLVerifyCA ||
-		cfg.TLS.ServerMode == config.SSLVerifyFull
 
-	var userlist *auth.Userlist
-	if cfg.Auth.UserlistFile != "" {
-		ul, err := auth.NewUserlist(cfg.Auth.UserlistFile)
-		if err != nil {
-			return nil, fmt.Errorf("userlist: %w", err)
-		}
-		userlist = ul
-	}
-	var hba *auth.HBAFile
-	if cfg.Auth.HBAFile != "" {
-		h, err := auth.NewHBAFile(cfg.Auth.HBAFile)
-		if err != nil {
-			return nil, fmt.Errorf("hba: %w", err)
-		}
-		hba = h
-	}
-	var authOpts *auth.ServerAuthOptions
-	if cfg.Auth.Type != config.AuthTrust {
-		authOpts = &auth.ServerAuthOptions{
-			Type:     cfg.Auth.Type,
-			Userlist: userlist,
-			HBA:      hba,
-			Log:      log,
-		}
+	authOpts, userlist, err := wire.BuildAuthOpts(cfg, backendTLS,
+		backendTLSRequired, "pgrouter-lib-auth_query", log)
+	if err != nil {
+		return nil, err
 	}
 
 	cancelTracker := cancel.NewTracker()
-	defaultCfg := pool.Config{
-		DefaultPoolSize:    cfg.Pool.DefaultPoolSize,
-		MinPoolSize:        cfg.Pool.MinPoolSize,
-		ReservePoolSize:    cfg.Pool.ReservePoolSize,
-		ReservePoolTimeout: cfg.Pool.ReservePoolTimeout,
-		QueryWait:          cfg.Pool.QueryWaitTimeout,
-		ServerIdle:         cfg.Pool.ServerIdle,
-		ServerLifetime:     cfg.Pool.ServerLifetime,
-		ResetQuery:         cfg.Pool.ServerResetQuery,
-		Log:                log,
-	}
-
-	dialerFor := func(k pool.Key) pool.Dialer {
-		db, ok := cfg.Databases[k.DB]
-		if !ok {
-			return func(_ context.Context) (*backend.Conn, error) {
-				return nil, fmt.Errorf("unknown database %q", k.DB)
-			}
-		}
-		addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
-		user := k.User
-		if db.User != "" {
-			user = db.User
-		}
-		dialOnce := func(ctx context.Context) (*backend.Conn, error) {
-			return backend.Dial(ctx, backend.DialOptions{
-				Addr:        addr,
-				User:        user,
-				Database:    db.DBName,
-				AppName:     "pgrouter-lib",
-				Password:    db.Password,
-				TLSConfig:   backendTLS,
-				TLSRequired: backendTLSRequired,
-				Log:         log,
-			})
-		}
-		// Use the shared M.7.6 backoff schedule. Previously library
-		// mode skipped this — a backend going down had pgrouter
-		// hammer it once per client Acquire.
-		return func(ctx context.Context) (*backend.Conn, error) {
-			return backend.DialWithRetry(ctx, addr, log,
-				backend.DialRetryConfig{}, dialOnce)
-		}
-	}
-
-	mgr := pool.NewManager(defaultCfg, dialerFor).
-		WithGlobalLimits(cfg.Pool.MaxDBConn, cfg.Pool.MaxUserConn,
-			stats.OnGlobalLimitReject)
+	dialerFor := wire.BuildPoolDialer(cfg, userlist, backendTLS,
+		backendTLSRequired, "pgrouter-lib", log)
+	mgr := wire.BuildPoolManager(cfg, cancelTracker, dialerFor, log)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
-	// Replicas.
-	replicaMgrs := buildReplicaManagers(cfg, defaultCfg, backendTLS,
+	defaultPoolCfg := wire.DefaultPoolConfig(cfg, log)
+	replicaMgrs := wire.BuildReplicaManagers(cfg, defaultPoolCfg,
+		backendTLS, backendTLSRequired, log)
+	primaryMonitors := wire.BuildPrimaryMonitors(cfg, backendTLS,
 		backendTLSRequired, log)
 
 	auditWriter, err := client.OpenAuditFile(cfg.Logging.AuditFile)
@@ -158,38 +94,23 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("audit: %w", err)
 	}
 
-	h := &client.PooledHandler{
-		Log:               log,
-		Manager:           mgr,
-		TLSConfig:         clientTLS,
-		Auth:              authOpts,
-		CancelTracker:     cancelTracker,
-		ResetOnRelease:    true,
-		QueryTimeout:      cfg.Pool.QueryTimeout,
-		ClientIdleTimeout: cfg.Server.ClientIdle,
-		IdleTxTimeout:     cfg.Server.IdleTx,
-		SlowQuery:         cfg.Logging.SlowQuery,
-		LogSQL:            string(config.NormalizeLogSQL(cfg.Logging.LogSQL)),
-		Audit:             auditWriter,
-		PoolMode:          string(cfg.Pool.Mode),
-		ReplicaPickerFor: func(db string) *pool.Pool {
-			rm, ok := replicaMgrs[db]
-			if !ok {
-				return nil
-			}
-			r, err := rm.Pick()
-			if err != nil {
-				return nil
-			}
-			return r.Pool
-		},
-		StickyReadWindowFor: func(db string) time.Duration {
-			if d, ok := cfg.Databases[db]; ok {
-				return d.StickyReadWindow
-			}
-			return 0
-		},
-	}
+	logSQLMode := string(config.NormalizeLogSQL(cfg.Logging.LogSQL))
+	h := wire.BuildPooledHandler(wire.HandlerInput{
+		Cfg:             cfg,
+		Log:             log,
+		Mgr:             mgr,
+		ClientTLS:       clientTLS,
+		AuthOpts:        authOpts,
+		CancelTracker:   cancelTracker,
+		CannedParams:    wire.CannedParams(),
+		LogSQLMode:      logSQLMode,
+		AuditWriter:     auditWriter,
+		ReplicaMgrs:     replicaMgrs,
+		PrimaryMonitors: primaryMonitors,
+		// Library mode: no admin reload channel by default. The
+		// embedding service can call (*Server).Reload() if it needs
+		// SIGHUP-equivalent semantics.
+	})
 
 	listenAddr := net.JoinHostPort(cfg.Server.ListenAddr,
 		strconv.Itoa(cfg.Server.ListenPort))
@@ -212,16 +133,17 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:           cfg,
-		log:           log,
-		mgr:           mgr,
-		listener:      ln,
-		unixListener:  unixLn,
-		handler:       h,
-		replicaMgrs:   replicaMgrs,
-		auditWriter:   auditWriter,
-		cancelTracker: cancelTracker,
-		stopped:       make(chan struct{}),
+		cfg:             cfg,
+		log:             log,
+		mgr:             mgr,
+		listener:        ln,
+		unixListener:    unixLn,
+		handler:         h,
+		replicaMgrs:     replicaMgrs,
+		primaryMonitors: primaryMonitors,
+		auditWriter:     auditWriter,
+		cancelTracker:   cancelTracker,
+		stopped:         make(chan struct{}),
 	}, nil
 }
 
@@ -258,9 +180,12 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop drains pools + closes listeners. Idempotent.
+// Stop drains pools + closes listeners + stops monitors. Idempotent.
 func (s *Server) Stop(deadline time.Duration) error {
 	s.stopOnce.Do(func() { close(s.stopped) })
+	for _, pm := range s.primaryMonitors {
+		pm.Stop()
+	}
 	for _, rm := range s.replicaMgrs {
 		rm.Stop()
 	}
@@ -272,45 +197,4 @@ func (s *Server) Stop(deadline time.Duration) error {
 		_ = s.auditWriter.Close()
 	}
 	return s.mgr.CloseWithDeadline(time.Now().Add(deadline))
-}
-
-// buildReplicaManagers projects cfg.Databases into the shared
-// replica.BuildManagersFromConfig — same code that cmd/pgrouter uses.
-func buildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
-	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
-) map[string]*replica.Manager {
-	dbs := make([]replica.DBDef, 0, len(cfg.Databases))
-	for name, db := range cfg.Databases {
-		if len(db.Replicas) == 0 {
-			continue
-		}
-		reps := make([]replica.ReplicaDef, 0, len(db.Replicas))
-		for _, r := range db.Replicas {
-			reps = append(reps, replica.ReplicaDef{
-				Host: r.Host, Port: r.Port, Weight: r.Weight,
-			})
-		}
-		dbs = append(dbs, replica.DBDef{
-			Name:               name,
-			DBName:             db.DBName,
-			User:               db.User,
-			Password:           db.Password,
-			Replicas:           reps,
-			MaxReplicaLagBytes: db.MaxReplicaLagBytes,
-		})
-	}
-	dial := func(addr, user, dbname, password string) backend.DialOptions {
-		return backend.DialOptions{
-			Addr:        addr,
-			User:        user,
-			Database:    dbname,
-			AppName:     "pgrouter-replica",
-			Password:    password,
-			TLSConfig:   backendTLS,
-			TLSRequired: backendTLSRequired,
-			Log:         log,
-		}
-	}
-	return replica.BuildManagersFromConfig(dbs, defaultCfg, dial,
-		cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
 }
