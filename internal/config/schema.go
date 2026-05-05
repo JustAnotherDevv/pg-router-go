@@ -32,6 +32,15 @@ type ServerConfig struct {
 	// L4 load balancer that prefixes the real client addr.
 	ProxyProtocol bool `yaml:"proxy_protocol,omitempty"`
 
+	// ProxyProtocolStrict, when true alongside ProxyProtocol, rejects
+	// accepted connections that don't present a PROXY preamble. Use in
+	// production once the LB is verified speaking PROXY. Default false
+	// keeps existing rollout behavior (bare conns accepted) so a LB
+	// misconfig doesn't drop traffic during the rollout window.
+	// Connections rejected this way are counted in
+	// pgrouter_proxy_proto_missing_total.
+	ProxyProtocolStrict bool `yaml:"proxy_protocol_strict,omitempty"`
+
 	MaxClientConn  int           `yaml:"max_client_conn"`            // default 1000
 	ClientIdle     time.Duration `yaml:"client_idle_timeout"`        // 0 = disabled
 	ClientLogin    time.Duration `yaml:"client_login_timeout"`       // default 60s
@@ -55,6 +64,12 @@ type PoolConfig struct {
 	ServerCheckQuery  string        `yaml:"server_check_query"`  // default ";"
 	ServerCheckDelay  time.Duration `yaml:"server_check_delay"`  // default 30s
 	ServerResetQuery  string        `yaml:"server_reset_query"`  // default "DISCARD ALL"
+
+	// SkipPreflight disables the boot-time dial against each configured
+	// database. Default false (preflight runs; all-fail aborts boot)
+	// catches typos before clients see latency. Set true for staged
+	// rollouts where backends warm later than the pooler.
+	SkipPreflight bool `yaml:"skip_preflight,omitempty"`
 }
 
 // PoolMode is the connection-reuse policy.

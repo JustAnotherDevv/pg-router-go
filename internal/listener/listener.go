@@ -12,6 +12,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
 // readerConn drains a pre-peeked bufio reader before falling through to
@@ -53,12 +55,23 @@ type Listener struct {
 	// accepted conn and rewrites RemoteAddr to the real client. For use
 	// behind HAProxy / AWS NLB / Cloudflare Spectrum.
 	proxyProtocol bool
+
+	// proxyProtocolStrict, when true alongside proxyProtocol, rejects
+	// bare connections (no preamble) instead of falling through to
+	// the readerConn wrap. Bare-conn count flows to the
+	// pgrouter_proxy_proto_missing_total counter regardless.
+	proxyProtocolStrict bool
 }
 
 // EnableProxyProtocol switches on PROXY v1/v2 preamble parsing on every
 // accepted conn. Must be called before Serve.
-func (l *Listener) EnableProxyProtocol() *Listener {
+//
+// `strict`=true rejects connections that don't present a PROXY
+// preamble; false logs the miss + accepts the bare conn (for rollout
+// safety).
+func (l *Listener) EnableProxyProtocol(strict bool) *Listener {
 	l.proxyProtocol = true
+	l.proxyProtocolStrict = strict
 	return l
 }
 
@@ -161,9 +174,19 @@ func (l *Listener) parsePROXYOrWrap(c net.Conn) (net.Conn, bool) {
 	switch {
 	case err == nil && info.SourceAddr != nil:
 		return WithProxyAddr(c, info.SourceAddr, br), true
-	case err == nil, errors.Is(err, ErrNoProxyHeader):
-		// LOCAL/UNKNOWN PROXY, or bare client (strict mode would
-		// reject the latter; we accept for rollout safety).
+	case errors.Is(err, ErrNoProxyHeader):
+		// Bare client (no preamble). Strict mode rejects + tracks; lax
+		// mode tracks + wraps the conn so rollout doesn't drop traffic.
+		stats.OnProxyProtoMissing()
+		if l.proxyProtocolStrict {
+			l.log.Warn("PROXY strict mode: closing bare connection",
+				"remote", c.RemoteAddr().String())
+			_ = c.Close()
+			return nil, false
+		}
+		return &readerConn{conn: c, r: br}, true
+	case err == nil:
+		// LOCAL/UNKNOWN PROXY command — keep underlying addr.
 		return &readerConn{conn: c, r: br}, true
 	default:
 		l.log.Warn("PROXY header parse failed; closing",

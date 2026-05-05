@@ -13,7 +13,9 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -34,6 +36,12 @@ const TracerName = "github.com/JustAnotherDevv/pgrouter"
 //   OTEL_EXPORTER_OTLP_ENDPOINT       — e.g. http://collector:4318
 //   OTEL_EXPORTER_OTLP_PROTOCOL       — currently only "http/protobuf" supported
 //   OTEL_SERVICE_NAME                 — defaults to "pgrouter"
+//   OTEL_TRACES_SAMPLER               — parentbased_always_on |
+//                                       parentbased_traceidratio | always_on |
+//                                       always_off | traceidratio
+//                                       (default: parentbased_traceidratio)
+//   OTEL_TRACES_SAMPLER_ARG           — float ratio for ratio samplers
+//                                       (default: 0.01 = 1%)
 //
 // Empty endpoint → no-op TracerProvider stays in place.
 func Init(ctx context.Context, version, commit string) (func(context.Context) error, error) {
@@ -70,10 +78,41 @@ func Init(ctx context.Context, version, commit string) (func(context.Context) er
 			sdktrace.WithBatchTimeout(5*time.Second),
 		),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(samplerFromEnv()),
 	)
 	otel.SetTracerProvider(tp)
 
 	return tp.Shutdown, nil
+}
+
+// samplerFromEnv honours the standard OTEL_TRACES_SAMPLER /
+// OTEL_TRACES_SAMPLER_ARG variables. Default: 1% ratio under a
+// parent-based wrapper so an upstream service's sampling decision is
+// respected. 100% sampling at 10k QPS overwhelms collectors — see
+// SB7 review.
+func samplerFromEnv() sdktrace.Sampler {
+	ratio := 0.01
+	if v := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			ratio = f
+		} else {
+			slog.Warn("OTEL_TRACES_SAMPLER_ARG ignored (not a float 0..1)", "value", v)
+		}
+	}
+	switch os.Getenv("OTEL_TRACES_SAMPLER") {
+	case "always_on":
+		return sdktrace.AlwaysSample()
+	case "always_off":
+		return sdktrace.NeverSample()
+	case "traceidratio":
+		return sdktrace.TraceIDRatioBased(ratio)
+	case "parentbased_always_on":
+		return sdktrace.ParentBased(sdktrace.AlwaysSample())
+	case "parentbased_always_off":
+		return sdktrace.ParentBased(sdktrace.NeverSample())
+	default: // "parentbased_traceidratio" or unset
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+	}
 }
 
 // Tracer returns pgrouter's instrumentation Tracer. Always safe to

@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
@@ -451,6 +452,68 @@ func (r *cfgRouter) QPSCap(db, user string) float64 {
 		return d.MaxQPS
 	}
 	return 0
+}
+
+// Preflight dials each configured database once + closes immediately.
+// Returns nil when all dials succeed OR cfg has no databases; returns
+// an aggregated error when ALL dials fail (boot should abort).
+// Per-DB failures are logged but don't abort if at least one succeeds —
+// rolling upgrades + lagging warm-up of some backends shouldn't ground
+// the pooler.
+//
+// `appName` is the application_name reported on each probe dial. cmd
+// passes "pgrouter-preflight"; lib mode passes the same.
+//
+// Honour `cfg.Pool.SkipPreflight` — operators can opt out for staged
+// rollouts where backends warm later than the pooler.
+func Preflight(ctx context.Context, cfg *config.Config,
+	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
+) error {
+	if cfg.Pool.SkipPreflight {
+		log.Info("preflight: skipped (cfg.pool.skip_preflight)")
+		return nil
+	}
+	if len(cfg.Databases) == 0 {
+		return nil
+	}
+	env := dialEnv{tls: backendTLS, tlsRequired: backendTLSRequired, log: log}
+	var (
+		ok       int
+		failures []string
+	)
+	for name, db := range cfg.Databases {
+		addr := net.JoinHostPort(db.Host, strconv.Itoa(db.Port))
+		user := db.User
+		if user == "" {
+			user = "pgrouter"
+		}
+		dbName := db.DBName
+		if dbName == "" {
+			dbName = name
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		c, err := backend.Dial(dialCtx, env.opts(addr, user, dbName,
+			"pgrouter-preflight", db.Password))
+		cancel()
+		if err != nil {
+			failures = append(failures,
+				fmt.Sprintf("%s (%s): %v", name, addr, err))
+			log.Warn("preflight dial failed", "db", name, "addr", addr, "err", err)
+			continue
+		}
+		_ = c.Close()
+		ok++
+		log.Info("preflight dial ok", "db", name, "addr", addr)
+	}
+	if ok == 0 {
+		return fmt.Errorf("preflight: 0/%d backends reachable:\n  %s",
+			len(cfg.Databases), strings.Join(failures, "\n  "))
+	}
+	if len(failures) > 0 {
+		log.Warn("preflight: some backends unreachable; continuing",
+			"ok", ok, "failed", len(failures))
+	}
+	return nil
 }
 
 // CannedParams returns the canned StartupMessage values pgrouter

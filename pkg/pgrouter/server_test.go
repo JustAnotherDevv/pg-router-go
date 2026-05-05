@@ -45,6 +45,7 @@ func TestServerStartsAcceptingTCP(t *testing.T) {
 		Pool: config.PoolConfig{
 			Mode:            config.PoolModeTransaction,
 			DefaultPoolSize: 4,
+			SkipPreflight:   true, // SB9: no real PG in unit test
 		},
 		Auth: config.AuthConfig{Type: config.AuthTrust},
 		TLS:  config.TLSConfig{ClientMode: config.SSLDisable, ServerMode: config.SSLDisable},

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -110,6 +111,30 @@ type PooledHandler struct {
 
 	qpsMu      sync.Mutex
 	qpsBuckets map[string]*util.TokenBucket
+
+	// inflight tracks active Handle goroutines. Incremented at Handle
+	// entry, decremented at exit. WaitForDrain polls this on graceful
+	// shutdown so SIGTERM doesn't terminate mid-query clients.
+	inflight atomic.Int64
+}
+
+// InflightClients returns the number of currently-served client
+// connections. Surfaced via the pgrouter_inflight_clients gauge.
+func (h *PooledHandler) InflightClients() int64 { return h.inflight.Load() }
+
+// WaitForDrain blocks until inflight reaches 0 OR `deadline`. Returns
+// the residual inflight count (0 = clean drain, >0 = deadline hit).
+func (h *PooledHandler) WaitForDrain(deadline time.Time) int64 {
+	for {
+		n := h.inflight.Load()
+		if n == 0 {
+			return 0
+		}
+		if !time.Now().Before(deadline) {
+			return n
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // qpsBucketFor returns a shared TokenBucket for the (db, user). Lazily

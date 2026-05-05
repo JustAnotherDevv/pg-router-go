@@ -190,6 +190,25 @@ func OnPreparedEviction(db, user, app string) {
 	}
 }
 
+// OnAuditWriteError counts audit-file write failures (SB5). Sticky in
+// the sense that a disk-full event will tick rapidly; combined with a
+// one-shot slog.Warn in AuditWriter, the operator gets a clear signal
+// instead of silent record loss.
+func OnAuditWriteError() {
+	if Active != nil {
+		Active.AuditWriteErrors.Inc()
+	}
+}
+
+// OnProxyProtoMissing counts connections rejected (strict mode) or
+// gracefully accepted (lax mode) when the PROXY preamble was expected
+// but absent (SB8).
+func OnProxyProtoMissing() {
+	if Active != nil {
+		Active.ProxyProtoMissing.Inc()
+	}
+}
+
 // Reg is the *prometheus.Registry pgrouter writes to. Production main
 // passes this into the metrics HTTP handler.
 var Reg = prometheus.NewRegistry()
@@ -240,6 +259,13 @@ type Metrics struct {
 	// Lifecycle.
 	SighupReloads         *prometheus.CounterVec // {"outcome": "ok"|"fail"}
 	SighupUserlistReloads *prometheus.CounterVec // {"outcome": "ok"|"fail"|"skip"}
+
+	// Audit + PROXY-protocol ops counters.
+	AuditWriteErrors  prometheus.Counter // SB5: disk-full / EBADF on AuditWriter
+	ProxyProtoMissing prometheus.Counter // SB8: PROXY preamble expected but absent
+
+	// Inflight-clients gauge for graceful-drain observability (SB6).
+	InflightClients prometheus.GaugeFunc
 
 	// QPS rate-limit rejections (#116).
 	QPSRejects *prometheus.CounterVec // {"scope": "db"|"user", "name": <db|user>}
@@ -378,6 +404,23 @@ func New() *Metrics {
 			Name: "pgrouter_sighup_userlist_reloads_total",
 			Help: "SIGHUP-driven userlist.txt reloads.",
 		}, []string{"outcome"}),
+		AuditWriteErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pgrouter_audit_write_errors_total",
+			Help: "Audit-file Write() failures (disk full / IO error).",
+		}),
+		ProxyProtoMissing: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pgrouter_proxy_proto_missing_total",
+			Help: "Accepted connections that did not present a PROXY preamble (rejected when proxy_protocol_strict=true).",
+		}),
+		InflightClients: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "pgrouter_inflight_clients",
+			Help: "Client conns currently being served (decremented on Handle return).",
+		}, func() float64 {
+			if InflightFn == nil {
+				return 0
+			}
+			return float64(InflightFn())
+		}),
 		QPSRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_qps_rejects_total",
 			Help: "Queries rejected by per-tenant max_qps token bucket.",
@@ -424,10 +467,17 @@ func New() *Metrics {
 		m.SighupReloads, m.SighupUserlistReloads, m.QPSRejects,
 		m.BytesInPerTenant, m.BytesOutPerTenant,
 		m.PreparedHits, m.PreparedMisses, m.PreparedEvictions,
+		m.AuditWriteErrors, m.ProxyProtoMissing, m.InflightClients,
 	)
 	Active = m
 	return m
 }
+
+// InflightFn is set by main / pkg.Server at boot so the
+// pgrouter_inflight_clients gauge can return the live count without
+// internal/stats importing internal/client (which would be a cycle).
+// nil → gauge reports 0.
+var InflightFn func() int64
 
 // defaultBuckets is tuned for pgwire RTTs (sub-ms to multi-second slow
 // queries). Override per-histogram if a different distribution fits.

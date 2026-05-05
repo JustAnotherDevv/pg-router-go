@@ -237,7 +237,11 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	// lookups are pure overhead under high QPS. Safe when Active==nil
 	// (returns nil; all methods are no-ops).
 	if h.counters == nil {
-		h.counters = stats.NewTenantCounters(h.Database, h.User, h.App)
+		// SanitizeAppName caps the client-controlled label cardinality
+		// to prevent a Prometheus head-block blowup from hostile
+		// StartupMessage values (HB2).
+		h.counters = stats.NewTenantCounters(h.Database, h.User,
+			stats.SanitizeAppName(h.App))
 	}
 
 	be := pgproto3.NewBackend(conn, conn)

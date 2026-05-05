@@ -27,11 +27,13 @@ package stats
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -90,9 +92,34 @@ func ServeMetricsAndAdmin(ctx context.Context, opts AdminServerOptions, log *slo
 	mux.Handle(opts.MetricsPath, promhttp.HandlerFor(Reg, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
 	}))
+	// /healthz = liveness. Always 200 unless the process is broken
+	// (in which case the HTTP server is broken too).
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// /readyz = readiness. 200 only when the pooler is accepting
+	// traffic; 503 during graceful drain or before listeners are up.
+	// K8s readinessProbe should target /readyz so it stops routing
+	// new traffic the moment SIGTERM lands.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if Ready.Load() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ready"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("draining"))
+	})
+	mux.HandleFunc("/api/v1/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if Ready.Load() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ready"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("draining"))
 	})
 
 	mux.HandleFunc("/api/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -240,11 +267,18 @@ func checkToken(r *http.Request, want string) bool {
 		return true
 	}
 	h := r.Header.Get("Authorization")
-	prefix := "Bearer "
+	const prefix = "Bearer "
 	if !strings.HasPrefix(h, prefix) {
 		return false
 	}
-	return strings.TrimPrefix(h, prefix) == want
+	got := strings.TrimPrefix(h, prefix)
+	// HB1: constant-time compare. Plain == short-circuits on first
+	// byte mismatch + leaks token length via timing; an attacker can
+	// recover the token byte-by-byte by measuring response latency.
+	// subtle.ConstantTimeCompare runs in time proportional to len(want)
+	// regardless of input — and length-mismatched inputs are rejected
+	// without short-circuiting via a fixed-cost path.
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 // apiFn returns nil when AdminAPI is nil so the get/post wrappers
@@ -256,6 +290,13 @@ func apiFn(a *AdminAPI, h func(*AdminAPI) (any, error)) func() (any, error) {
 	}
 	return func() (any, error) { return h(a) }
 }
+
+// Ready is the process-wide readiness flag served by /readyz.
+//
+// Set true by cmd.cmdRun / pkg.Server.Start once the listener is
+// accepting connections. Set false at the start of CloseWithDeadline /
+// Server.Stop so K8s readiness probes flip to 503 immediately.
+var Ready atomic.Bool
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")

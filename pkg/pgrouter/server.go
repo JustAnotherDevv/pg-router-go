@@ -83,6 +83,11 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	mgr := wire.BuildPoolManager(cfg, cancelTracker, dialerFor, log)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
+	// SB9: preflight backend dials.
+	if err := wire.Preflight(context.Background(), cfg, backendTLS, backendTLSRequired, log); err != nil {
+		return nil, fmt.Errorf("preflight: %w", err)
+	}
+
 	defaultPoolCfg := wire.DefaultPoolConfig(cfg, log)
 	replicaMgrs := wire.BuildReplicaManagers(cfg, defaultPoolCfg,
 		backendTLS, backendTLSRequired, log)
@@ -95,6 +100,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}
 
 	logSQLMode := string(config.NormalizeLogSQL(cfg.Logging.LogSQL))
+	stats.SetAppNameCap(stats.DefaultAppNameCardinalityCap) // HB2
 	h := wire.BuildPooledHandler(wire.HandlerInput{
 		Cfg:             cfg,
 		Log:             log,
@@ -111,6 +117,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		// embedding service can call (*Server).Reload() if it needs
 		// SIGHUP-equivalent semantics.
 	})
+	stats.InflightFn = h.InflightClients // SB6: feeds pgrouter_inflight_clients gauge
 
 	listenAddr := net.JoinHostPort(cfg.Server.ListenAddr,
 		strconv.Itoa(cfg.Server.ListenPort))
@@ -119,7 +126,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("tcp listener: %w", err)
 	}
 	if cfg.Server.ProxyProtocol {
-		ln.EnableProxyProtocol()
+		ln.EnableProxyProtocol(cfg.Server.ProxyProtocolStrict)
 	}
 
 	var unixLn *listener.Listener
@@ -168,6 +175,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Sweep orphan cancel-tracker entries. See cmd/pgrouter for rationale.
 	s.cancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
 
+	stats.Ready.Store(true) // /readyz returns 200 from here on
 	errCh := make(chan error, 2)
 	go func() { errCh <- s.listener.Serve(ctx, s.handler.Handle) }()
 	if s.unixListener != nil {
@@ -183,6 +191,10 @@ func (s *Server) Start(ctx context.Context) error {
 // Stop drains pools + closes listeners + stops monitors. Idempotent.
 func (s *Server) Stop(deadline time.Duration) error {
 	s.stopOnce.Do(func() { close(s.stopped) })
+	stats.Ready.Store(false) // K8s readiness flips to 503 immediately
+	if d := s.handler.WaitForDrain(time.Now().Add(deadline)); d > 0 {
+		s.log.Warn("drain deadline reached with active clients", "remaining", d)
+	}
 	for _, pm := range s.primaryMonitors {
 		pm.Stop()
 	}

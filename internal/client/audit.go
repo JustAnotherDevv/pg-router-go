@@ -26,10 +26,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
 
 // AuditWriter is the process-wide audit log target. nil = audit off.
@@ -37,6 +41,13 @@ type AuditWriter struct {
 	mu     sync.Mutex
 	w      io.Writer
 	closer io.Closer // optional; set when the writer was opened from a file
+
+	// errored is a sticky flag: once a Write fails, subsequent
+	// failures don't spam slog — the operator already saw the first
+	// one and pgrouter_audit_write_errors_total ticks for each
+	// failure. Cleared when a Write succeeds.
+	errored atomic.Bool
+	Log     *slog.Logger // optional; defaults to slog.Default
 }
 
 // Close flushes + closes the underlying file (if any).
@@ -117,8 +128,34 @@ func (a *AuditWriter) Write(reqID, db, user, app, kind, sql string, dur time.Dur
 	buf.WriteByte('\n')
 
 	a.mu.Lock()
-	_, _ = a.w.Write(buf.Bytes())
+	_, err := a.w.Write(buf.Bytes())
 	a.mu.Unlock()
+	a.observeWriteResult(err)
+}
+
+// observeWriteResult ticks pgrouter_audit_write_errors_total on err,
+// emits a one-shot WARN on first transition into the failed state,
+// and clears the sticky flag on a successful write. Audit failures
+// are best-effort so the SQL request flow isn't affected.
+func (a *AuditWriter) observeWriteResult(err error) {
+	if err == nil {
+		if a.errored.CompareAndSwap(true, false) {
+			a.logger().Info("audit log writes recovered")
+		}
+		return
+	}
+	stats.OnAuditWriteError()
+	if a.errored.CompareAndSwap(false, true) {
+		a.logger().Warn("audit log write failed; subsequent failures suppressed",
+			"err", err)
+	}
+}
+
+func (a *AuditWriter) logger() *slog.Logger {
+	if a.Log != nil {
+		return a.Log
+	}
+	return slog.Default()
 }
 
 // writeKV appends `"key":<json-quoted value>` to buf. last=true skips

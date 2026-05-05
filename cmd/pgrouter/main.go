@@ -201,6 +201,14 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	mgr := wire.BuildPoolManager(cfg, cancelTracker, dialerFor, log)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
+	// SB9: dial each backend once before opening the listener so an
+	// obvious misconfig (typo'd host, wrong port, bad creds) aborts at
+	// boot instead of leaking into client latency.
+	if err := wire.Preflight(context.Background(), cfg, backendTLS, backendTLSRequired, log); err != nil {
+		log.Error("preflight failed", "err", err)
+		return 1
+	}
+
 	// Per-database replica managers (R/W split).
 	replicaMgrs := wire.BuildReplicaManagers(cfg, defaultCfg, backendTLS,
 		backendTLSRequired, log)
@@ -283,6 +291,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 			return fmt.Errorf("reload channel busy")
 		}
 	}
+	stats.SetAppNameCap(stats.DefaultAppNameCardinalityCap) // HB2 (idempotent)
 	h := wire.BuildPooledHandler(wire.HandlerInput{
 		Cfg:             cfg,
 		Log:             log,
@@ -297,6 +306,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		ReplicaMgrs:     replicaMgrs,
 		PrimaryMonitors: primaryMonitors,
 	})
+	stats.InflightFn = h.InflightClients // SB6: feeds pgrouter_inflight_clients gauge
 
 	// --- listener + signal-driven shutdown ---
 	// SIGINT + SIGTERM trigger shutdown via the cancel-context. SIGHUP is
@@ -329,7 +339,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if cfg.Server.ProxyProtocol {
-		ln.EnableProxyProtocol()
+		ln.EnableProxyProtocol(cfg.Server.ProxyProtocolStrict)
 		log.Info("PROXY protocol parsing enabled (v1+v2)")
 	}
 	log.Info("listening", "addr", ln.Addr().String())
@@ -350,19 +360,27 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 
 	// Run both listeners; first non-nil error wins. ctx cancel triggers
 	// both to drain in parallel.
+	stats.Ready.Store(true) // /readyz returns 200 from here on
 	errCh := make(chan error, 2)
 	go func() { errCh <- ln.Serve(ctx, h.Handle) }()
 	if unixLn != nil {
 		go func() { errCh <- unixLn.Serve(ctx, h.Handle) }()
 	}
 	serveErr := <-errCh
+	// Flip readiness immediately so K8s stops routing new traffic
+	// while we drain in-flight queries.
+	stats.Ready.Store(false)
 	// Drain the second error if any.
 	if unixLn != nil {
 		<-errCh
 	}
 
-	// Graceful drain: give pools 30s to release before force-close.
+	// Graceful drain: wait for in-flight clients (SB6) then close pool.
 	drainDeadline := time.Now().Add(30 * time.Second)
+	if remaining := h.WaitForDrain(drainDeadline); remaining > 0 {
+		log.Warn("drain deadline reached with active clients",
+			"remaining", remaining)
+	}
 	if err := mgr.CloseWithDeadline(drainDeadline); err != nil {
 		log.Warn("pool drain", "err", err)
 	}
