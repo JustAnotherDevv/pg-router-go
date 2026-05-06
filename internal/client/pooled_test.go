@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // fakeBackend is a goroutine that speaks pgproto3.Backend on the server
@@ -61,7 +61,7 @@ func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: size,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	return fb, p
 }
@@ -90,7 +90,7 @@ func (fb *fakeBackend) Conn() *backend.Conn {
 		NetConn:  fb.cli,
 		Frontend: pgproto3.NewFrontend(fb.cli, fb.cli),
 		Params:   map[string]string{},
-		Log:      slog.New(slog.DiscardHandler),
+		Log:      testutil.Discard,
 	}
 }
 
@@ -103,7 +103,7 @@ func TestPooledServeSelect(t *testing.T) {
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -114,7 +114,7 @@ func TestPooledServeSelect(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.4"},
 			},
-			Log:  slog.New(slog.DiscardHandler),
+			Log:  testutil.Discard,
 			Pool: p,
 		}
 		_ = h.Serve(context.Background(), srv)
@@ -178,7 +178,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:  slog.New(slog.DiscardHandler),
+			Log:  testutil.Discard,
 			Pool: p,
 		}
 		_ = h.Serve(context.Background(), srv)
@@ -251,7 +251,7 @@ func TestPooledClientTerminateReleasesBackend(t *testing.T) {
 	doneServe := make(chan struct{})
 	go func() {
 		defer close(doneServe)
-		h := &PooledConn{Log: slog.New(slog.DiscardHandler), Pool: p}
+		h := &PooledConn{Log: testutil.Discard, Pool: p}
 		_ = h.Serve(context.Background(), srv)
 	}()
 	fe := pgproto3.NewFrontend(clt, clt)

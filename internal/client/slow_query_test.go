@@ -20,6 +20,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // syncBuf is a goroutine-safe wrapper around bytes.Buffer for use as
@@ -58,7 +59,7 @@ func TestSlowQueryEmitsWarn(t *testing.T) {
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	buf := &syncBuf{}
@@ -127,7 +128,7 @@ func TestSlowQueryDisabledByZero(t *testing.T) {
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	buf := &syncBuf{}

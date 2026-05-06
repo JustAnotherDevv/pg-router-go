@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // writeUserlist creates a userlist file with one (user, secret) pair.
@@ -48,7 +48,7 @@ func TestServerSCRAMSuccess(t *testing.T) {
 			return
 		}
 		h := &Conn{
-			Log: slog.New(slog.DiscardHandler),
+			Log: testutil.Discard,
 			Auth: &auth.ServerAuthOptions{
 				Type:     config.AuthSCRAM,
 				Userlist: ul,
@@ -114,7 +114,7 @@ func TestServerSCRAMWrongPassword(t *testing.T) {
 			return
 		}
 		h := &Conn{
-			Log: slog.New(slog.DiscardHandler),
+			Log: testutil.Discard,
 			Auth: &auth.ServerAuthOptions{
 				Type:     config.AuthSCRAM,
 				Userlist: ul,
@@ -185,7 +185,7 @@ func TestServerMD5Success(t *testing.T) {
 			return
 		}
 		h := &Conn{
-			Log: slog.New(slog.DiscardHandler),
+			Log: testutil.Discard,
 			Auth: &auth.ServerAuthOptions{
 				Type:     config.AuthMD5,
 				Userlist: ul,

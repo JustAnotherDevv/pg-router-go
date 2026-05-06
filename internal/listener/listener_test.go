@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
 func testLogger() *slog.Logger {
-	return slog.New(slog.DiscardHandler)
+	return testutil.Discard
 }
 
 // TestListenerAcceptsAndDispatches verifies the listener spawns a

@@ -2,7 +2,6 @@ package pool
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestManagerPerPoolConfigOverride: ConfigFor lets one pool get bigger
@@ -21,7 +21,7 @@ func TestManagerPerPoolConfigOverride(t *testing.T) {
 	}
 	m := NewManager(Config{
 		DefaultPoolSize: 5,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ Key) Dialer { return dial }).WithConfigFor(func(k Key) *Config {
 		if k.DB == "big" {
 			return &Config{DefaultPoolSize: 50, MinPoolSize: 5}
@@ -44,7 +44,7 @@ func TestManagerCloseWithDeadlineDrainsAllPools(t *testing.T) {
 	}
 	m := NewManager(Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ Key) Dialer { return dial })
 
 	// Spawn 3 pools, each with one active checkout.
@@ -78,7 +78,7 @@ func TestManagerCloseWithDeadlineTimesOut(t *testing.T) {
 	}
 	m := NewManager(Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ Key) Dialer { return dial })
 
 	_, _ = m.Acquire(context.Background(), Key{DB: "stuck", User: "u"})
@@ -98,7 +98,7 @@ func TestStrictFIFOSerialWaiters(t *testing.T) {
 	p := New("strict-fifo", dial, Config{
 		DefaultPoolSize: 1,
 		QueryWait:       2 * time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -166,7 +166,7 @@ func TestStressLargeFleet(t *testing.T) {
 	p := New("big-stress", dial, Config{
 		DefaultPoolSize: poolSize,
 		QueryWait:       5 * time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 

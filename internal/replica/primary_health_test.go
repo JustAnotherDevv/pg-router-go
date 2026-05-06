@@ -3,13 +3,13 @@ package replica
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // nopDial is a never-called dialer used when the test drives state
@@ -20,13 +20,13 @@ func nopDial(ctx context.Context) (*backend.Conn, error) {
 
 func TestPrimaryMonitorStartsHealthy(t *testing.T) {
 	pm := NewPrimaryMonitor("appdb", nopDial, time.Hour, 3, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	require.True(t, pm.Healthy())
 }
 
 func TestPrimaryMonitorMarksUnhealthyAfterThreshold(t *testing.T) {
 	pm := NewPrimaryMonitor("appdb", nopDial, time.Hour, 3, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	pm.recordFailure("test", errors.New("x"))
 	require.True(t, pm.Healthy(), "1 failure < threshold 3")
 	pm.recordFailure("test", errors.New("x"))
@@ -37,7 +37,7 @@ func TestPrimaryMonitorMarksUnhealthyAfterThreshold(t *testing.T) {
 
 func TestPrimaryMonitorRecoversAfterSuccess(t *testing.T) {
 	pm := NewPrimaryMonitor("appdb", nopDial, time.Hour, 1, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	pm.recordFailure("test", errors.New("x"))
 	require.False(t, pm.Healthy())
 	pm.recordSuccess()
@@ -49,7 +49,7 @@ func TestPrimaryMonitorRecoversAfterSuccess(t *testing.T) {
 // so the next 3 failures (not 2) are needed to trip.
 func TestPrimaryMonitorSuccessClearsFailCountBeforeThreshold(t *testing.T) {
 	pm := NewPrimaryMonitor("appdb", nopDial, time.Hour, 3, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	pm.recordFailure("a", errors.New("x"))
 	pm.recordFailure("b", errors.New("x"))
 	pm.recordSuccess()
@@ -64,7 +64,7 @@ func TestPrimaryMonitorSuccessClearsFailCountBeforeThreshold(t *testing.T) {
 // after fails=0 was set).
 func TestPrimaryMonitorRaceFreeStateTransitions(t *testing.T) {
 	pm := NewPrimaryMonitor("appdb", nopDial, time.Hour, 3, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 
 	const N = 2000
 	done := make(chan struct{}, 2)

@@ -2,13 +2,13 @@ package pool
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestStressAcquireReleaseConcurrent fires many goroutines acquiring +
@@ -16,9 +16,9 @@ import (
 // the wait-queue / idle-stack / counter paths.
 func TestStressAcquireReleaseConcurrent(t *testing.T) {
 	const (
-		workers       = 32
-		iterations    = 200
-		poolSize      = 4
+		workers    = 32
+		iterations = 200
+		poolSize   = 4
 	)
 
 	dialed := atomic.Int64{}
@@ -29,7 +29,7 @@ func TestStressAcquireReleaseConcurrent(t *testing.T) {
 	p := New("stress", dial, Config{
 		DefaultPoolSize: poolSize,
 		QueryWait:       2 * time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -79,7 +79,7 @@ func TestStressCancelStorm(t *testing.T) {
 	p := New("cancel-storm", dial, Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Hour,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 

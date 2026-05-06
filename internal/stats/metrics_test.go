@@ -3,13 +3,13 @@ package stats
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 )
@@ -73,7 +73,7 @@ func TestServeMetricsEndpoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	doneCh := make(chan error, 1)
 	go func() {
-		doneCh <- ServeMetrics(ctx, addr, "/metrics", slog.New(slog.DiscardHandler))
+		doneCh <- ServeMetrics(ctx, addr, "/metrics", testutil.Discard)
 	}()
 
 	// Poll until the server is up.
@@ -111,7 +111,7 @@ func TestHealthzReturns200(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go ServeMetrics(ctx, addr, "/metrics", slog.New(slog.DiscardHandler))
+	go ServeMetrics(ctx, addr, "/metrics", testutil.Discard)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +29,7 @@ func startTestServer(t *testing.T, opts AdminServerOptions) (string, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		_ = ServeMetricsAndAdmin(ctx, opts, slog.New(slog.DiscardHandler))
+		_ = ServeMetricsAndAdmin(ctx, opts, testutil.Discard)
 		close(done)
 	}()
 	// Poll until up.

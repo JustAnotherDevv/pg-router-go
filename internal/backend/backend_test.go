@@ -2,11 +2,11 @@ package backend
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +31,7 @@ func TestDialTrust(t *testing.T) {
 		User:     "test",
 		Database: "test",
 		AppName:  "pgrouter-test",
-		Log:      slog.New(slog.DiscardHandler),
+		Log:      testutil.Discard,
 	})
 	require.NoError(t, err)
 	defer c.Close()
@@ -55,7 +55,7 @@ func TestDialBadAddr(t *testing.T) {
 		User:     "u",
 		Database: "d",
 		Timeout:  1 * time.Second,
-		Log:      slog.New(slog.DiscardHandler),
+		Log:      testutil.Discard,
 	})
 	require.Error(t, err)
 }

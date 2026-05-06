@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
@@ -23,14 +23,14 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:        slog.New(slog.DiscardHandler),
+			Log:        testutil.Discard,
 			Pool:       p,
 			QPSLimiter: util.NewTokenBucket(1, 0.1), // 1 burst, 0.1/s refill
 		}
@@ -89,14 +89,14 @@ func TestQPSLimiterAllowsWhenDisabled(t *testing.T) {
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
 	go func() {
 		h := &PooledConn{
-			Log:        slog.New(slog.DiscardHandler),
+			Log:        testutil.Discard,
 			Pool:       p,
 			QPSLimiter: nil, // disabled
 		}

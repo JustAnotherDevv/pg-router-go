@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"sync"
 	"testing"
@@ -13,13 +12,14 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // fakeBackendFleet is a dialer that mints a fresh fakeBackend per call.
 // Tests script each one via scriptN(idx, fn).
 type fakeBackendFleet struct {
-	t       *testing.T
-	mu      sync.Mutex
+	t        *testing.T
+	mu       sync.Mutex
 	backends []*fakeBackend
 }
 
@@ -61,7 +61,7 @@ func startPooledClient(t *testing.T, p *pool.Pool, resetOnRelease bool) (net.Con
 			PooledConfig: PooledConfig{
 				ResetOnRelease: resetOnRelease,
 			},
-			Log:  slog.New(slog.DiscardHandler),
+			Log:  testutil.Discard,
 			Pool: p,
 		}
 		_ = h.Serve(context.Background(), srv)
@@ -85,7 +85,7 @@ func TestForceSessionPinningOnLISTEN(t *testing.T) {
 	p := pool.New("listen-test", fleet.Dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, fe, _ := startPooledClient(t, p, false)
@@ -155,7 +155,7 @@ func TestForceSessionPinningOnAdvisoryLock(t *testing.T) {
 	p := pool.New("adv-test", fleet.Dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
@@ -194,7 +194,7 @@ func TestSELECTOnlyDoesNotPin(t *testing.T) {
 	p := pool.New("sel-test", fleet.Dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
@@ -244,7 +244,7 @@ func TestGUCReplayFiresOnFreshAcquire(t *testing.T) {
 		_ = be.Flush()
 	})
 
-	h := &PooledConn{Log: slog.New(slog.DiscardHandler)}
+	h := &PooledConn{Log: testutil.Discard}
 	require.NoError(t, h.fireReplay(bConn, "SET timezone=UTC"))
 }
 
@@ -260,7 +260,7 @@ func TestPooledMultipleClientsShareSingleBackend(t *testing.T) {
 	p := pool.New("share-test", fleet.Dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       2 * time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -322,7 +322,7 @@ func TestGUCReplayPropagatesError(t *testing.T) {
 		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 		_ = be.Flush()
 	})
-	h := &PooledConn{Log: slog.New(slog.DiscardHandler)}
+	h := &PooledConn{Log: testutil.Discard}
 	err := h.fireReplay(bConn, "SET garbage=true")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unrecognized parameter")
@@ -338,7 +338,7 @@ func TestPrepareCacheObservesParse(t *testing.T) {
 	p := pool.New("prep-test", fleet.Dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()

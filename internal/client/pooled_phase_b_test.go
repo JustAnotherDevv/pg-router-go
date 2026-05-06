@@ -4,7 +4,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // --- ServerNameFor ---
@@ -60,7 +60,7 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 	p := pool.New("t", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -70,7 +70,7 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -120,7 +120,7 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 	p := pool.New("t", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -130,7 +130,7 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -175,7 +175,7 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 	p := pool.New("t", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -185,7 +185,7 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -233,7 +233,7 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 	p := pool.New("t", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -243,7 +243,7 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -307,7 +307,7 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	p := pool.New("t", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -317,7 +317,7 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -428,7 +428,7 @@ func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
 	p := pool.New("welc-isolated", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -438,7 +438,7 @@ func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",

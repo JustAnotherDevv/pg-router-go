@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestWelcomeUsesUpstreamParamsAfterFirstDial verifies that a client
@@ -34,7 +34,7 @@ func TestWelcomeUsesUpstreamParamsAfterFirstDial(t *testing.T) {
 	p := pool.New("welcome-real", dial, pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -57,7 +57,7 @@ func TestWelcomeUsesUpstreamParamsAfterFirstDial(t *testing.T) {
 				"DateStyle":      "ISO, MDY",             // canned-only fills gap
 			},
 		},
-		Log:  slog.New(slog.DiscardHandler),
+		Log:  testutil.Discard,
 		Pool: p,
 	}
 
@@ -110,7 +110,7 @@ func TestWelcomeFallsBackToCannedWhenPoolEmpty(t *testing.T) {
 	p := pool.New("welcome-cold", dialErr, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       50 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -126,7 +126,7 @@ func TestWelcomeFallsBackToCannedWhenPoolEmpty(t *testing.T) {
 				"client_encoding": "UTF8",
 			},
 		},
-		Log:  slog.New(slog.DiscardHandler),
+		Log:  testutil.Discard,
 		Pool: p,
 	}
 
@@ -165,7 +165,7 @@ func TestWelcomeEagerWarmsOnColdStart(t *testing.T) {
 	p := pool.New("cold-warm", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 	require.Nil(t, p.CachedParams(), "fresh pool: nothing cached")
@@ -174,7 +174,7 @@ func TestWelcomeEagerWarmsOnColdStart(t *testing.T) {
 		PooledConfig: PooledConfig{
 			CannedParams: map[string]string{}, // forces eager warm
 		},
-		Log:  slog.New(slog.DiscardHandler),
+		Log:  testutil.Discard,
 		Pool: p,
 	}
 	params := pc.welcomeParams(context.Background())

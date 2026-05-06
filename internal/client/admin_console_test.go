@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // adminClient drives the admin console over a net.Pipe and returns
@@ -60,7 +60,7 @@ func makeMgrWithOnePool(t *testing.T) *pool.Manager {
 	}
 	m := pool.NewManager(pool.Config{
 		DefaultPoolSize: 4,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, dial)
 	m.Get(pool.Key{DB: "appdb", User: "alice"})
 	t.Cleanup(func() { _ = m.CloseWithDeadline(time.Now().Add(time.Second)) })
@@ -68,7 +68,7 @@ func makeMgrWithOnePool(t *testing.T) *pool.Manager {
 }
 
 func TestAdminShowPools(t *testing.T) {
-	ac := &AdminConsole{Log: slog.New(slog.DiscardHandler), Manager: makeMgrWithOnePool(t)}
+	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
 	rows := adminClient(t, ac, "SHOW POOLS")
 	require.Len(t, rows, 1)
 	require.Equal(t, "appdb", rows[0][0])
@@ -77,21 +77,21 @@ func TestAdminShowPools(t *testing.T) {
 }
 
 func TestAdminShowStats(t *testing.T) {
-	ac := &AdminConsole{Log: slog.New(slog.DiscardHandler), Manager: makeMgrWithOnePool(t)}
+	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
 	rows := adminClient(t, ac, "SHOW STATS")
 	require.GreaterOrEqual(t, len(rows), 1)
 	require.Equal(t, "appdb", rows[0][0])
 }
 
 func TestAdminShowDatabases(t *testing.T) {
-	ac := &AdminConsole{Log: slog.New(slog.DiscardHandler), Manager: makeMgrWithOnePool(t)}
+	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
 	rows := adminClient(t, ac, "SHOW DATABASES")
 	require.Len(t, rows, 1)
 	require.Equal(t, "appdb", rows[0][0])
 }
 
 func TestAdminShowLists(t *testing.T) {
-	ac := &AdminConsole{Log: slog.New(slog.DiscardHandler), Manager: makeMgrWithOnePool(t)}
+	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
 	rows := adminClient(t, ac, "SHOW LISTS")
 	require.GreaterOrEqual(t, len(rows), 3)
 	got := map[string]string{}
@@ -104,14 +104,14 @@ func TestAdminShowLists(t *testing.T) {
 }
 
 func TestAdminShowVersion(t *testing.T) {
-	ac := &AdminConsole{Log: slog.New(slog.DiscardHandler), Manager: makeMgrWithOnePool(t)}
+	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
 	rows := adminClient(t, ac, "SHOW VERSION")
 	require.Len(t, rows, 1)
 	require.True(t, strings.HasPrefix(rows[0][0], "pgrouter"))
 }
 
 func TestAdminUnknownCommand(t *testing.T) {
-	ac := &AdminConsole{Log: slog.New(slog.DiscardHandler), Manager: makeMgrWithOnePool(t)}
+	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
 	clt, srv := net.Pipe()
 	defer clt.Close()
 	go ac.Serve(context.Background(), srv)
@@ -144,7 +144,7 @@ func TestAdminUnknownCommand(t *testing.T) {
 func TestAdminReloadFiresClosure(t *testing.T) {
 	called := false
 	ac := &AdminConsole{
-		Log:     slog.New(slog.DiscardHandler),
+		Log:     testutil.Discard,
 		Manager: makeMgrWithOnePool(t),
 		Reload:  func() error { called = true; return nil },
 	}

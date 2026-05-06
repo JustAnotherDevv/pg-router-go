@@ -1,10 +1,10 @@
 package replica
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +15,7 @@ func TestPickRespectsMaxLag(t *testing.T) {
 	b.lagBytes.Store(500)
 
 	m := NewManager("appdb", []*Replica{a, b}, time.Hour, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	m.SetMaxLag(100)
 
 	// Only `a` is under the cap.
@@ -30,7 +30,7 @@ func TestPickAllOverCapReturnsErr(t *testing.T) {
 	a := makeReplica("a", 5432, 1)
 	a.lagBytes.Store(500)
 	m := NewManager("appdb", []*Replica{a}, time.Hour, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	m.SetMaxLag(100)
 	_, err := m.Pick()
 	require.ErrorIs(t, err, ErrNoHealthyReplica)
@@ -40,7 +40,7 @@ func TestPickMaxLagZeroMeansUnbounded(t *testing.T) {
 	a := makeReplica("a", 5432, 1)
 	a.lagBytes.Store(9999)
 	m := NewManager("appdb", []*Replica{a}, time.Hour, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	r, err := m.Pick()
 	require.NoError(t, err)
 	require.Equal(t, "a", r.Spec.Host)

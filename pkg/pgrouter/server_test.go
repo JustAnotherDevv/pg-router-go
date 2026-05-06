@@ -2,7 +2,6 @@ package pgrouter
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"strconv"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 func freePort(t *testing.T) int {
@@ -30,7 +30,7 @@ func TestNewRejectsValidationFailure(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{ListenPort: 99999, MaxClientConn: 1},
 	}
-	_, err := New(cfg, slog.New(slog.DiscardHandler))
+	_, err := New(cfg, testutil.Discard)
 	require.Error(t, err)
 }
 
@@ -54,7 +54,7 @@ func TestServerStartsAcceptingTCP(t *testing.T) {
 		},
 		Metrics: config.MetricsConfig{Listen: ":0", Path: "/metrics"},
 	}
-	srv, err := New(cfg, slog.New(slog.DiscardHandler))
+	srv, err := New(cfg, testutil.Discard)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,10 +1,10 @@
 package replica
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +18,7 @@ func TestPickRoundRobinWeighted(t *testing.T) {
 	a := makeReplica("a", 5432, 1)
 	b := makeReplica("b", 5432, 3) // 3x weight
 	m := NewManager("appdb", []*Replica{a, b}, time.Hour, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 
 	counts := map[string]int{}
 	for i := 0; i < 400; i++ {
@@ -36,7 +36,7 @@ func TestPickSkipsUnhealthy(t *testing.T) {
 	b := makeReplica("b", 5432, 1)
 	b.healthy.Store(false)
 	m := NewManager("appdb", []*Replica{a, b}, time.Hour, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 
 	for i := 0; i < 10; i++ {
 		r, err := m.Pick()
@@ -49,7 +49,7 @@ func TestPickAllUnhealthyReturnsErr(t *testing.T) {
 	a := makeReplica("a", 5432, 1)
 	a.healthy.Store(false)
 	m := NewManager("appdb", []*Replica{a}, time.Hour, "SELECT 1",
-		slog.New(slog.DiscardHandler))
+		testutil.Discard)
 	_, err := m.Pick()
 	require.ErrorIs(t, err, ErrNoHealthyReplica)
 }

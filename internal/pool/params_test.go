@@ -2,7 +2,6 @@ package pool
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,12 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 func TestCachedParamsEmptyBeforeAnyDial(t *testing.T) {
 	p := New("noop", func(_ context.Context) (*backend.Conn, error) {
 		return &backend.Conn{}, nil
-	}, Config{DefaultPoolSize: 1, Log: slog.New(slog.DiscardHandler)})
+	}, Config{DefaultPoolSize: 1, Log: testutil.Discard})
 	defer p.Close()
 	require.Nil(t, p.CachedParams())
 }
@@ -34,7 +34,7 @@ func TestCachedParamsCapturedOnFirstDial(t *testing.T) {
 			params[k] = v
 		}
 		return &backend.Conn{Params: params}, nil
-	}, Config{DefaultPoolSize: 2, Log: slog.New(slog.DiscardHandler)})
+	}, Config{DefaultPoolSize: 2, Log: testutil.Discard})
 	defer p.Close()
 
 	c, err := p.Acquire(context.Background())
@@ -58,7 +58,7 @@ func TestCachedParamsFirstDialWins(t *testing.T) {
 			}[n],
 		}
 		return &backend.Conn{Params: params}, nil
-	}, Config{DefaultPoolSize: 2, Log: slog.New(slog.DiscardHandler)})
+	}, Config{DefaultPoolSize: 2, Log: testutil.Discard})
 	defer p.Close()
 
 	c1, _ := p.Acquire(context.Background())
@@ -78,7 +78,7 @@ func TestCachedParamsConcurrentCapture(t *testing.T) {
 	// captureParams must be safe and produce SOME deterministic snapshot.
 	p := New("concurrent", func(_ context.Context) (*backend.Conn, error) {
 		return &backend.Conn{Params: map[string]string{"k": "v"}}, nil
-	}, Config{DefaultPoolSize: 16, Log: slog.New(slog.DiscardHandler)})
+	}, Config{DefaultPoolSize: 16, Log: testutil.Discard})
 	defer p.Close()
 
 	const N = 16
@@ -101,7 +101,7 @@ func TestCachedParamsEmptyParamsDoNotPopulate(t *testing.T) {
 		// A dial that returns a Conn with no Params (defensive against
 		// upstreams that hand us none — e.g. our test stubs).
 		return &backend.Conn{}, nil
-	}, Config{DefaultPoolSize: 1, Log: slog.New(slog.DiscardHandler)})
+	}, Config{DefaultPoolSize: 1, Log: testutil.Discard})
 	defer p.Close()
 
 	c, err := p.Acquire(context.Background())
@@ -120,7 +120,7 @@ func TestCachedParamsAvailableQuickly(t *testing.T) {
 		return &backend.Conn{Params: map[string]string{"server_version": "16.0"}}, nil
 	}, Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 

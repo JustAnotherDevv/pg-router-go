@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestWireSCRAMHandshake runs PerformServerAuth on one end of a net.Pipe
@@ -40,7 +40,7 @@ func TestWireSCRAMHandshake(t *testing.T) {
 					username: {Username: username, SCRAMVerifier: verifier},
 				},
 			},
-			Log: slog.New(slog.DiscardHandler),
+			Log: testutil.Discard,
 		}, username)
 		if err == nil {
 			// Mirror what client.Conn.Handle does after PerformServerAuth.

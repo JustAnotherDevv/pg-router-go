@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // mockDialer is a no-op dialer that returns a stubbed backend.Conn.
@@ -34,7 +34,7 @@ func (m *mockDialer) Dial(ctx context.Context) (*backend.Conn, error) {
 func newTestPool(t *testing.T, cfg Config) (*Pool, *mockDialer) {
 	t.Helper()
 	if cfg.Log == nil {
-		cfg.Log = slog.New(slog.DiscardHandler)
+		cfg.Log = testutil.Discard
 	}
 	md := &mockDialer{}
 	p := New("test", md.Dial, cfg)
@@ -147,9 +147,9 @@ func TestAcquireFIFOFairness(t *testing.T) {
 
 	const N = 5
 	var (
-		mu       sync.Mutex
-		order    []int
-		startWG  sync.WaitGroup
+		mu      sync.Mutex
+		order   []int
+		startWG sync.WaitGroup
 	)
 	startWG.Add(N)
 

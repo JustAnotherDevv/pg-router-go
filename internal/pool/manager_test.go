@@ -2,7 +2,6 @@ package pool
 
 import (
 	"context"
-	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // keyedMockDialer wraps a per-key counter so we can verify per-pool isolation.
@@ -30,7 +30,7 @@ func newTestManager(t *testing.T) (*Manager, *keyedMockDialer) {
 	m := NewManager(Config{
 		DefaultPoolSize: 3,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, km.For)
 	t.Cleanup(m.Close)
 	return m, km
@@ -88,7 +88,7 @@ func TestManagerJanitorEvicts(t *testing.T) {
 	m := NewManager(Config{
 		DefaultPoolSize: 2,
 		ServerIdle:      10 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, km.For)
 	defer m.Close()
 
@@ -108,7 +108,7 @@ func TestManagerCloseStopsJanitor(t *testing.T) {
 	m := NewManager(Config{
 		DefaultPoolSize: 1,
 		ServerIdle:      time.Hour,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, km.For)
 	m.Start(time.Millisecond)
 	// Just verify Close doesn't deadlock.

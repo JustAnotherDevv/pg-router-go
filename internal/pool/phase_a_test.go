@@ -5,7 +5,6 @@ package pool
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // --- PreAcquire / PostRelease callback invariants ---
@@ -24,7 +24,7 @@ func TestPreAcquireGatesAcquire(t *testing.T) {
 	var preCalls atomic.Int64
 	cfg := Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			PreAcquire: func(_ context.Context) error {
 				preCalls.Add(1)
@@ -48,7 +48,7 @@ func TestPostReleaseFiresOnSuccessfulRelease(t *testing.T) {
 	var pre, post atomic.Int64
 	cfg := Config{
 		DefaultPoolSize: 2,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			PreAcquire:  func(_ context.Context) error { pre.Add(1); return nil },
 			PostRelease: func() { post.Add(1) },
@@ -76,7 +76,7 @@ func TestPostReleaseFiresOnAcquireFailure(t *testing.T) {
 	dialErr := errPoolForceFail
 	cfg := Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			PreAcquire:  func(_ context.Context) error { pre.Add(1); return nil },
 			PostRelease: func() { post.Add(1) },
@@ -155,7 +155,7 @@ func TestGlobalDBLimitCapsConcurrentCheckouts(t *testing.T) {
 	m := NewManager(Config{
 		DefaultPoolSize: 5, // per-pool slack
 		QueryWait:       50 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, dialFor).WithGlobalLimits(1, 0, nil)
 	defer m.Close()
 
@@ -193,7 +193,7 @@ func TestGlobalUserLimitCapsConcurrentCheckouts(t *testing.T) {
 	m := NewManager(Config{
 		DefaultPoolSize: 5,
 		QueryWait:       50 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, dialFor).WithGlobalLimits(0, 1, nil)
 	defer m.Close()
 
@@ -229,7 +229,7 @@ func TestGlobalLimitObserverFiresOnReject(t *testing.T) {
 	m := NewManager(Config{
 		DefaultPoolSize: 5,
 		QueryWait:       30 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, dialFor).WithGlobalLimits(1, 0, obs)
 	defer m.Close()
 
@@ -259,7 +259,7 @@ func TestGlobalLimitNoOpWhenDisabled(t *testing.T) {
 	m := NewManager(Config{
 		DefaultPoolSize: 5,
 		QueryWait:       50 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, dialFor) // no WithGlobalLimits
 	defer m.Close()
 

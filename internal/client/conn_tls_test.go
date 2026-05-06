@@ -10,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/pem"
-	"log/slog"
 	"math/big"
 	"net"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -79,7 +79,7 @@ func TestSSLRequestAcceptedThenStartup(t *testing.T) {
 		if err != nil {
 			return
 		}
-		h := &Conn{Log: slog.New(slog.DiscardHandler), TLSConfig: srvCfg}
+		h := &Conn{Log: testutil.Discard, TLSConfig: srvCfg}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		h.Handle(ctx, c)
@@ -148,7 +148,7 @@ func TestSSLRequestDeclinedWhenTLSDisabled(t *testing.T) {
 		if err != nil {
 			return
 		}
-		h := &Conn{Log: slog.New(slog.DiscardHandler)} // TLSConfig nil
+		h := &Conn{Log: testutil.Discard} // TLSConfig nil
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		h.Handle(ctx, c)

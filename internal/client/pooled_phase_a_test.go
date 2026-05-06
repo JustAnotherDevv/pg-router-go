@@ -6,7 +6,6 @@ package client
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil/statreset"
 )
 
 // gatherCounter reads a counter value from stats.Reg.
@@ -75,7 +75,7 @@ func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 				CannedParams:      map[string]string{"server_version": "16.0"},
 				ClientIdleTimeout: 100 * time.Millisecond,
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -126,7 +126,7 @@ func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 				// doesn't try to send DISCARD ALL through the fake
 				// backend (which has no scripted handler for it).
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -205,13 +205,13 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 			NetConn:  stallCli,
 			Frontend: pgproto3.NewFrontend(stallCli, stallCli),
 			Params:   map[string]string{},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 		}, nil
 	}
 	p := pool.New("test", dial, pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	clt, srv := net.Pipe()
@@ -225,7 +225,7 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 				CannedParams: map[string]string{"server_version": "16.0"},
 				QueryTimeout: 150 * time.Millisecond,
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -274,7 +274,7 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 // 'I' bumps TxRollbacks.
 func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	// Reset the stats registry so the counters start at 0 for this test.
-	testutil.ResetStats(t)
+	statreset.ResetStats(t)
 
 	fb, p := newPoolWithFake(t, 1)
 
@@ -285,7 +285,7 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",
@@ -366,7 +366,7 @@ func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
 			PooledConfig: PooledConfig{
 				CannedParams: map[string]string{"server_version": "16.0"},
 			},
-			Log:      slog.New(slog.DiscardHandler),
+			Log:      testutil.Discard,
 			Pool:     p,
 			Database: "appdb",
 			User:     "alice",

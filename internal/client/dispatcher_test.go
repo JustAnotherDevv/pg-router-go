@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/binary"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestDispatcherTrustAuthAndPoolRoute: client sends StartupMessage,
@@ -29,12 +29,12 @@ func TestDispatcherTrustAuthAndPoolRoute(t *testing.T) {
 	mgr := pool.NewManager(pool.Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ pool.Key) pool.Dialer { return fleet.Dial })
 	defer mgr.Close()
 
 	h := &PooledHandler{
-		Log:            slog.New(slog.DiscardHandler),
+		Log:            testutil.Discard,
 		Manager:        mgr,
 		CannedParams:   map[string]string{"server_version": "16.0"},
 		ResetOnRelease: false,
@@ -139,7 +139,7 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 	// Dummy manager — we don't go through the StartupMessage path.
 	mgr := pool.NewManager(pool.Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ pool.Key) pool.Dialer {
 		return func(_ context.Context) (*backend.Conn, error) {
 			return &backend.Conn{}, nil
@@ -148,7 +148,7 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 	defer mgr.Close()
 
 	h := &PooledHandler{
-		Log:           slog.New(slog.DiscardHandler),
+		Log:           testutil.Discard,
 		Manager:       mgr,
 		CancelTracker: tracker,
 	}
@@ -194,7 +194,7 @@ func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 	mgr := pool.NewManager(pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       100 * time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ pool.Key) pool.Dialer {
 		return func(_ context.Context) (*backend.Conn, error) {
 			return nil, &fakeErr{msg: "unknown database \"nope\""}
@@ -203,7 +203,7 @@ func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 	defer mgr.Close()
 
 	h := &PooledHandler{
-		Log:          slog.New(slog.DiscardHandler),
+		Log:          testutil.Discard,
 		Manager:      mgr,
 		CannedParams: map[string]string{"server_version": "16.0"},
 	}
@@ -261,12 +261,12 @@ func TestDispatcherWithUserlistAuth(t *testing.T) {
 	mgr := pool.NewManager(pool.Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	}, func(_ pool.Key) pool.Dialer { return fleet.Dial })
 	defer mgr.Close()
 
 	h := &PooledHandler{
-		Log:     slog.New(slog.DiscardHandler),
+		Log:     testutil.Discard,
 		Manager: mgr,
 		Auth: &auth.ServerAuthOptions{
 			Type:     config.AuthSCRAM,

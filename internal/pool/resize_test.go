@@ -2,13 +2,13 @@ package pool
 
 import (
 	"context"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 func TestPoolResizeGrowsCap(t *testing.T) {
@@ -18,7 +18,7 @@ func TestPoolResizeGrowsCap(t *testing.T) {
 	p := New("t", dial, Config{
 		DefaultPoolSize: 2,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	require.Equal(t, 2, p.Size())
 	prev := p.Resize(8)
@@ -33,7 +33,7 @@ func TestPoolResizeShrinkEvictsIdle(t *testing.T) {
 	p := New("t", dial, Config{
 		DefaultPoolSize: 5,
 		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	// Acquire + release 5 to build the idle stack.
 	conns := make([]*backend.Conn, 0, 5)
@@ -63,7 +63,7 @@ func TestManagerApplyDefaultSizeRetargets(t *testing.T) {
 			return &backend.Conn{}, nil
 		}
 	}
-	m := NewManager(Config{DefaultPoolSize: 4, Log: slog.New(slog.DiscardHandler)}, dial)
+	m := NewManager(Config{DefaultPoolSize: 4, Log: testutil.Discard}, dial)
 	p := m.Get(Key{DB: "appdb", User: "alice"})
 	require.Equal(t, 4, p.Size())
 	changes := m.ApplyDefaultSize(10, nil)
@@ -79,7 +79,7 @@ func TestManagerApplyDefaultSizePerKeyOverride(t *testing.T) {
 			return &backend.Conn{}, nil
 		}
 	}
-	m := NewManager(Config{DefaultPoolSize: 4, Log: slog.New(slog.DiscardHandler)}, dial)
+	m := NewManager(Config{DefaultPoolSize: 4, Log: testutil.Discard}, dial)
 	pa := m.Get(Key{DB: "appdb", User: "alice"})
 	pb := m.Get(Key{DB: "logs", User: "writer"})
 	changes := m.ApplyDefaultSize(10, func(k Key) int {

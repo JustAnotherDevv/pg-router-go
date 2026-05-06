@@ -1,11 +1,11 @@
 package backend
 
 import (
-	"log/slog"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ func mockBackendConn(t *testing.T) (*Conn, *pgproto3.Backend, net.Conn) {
 		NetConn:  cli,
 		Frontend: pgproto3.NewFrontend(cli, cli),
 		Params:   map[string]string{},
-		Log:      slog.New(slog.DiscardHandler),
+		Log:      testutil.Discard,
 	}
 	be := pgproto3.NewBackend(srv, srv)
 	return c, be, srv

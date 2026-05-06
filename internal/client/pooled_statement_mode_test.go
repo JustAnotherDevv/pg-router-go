@@ -13,11 +13,11 @@ package client
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ func TestStatementModeRejectsExplicitBegin(t *testing.T) {
 	go func() {
 		h := &PooledConn{
 			PooledConfig: PooledConfig{PoolMode: "statement"},
-			Log:          slog.New(slog.DiscardHandler),
+			Log:          testutil.Discard,
 			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
@@ -83,7 +83,7 @@ func TestStatementModeAllowsImplicitSelect(t *testing.T) {
 	go func() {
 		h := &PooledConn{
 			PooledConfig: PooledConfig{PoolMode: "statement"},
-			Log:          slog.New(slog.DiscardHandler),
+			Log:          testutil.Discard,
 			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
@@ -144,7 +144,7 @@ func TestStatementModeRejectsBeginViaParse(t *testing.T) {
 	go func() {
 		h := &PooledConn{
 			PooledConfig: PooledConfig{PoolMode: "statement"},
-			Log:          slog.New(slog.DiscardHandler),
+			Log:          testutil.Discard,
 			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)
@@ -187,7 +187,7 @@ func TestTransactionModeAllowsExplicitBegin(t *testing.T) {
 	go func() {
 		h := &PooledConn{
 			PooledConfig: PooledConfig{PoolMode: "transaction"},
-			Log:          slog.New(slog.DiscardHandler),
+			Log:          testutil.Discard,
 			Pool:         p,
 		}
 		_ = h.Serve(context.Background(), srv)

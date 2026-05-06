@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // --- MinPoolSize / EnsureWarm ---
@@ -25,7 +25,7 @@ func TestEnsureWarmSpawnsToFloor(t *testing.T) {
 	p := New("warm-test", dial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     3,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -43,7 +43,7 @@ func TestEnsureWarmRespectsExistingBackends(t *testing.T) {
 	p := New("warm-test", dial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     2,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 	// Spawn 1 active.
@@ -62,7 +62,7 @@ func TestEnsureWarmDialFailureStops(t *testing.T) {
 	p := New("warm-test", dial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     5,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 	require.Equal(t, 0, p.EnsureWarm(context.Background()))
@@ -77,7 +77,7 @@ func TestEvictRespectsMinPoolSize(t *testing.T) {
 		DefaultPoolSize: 5,
 		MinPoolSize:     2,
 		ServerIdle:      time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -106,7 +106,7 @@ func TestEvictLifetimeRecycleBypassesMinPoolSize(t *testing.T) {
 		DefaultPoolSize: 5,
 		MinPoolSize:     2,
 		ServerLifetime:  time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	defer p.Close()
 
@@ -139,7 +139,7 @@ func TestReservePoolKicksAfterTimeout(t *testing.T) {
 		ReservePoolSize:    1,
 		ReservePoolTimeout: 30 * time.Millisecond,
 		QueryWait:          time.Second,
-		Log:                slog.New(slog.DiscardHandler),
+		Log:                testutil.Discard,
 	})
 	defer p.Close()
 
@@ -174,7 +174,7 @@ func TestReservePoolCappedAtSize(t *testing.T) {
 		ReservePoolSize:    1,
 		ReservePoolTimeout: 20 * time.Millisecond,
 		QueryWait:          200 * time.Millisecond,
-		Log:                slog.New(slog.DiscardHandler),
+		Log:                testutil.Discard,
 	})
 	defer p.Close()
 
@@ -198,7 +198,7 @@ func TestCloseWithDeadlineWaitsForActive(t *testing.T) {
 	}
 	p := New("drain-test", dial, Config{
 		DefaultPoolSize: 2,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 
 	c, _ := p.Acquire(context.Background())
@@ -223,7 +223,7 @@ func TestCloseWithDeadlineTimesOut(t *testing.T) {
 	}
 	p := New("drain-timeout", dial, Config{
 		DefaultPoolSize: 2,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 	})
 	// Hold an active checkout forever.
 	c, _ := p.Acquire(context.Background())
@@ -247,7 +247,7 @@ func TestCallbacksFire(t *testing.T) {
 	p := New("cb-test", dial, Config{
 		DefaultPoolSize: 2,
 		ServerIdle:      time.Millisecond,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			OnAcquireWait: func(_ string, d time.Duration) {
 				waitMu.Lock()
@@ -275,7 +275,7 @@ func TestCallbacksOnDialError(t *testing.T) {
 	}
 	p := New("cb-err", dial, Config{
 		DefaultPoolSize: 1,
-		Log:             slog.New(slog.DiscardHandler),
+		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			OnDialError: func(_ string, e error) { errors = append(errors, e) },
 		},
