@@ -12,25 +12,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
-
-// resetStatsForPhaseATest swaps stats.Reg + re-runs stats.New so the
-// metric counters start from zero for the calling test. Cleanup restores
-// the previous registry.
-func resetStatsForPhaseATest(t *testing.T) {
-	t.Helper()
-	orig := stats.Reg
-	stats.Reg = prometheus.NewRegistry()
-	_ = stats.New()
-	t.Cleanup(func() { stats.Reg = orig })
-}
 
 // gatherCounter reads a counter value from stats.Reg.
 func gatherCounter(t *testing.T, name string, labels map[string]string) float64 {
@@ -285,7 +274,7 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 // 'I' bumps TxRollbacks.
 func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	// Reset the stats registry so the counters start at 0 for this test.
-	resetStatsForPhaseATest(t)
+	testutil.ResetStats(t)
 
 	fb, p := newPoolWithFake(t, 1)
 
