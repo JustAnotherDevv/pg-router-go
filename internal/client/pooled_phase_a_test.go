@@ -73,13 +73,7 @@ var _ = (*dto.LabelPair)(nil)
 // sends a Query. ClientIdleTimeout fires; pgrouter closes the client
 // connection within the deadline + small slack.
 func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(_ context.Context) (*backend.Conn, error) { return fb.Conn(), nil }
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	_, p := newPoolWithFake(t, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -126,13 +120,7 @@ func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 // (RFQ 'T') and falls silent. IdleTxTimeout fires faster than
 // ClientIdleTimeout to confirm the right limit was applied.
 func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(_ context.Context) (*backend.Conn, error) { return fb.Conn(), nil }
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	fb, p := newPoolWithFake(t, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -299,13 +287,7 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	// Reset the stats registry so the counters start at 0 for this test.
 	resetStatsForPhaseATest(t)
 
-	fb := newFakeBackend(t)
-	dial := func(_ context.Context) (*backend.Conn, error) { return fb.Conn(), nil }
-	p := pool.New("t", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	fb, p := newPoolWithFake(t, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -385,13 +367,7 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 // (not in the replayable whitelist), the next RFQ 'I' must NOT release
 // the backend.
 func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(_ context.Context) (*backend.Conn, error) { return fb.Conn(), nil }
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	fb, p := newPoolWithFake(t, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()

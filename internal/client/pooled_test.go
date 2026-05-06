@@ -46,6 +46,26 @@ func newFakeBackend(t *testing.T) *fakeBackend {
 	return fb
 }
 
+// newPoolWithFake returns a fakeBackend + a one-conn pool that dials
+// into it. Collapses the boilerplate every PooledConn test repeats:
+//
+//	fb := newFakeBackend(t)
+//	dial := func(ctx) (*backend.Conn, error) { return fb.Conn(), nil }
+//	p := pool.New("test", dial, pool.Config{...})
+//
+// onto one call. `size` is DefaultPoolSize (most tests want 1 or 2).
+func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
+	t.Helper()
+	fb := newFakeBackend(t)
+	dial := func(context.Context) (*backend.Conn, error) { return fb.Conn(), nil }
+	p := pool.New("test", dial, pool.Config{
+		DefaultPoolSize: size,
+		QueryWait:       time.Second,
+		Log:             slog.New(slog.DiscardHandler),
+	})
+	return fb, p
+}
+
 func (fb *fakeBackend) run() {
 	defer close(fb.doneC)
 	for fn := range fb.scriptC {
@@ -152,15 +172,7 @@ func TestPooledServeSelect(t *testing.T) {
 }
 
 func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	fb, p := newPoolWithFake(t, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -232,15 +244,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 // boundary-driven Release.
 
 func TestPooledClientTerminateReleasesBackend(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	_, p := newPoolWithFake(t, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()

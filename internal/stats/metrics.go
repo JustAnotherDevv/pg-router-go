@@ -59,70 +59,20 @@ func OnPoolEvict(_ string, n int) {
 	}
 }
 
-// OnQuery increments the per-(database, user, application_name) query
-// counter. Fired from PooledConn each time a Query or Parse is
-// forwarded to a backend. `app` is the application_name the client
-// sent in StartupMessage; empty string when not provided.
-func OnQuery(db, user, app string) {
-	if Active != nil {
-		Active.QueriesTotal.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnTxStart increments the per-(db, user, app) transaction-start counter.
-func OnTxStart(db, user, app string) {
-	if Active != nil {
-		Active.TxStarts.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnTxCommit increments the per-(db, user, app) commit counter.
-func OnTxCommit(db, user, app string) {
-	if Active != nil {
-		Active.TxCommits.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnTxRollback increments the per-(db, user, app) rollback counter.
-func OnTxRollback(db, user, app string) {
-	if Active != nil {
-		Active.TxRollbacks.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnQueryDuration observes a per-(db, user, app) query duration in seconds.
-func OnQueryDuration(db, user, app string, seconds float64) {
-	if Active != nil {
-		Active.QueryDurationSec.WithLabelValues(db, user, app).Observe(seconds)
-	}
-}
+// Per-(db, user, app) tenant counters used to have package-level
+// On* wrappers (OnQuery, OnTxStart, OnTxCommit, OnTxRollback,
+// OnQueryDuration, OnQueryTimeout, OnClientIdleTimeout, OnIdleTxTimeout,
+// OnPreparedHit, OnPreparedMiss, OnPreparedEviction). They were
+// retired in WIN4: PooledConn caches *prometheus.Counter handles via
+// stats.TenantCounters at Serve init, so the per-message hot path no
+// longer goes through these wrappers. The fields on *Metrics + the
+// TenantCounters surface are the public API now.
 
 // OnGlobalLimitReject counts Acquires denied by the global db/user cap.
 // `scope` is "db" or "user".
 func OnGlobalLimitReject(scope, name string) {
 	if Active != nil {
 		Active.GlobalLimitRejects.WithLabelValues(scope, name).Inc()
-	}
-}
-
-// OnQueryTimeout counts queries killed by query_timeout.
-func OnQueryTimeout(db, user, app string) {
-	if Active != nil {
-		Active.QueryTimeouts.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnClientIdleTimeout counts clients evicted by client_idle_timeout.
-func OnClientIdleTimeout(db, user, app string) {
-	if Active != nil {
-		Active.ClientIdleTimeouts.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnIdleTxTimeout counts clients killed by idle_transaction_timeout.
-func OnIdleTxTimeout(db, user, app string) {
-	if Active != nil {
-		Active.IdleTxTimeouts.WithLabelValues(db, user, app).Inc()
 	}
 }
 
@@ -162,31 +112,6 @@ func OnQPSReject(scope, name string) {
 func OnSighupUserlistReload(outcome string) {
 	if Active != nil {
 		Active.SighupUserlistReloads.WithLabelValues(outcome).Inc()
-	}
-}
-
-// OnPreparedHit increments the per-(db, user, app) prepared-statement
-// cache hit counter (Parse for a SQL whose server-side name is already
-// cached on the backend → no extra Parse round trip).
-func OnPreparedHit(db, user, app string) {
-	if Active != nil {
-		Active.PreparedHits.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnPreparedMiss increments the per-(db, user, app) prepared-statement
-// cache miss counter (first Parse for this SQL on this backend).
-func OnPreparedMiss(db, user, app string) {
-	if Active != nil {
-		Active.PreparedMisses.WithLabelValues(db, user, app).Inc()
-	}
-}
-
-// OnPreparedEviction increments the per-(db, user, app) eviction counter
-// (LRU pushed out an entry, prompting an automatic DEALLOCATE).
-func OnPreparedEviction(db, user, app string) {
-	if Active != nil {
-		Active.PreparedEvictions.WithLabelValues(db, user, app).Inc()
 	}
 }
 
@@ -282,193 +207,110 @@ type Metrics struct {
 
 // New constructs + registers a Metrics. Process should hold ONE Metrics
 // for its lifetime; calling New twice will panic with `prometheus.AlreadyRegisteredError`.
+//
+// WIN1 refactor: per-metric init was 4-5 LOC × 35 metrics. Now a per-
+// type closure (c/cv/g/gv/h/gf) builds the metric in one line each;
+// the field assignments read as a flat 35-row table. registered
+// collects everything for one MustRegister at the end.
 func New() *Metrics {
-	m := &Metrics{
-		ClientConnsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_client_connections_total",
-			Help: "Total client connections accepted since start.",
-		}),
-		ClientDisconnsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_client_disconnections_total",
-			Help: "Total client disconnections.",
-		}),
-		ClientActiveGauge: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "pgrouter_client_active",
-			Help: "Currently-connected clients.",
-		}),
-		ClientBytesIn: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_client_bytes_in_total",
-			Help: "Bytes received from clients.",
-		}),
-		ClientBytesOut: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_client_bytes_out_total",
-			Help: "Bytes sent to clients.",
-		}),
-
-		BackendDialsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_backend_dials_total",
-			Help: "Total upstream connect attempts.",
-		}),
-		BackendDialErrorsTot: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_backend_dial_errors_total",
-			Help: "Upstream connect failures.",
-		}),
-		BackendActiveGauge: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "pgrouter_backend_active",
-			Help: "Currently checked-out upstream backends.",
-		}),
-		BackendIdleGauge: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "pgrouter_backend_idle",
-			Help: "Currently-idle pooled backends.",
-		}),
-		BackendEvictionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_backend_evictions_total",
-			Help: "Backends evicted by the janitor (idle / lifetime).",
-		}),
-
-		PoolAcquireSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "pgrouter_pool_acquire_seconds",
-			Help:    "Time clients spent waiting for a pool slot.",
-			Buckets: defaultBuckets,
-		}, []string{"pool"}),
-		PoolWaitersGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "pgrouter_pool_waiters",
-			Help: "Clients currently queued in a pool's wait queue.",
-		}, []string{"pool"}),
-
-		QueriesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_queries_total",
-			Help: "Total Query + Parse messages forwarded.",
-		}, []string{"database", "user", "application_name"}),
-		TxStarts: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_tx_starts_total",
-			Help: "Transactions opened (BEGIN observed).",
-		}, []string{"database", "user", "application_name"}),
-		TxCommits: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_tx_commits_total",
-			Help: "Transactions committed (T -> I via success).",
-		}, []string{"database", "user", "application_name"}),
-		TxRollbacks: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_tx_rollbacks_total",
-			Help: "Transactions rolled back (E -> I, or explicit ROLLBACK).",
-		}, []string{"database", "user", "application_name"}),
-		QueryDurationSec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "pgrouter_query_duration_seconds",
-			Help:    "Per-query duration, from first byte to ReadyForQuery.",
-			Buckets: defaultBuckets,
-		}, []string{"database", "user", "application_name"}),
-
-		AuthAttempts: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_auth_attempts_total",
-			Help: "Client auth attempts.",
-		}),
-		AuthFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_auth_failures_total",
-			Help: "Client auth failures.",
-		}),
-
-		CancelsReceived: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_cancels_received_total",
-			Help: "CancelRequest packets received from clients.",
-		}),
-		CancelsForwarded: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_cancels_forwarded_total",
-			Help: "CancelRequest packets successfully forwarded.",
-		}),
-		CancelsDropped: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_cancels_dropped_total",
-			Help: "CancelRequest packets dropped (unknown PID/secret).",
-		}),
-
-		GlobalLimitRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_global_limit_rejects_total",
-			Help: "Acquires rejected by max_db_connections / max_user_connections.",
-		}, []string{"scope", "name"}),
-		QueryTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_query_timeouts_total",
-			Help: "Queries killed by query_timeout.",
-		}, []string{"database", "user", "application_name"}),
-		ClientIdleTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_client_idle_timeouts_total",
-			Help: "Clients evicted by client_idle_timeout.",
-		}, []string{"database", "user", "application_name"}),
-		IdleTxTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_idle_transaction_timeouts_total",
-			Help: "Clients killed by idle_transaction_timeout.",
-		}, []string{"database", "user", "application_name"}),
-		SighupReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_sighup_reloads_total",
-			Help: "SIGHUP-driven config reloads.",
-		}, []string{"outcome"}),
-		SighupUserlistReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_sighup_userlist_reloads_total",
-			Help: "SIGHUP-driven userlist.txt reloads.",
-		}, []string{"outcome"}),
-		AuditWriteErrors: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_audit_write_errors_total",
-			Help: "Audit-file Write() failures (disk full / IO error).",
-		}),
-		ProxyProtoMissing: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "pgrouter_proxy_proto_missing_total",
-			Help: "Accepted connections that did not present a PROXY preamble (rejected when proxy_protocol_strict=true).",
-		}),
-		InflightClients: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name: "pgrouter_inflight_clients",
-			Help: "Client conns currently being served (decremented on Handle return).",
-		}, func() float64 {
-			if InflightFn == nil {
-				return 0
-			}
-			return float64(InflightFn())
-		}),
-		QPSRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_qps_rejects_total",
-			Help: "Queries rejected by per-tenant max_qps token bucket.",
-		}, []string{"scope", "name"}),
-		BytesInPerTenant: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_tenant_bytes_in_total",
-			Help: "Bytes received from clients, per (database, user).",
-		}, []string{"database", "user"}),
-		BytesOutPerTenant: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_tenant_bytes_out_total",
-			Help: "Bytes sent to clients, per (database, user).",
-		}, []string{"database", "user"}),
-
-		PreparedHits: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_prepared_cache_hits_total",
-			Help: "Parse messages whose server-side name was already cached on the backend.",
-		}, []string{"database", "user", "application_name"}),
-		PreparedMisses: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_prepared_cache_misses_total",
-			Help: "Parse messages requiring a backend round trip (first time on this backend).",
-		}, []string{"database", "user", "application_name"}),
-		PreparedEvictions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "pgrouter_prepared_cache_evictions_total",
-			Help: "Prepared-statement LRU evictions (DEALLOCATE sent to backend).",
-		}, []string{"database", "user", "application_name"}),
-	}
-
-	// Add Go runtime + process collectors so the standard
-	// `go_*` / `process_*` metrics show up.
-	Reg.MustRegister(
+	registered := []prometheus.Collector{
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.ClientConnsTotal, m.ClientDisconnsTotal, m.ClientActiveGauge,
-		m.ClientBytesIn, m.ClientBytesOut,
-		m.BackendDialsTotal, m.BackendDialErrorsTot, m.BackendActiveGauge,
-		m.BackendIdleGauge, m.BackendEvictionsTotal,
-		m.PoolAcquireSeconds, m.PoolWaitersGauge,
-		m.QueriesTotal, m.TxStarts, m.TxCommits, m.TxRollbacks,
-		m.QueryDurationSec,
-		m.AuthAttempts, m.AuthFailures,
-		m.CancelsReceived, m.CancelsForwarded, m.CancelsDropped,
-		m.GlobalLimitRejects, m.QueryTimeouts,
-		m.ClientIdleTimeouts, m.IdleTxTimeouts,
-		m.SighupReloads, m.SighupUserlistReloads, m.QPSRejects,
-		m.BytesInPerTenant, m.BytesOutPerTenant,
-		m.PreparedHits, m.PreparedMisses, m.PreparedEvictions,
-		m.AuditWriteErrors, m.ProxyProtoMissing, m.InflightClients,
-	)
+	}
+	// Per-kind builders capture `registered` so every metric is auto-
+	// added to the MustRegister batch. Saves repeating field names a
+	// second time + keeps the registration list in sync.
+	c := func(name, help string) prometheus.Counter {
+		m := prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help})
+		registered = append(registered, m)
+		return m
+	}
+	cv := func(name, help string, labels ...string) *prometheus.CounterVec {
+		m := prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: help}, labels)
+		registered = append(registered, m)
+		return m
+	}
+	g := func(name, help string) prometheus.Gauge {
+		m := prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help})
+		registered = append(registered, m)
+		return m
+	}
+	gv := func(name, help string, labels ...string) *prometheus.GaugeVec {
+		m := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: name, Help: help}, labels)
+		registered = append(registered, m)
+		return m
+	}
+	hv := func(name, help string, labels ...string) *prometheus.HistogramVec {
+		m := prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{Name: name, Help: help, Buckets: defaultBuckets},
+			labels)
+		registered = append(registered, m)
+		return m
+	}
+	gf := func(name, help string, fn func() float64) prometheus.GaugeFunc {
+		m := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: help}, fn)
+		registered = append(registered, m)
+		return m
+	}
+	tenant := []string{"database", "user", "application_name"}
+
+	m := &Metrics{
+		// Client-facing.
+		ClientConnsTotal:    c("pgrouter_client_connections_total", "Total client connections accepted since start."),
+		ClientDisconnsTotal: c("pgrouter_client_disconnections_total", "Total client disconnections."),
+		ClientActiveGauge:   g("pgrouter_client_active", "Currently-connected clients."),
+		ClientBytesIn:       c("pgrouter_client_bytes_in_total", "Bytes received from clients."),
+		ClientBytesOut:      c("pgrouter_client_bytes_out_total", "Bytes sent to clients."),
+		// Backend-facing.
+		BackendDialsTotal:     c("pgrouter_backend_dials_total", "Total upstream connect attempts."),
+		BackendDialErrorsTot:  c("pgrouter_backend_dial_errors_total", "Upstream connect failures."),
+		BackendActiveGauge:    g("pgrouter_backend_active", "Currently checked-out upstream backends."),
+		BackendIdleGauge:      g("pgrouter_backend_idle", "Currently-idle pooled backends."),
+		BackendEvictionsTotal: c("pgrouter_backend_evictions_total", "Backends evicted by the janitor (idle / lifetime)."),
+		// Pool.
+		PoolAcquireSeconds: hv("pgrouter_pool_acquire_seconds", "Time clients spent waiting for a pool slot.", "pool"),
+		PoolWaitersGauge:   gv("pgrouter_pool_waiters", "Clients currently queued in a pool's wait queue.", "pool"),
+		// Per-tenant wire counters.
+		QueriesTotal:     cv("pgrouter_queries_total", "Total Query + Parse messages forwarded.", tenant...),
+		TxStarts:         cv("pgrouter_tx_starts_total", "Transactions opened (BEGIN observed).", tenant...),
+		TxCommits:        cv("pgrouter_tx_commits_total", "Transactions committed (T -> I via success).", tenant...),
+		TxRollbacks:      cv("pgrouter_tx_rollbacks_total", "Transactions rolled back (E -> I, or explicit ROLLBACK).", tenant...),
+		QueryDurationSec: hv("pgrouter_query_duration_seconds", "Per-query duration, from first byte to ReadyForQuery.", tenant...),
+		// Auth.
+		AuthAttempts: c("pgrouter_auth_attempts_total", "Client auth attempts."),
+		AuthFailures: c("pgrouter_auth_failures_total", "Client auth failures."),
+		// Cancel routing.
+		CancelsReceived:  c("pgrouter_cancels_received_total", "CancelRequest packets received from clients."),
+		CancelsForwarded: c("pgrouter_cancels_forwarded_total", "CancelRequest packets successfully forwarded."),
+		CancelsDropped:   c("pgrouter_cancels_dropped_total", "CancelRequest packets dropped (unknown PID/secret)."),
+		// Enforcement counters.
+		GlobalLimitRejects: cv("pgrouter_global_limit_rejects_total", "Acquires rejected by max_db_connections / max_user_connections.", "scope", "name"),
+		QueryTimeouts:      cv("pgrouter_query_timeouts_total", "Queries killed by query_timeout.", tenant...),
+		ClientIdleTimeouts: cv("pgrouter_client_idle_timeouts_total", "Clients evicted by client_idle_timeout.", tenant...),
+		IdleTxTimeouts:     cv("pgrouter_idle_transaction_timeouts_total", "Clients killed by idle_transaction_timeout.", tenant...),
+		// Lifecycle.
+		SighupReloads:         cv("pgrouter_sighup_reloads_total", "SIGHUP-driven config reloads.", "outcome"),
+		SighupUserlistReloads: cv("pgrouter_sighup_userlist_reloads_total", "SIGHUP-driven userlist.txt reloads.", "outcome"),
+		// Audit + PROXY-protocol ops.
+		AuditWriteErrors:  c("pgrouter_audit_write_errors_total", "Audit-file Write() failures (disk full / IO error)."),
+		ProxyProtoMissing: c("pgrouter_proxy_proto_missing_total", "Accepted connections that did not present a PROXY preamble (rejected when proxy_protocol_strict=true)."),
+		InflightClients: gf("pgrouter_inflight_clients",
+			"Client conns currently being served (decremented on Handle return).",
+			func() float64 {
+				if InflightFn == nil {
+					return 0
+				}
+				return float64(InflightFn())
+			}),
+		// QPS + bandwidth + prepared.
+		QPSRejects:        cv("pgrouter_qps_rejects_total", "Queries rejected by per-tenant max_qps token bucket.", "scope", "name"),
+		BytesInPerTenant:  cv("pgrouter_tenant_bytes_in_total", "Bytes received from clients, per (database, user).", "database", "user"),
+		BytesOutPerTenant: cv("pgrouter_tenant_bytes_out_total", "Bytes sent to clients, per (database, user).", "database", "user"),
+		PreparedHits:      cv("pgrouter_prepared_cache_hits_total", "Parse messages whose server-side name was already cached on the backend.", tenant...),
+		PreparedMisses:    cv("pgrouter_prepared_cache_misses_total", "Parse messages requiring a backend round trip (first time on this backend).", tenant...),
+		PreparedEvictions: cv("pgrouter_prepared_cache_evictions_total", "Prepared-statement LRU evictions (DEALLOCATE sent to backend).", tenant...),
+	}
+	Reg.MustRegister(registered...)
 	Active = m
 	return m
 }

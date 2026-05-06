@@ -20,21 +20,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
-
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 )
 
 func TestStatementModeRejectsExplicitBegin(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	_, p := newPoolWithFake(t, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -87,15 +76,7 @@ func TestStatementModeRejectsExplicitBegin(t *testing.T) {
 }
 
 func TestStatementModeAllowsImplicitSelect(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	fb, p := newPoolWithFake(t, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -156,15 +137,7 @@ func TestStatementModeAllowsImplicitSelect(t *testing.T) {
 }
 
 func TestStatementModeRejectsBeginViaParse(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	_, p := newPoolWithFake(t, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -207,15 +180,7 @@ func TestStatementModeRejectsBeginViaParse(t *testing.T) {
 
 func TestTransactionModeAllowsExplicitBegin(t *testing.T) {
 	// Sanity: NON-statement mode still permits BEGIN end-to-end.
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             slog.New(slog.DiscardHandler),
-	})
+	fb, p := newPoolWithFake(t, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()

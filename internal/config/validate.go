@@ -42,173 +42,162 @@ func (es ValidationErrors) add(path, format string, args ...any) ValidationError
 	return append(es, ValidationError{Path: path, Message: fmt.Sprintf(format, args...)})
 }
 
+// validPoolMode is the canonical set of accepted PoolMode strings.
+var validPoolMode = map[PoolMode]struct{}{
+	PoolModeSession: {}, PoolModeTransaction: {}, PoolModeStatement: {},
+}
+
 // Validate runs full structural validation. Returns nil if everything
 // checks out, otherwise a ValidationErrors aggregating every problem.
+//
+// WIN5 refactor: the per-field "if x < 1 { add } / if x < 0 { add }"
+// patterns repeated 15+ times. They now go through e.port, e.minInt,
+// e.poolMode helpers. Each numeric guard is one line at the call site.
 func Validate(cfg *Config) error {
-	var errs ValidationErrors
+	e := &validator{}
 
 	// Server.
-	if cfg.Server.ListenPort < 1 || cfg.Server.ListenPort > 65535 {
-		errs = errs.add("server.listen_port",
-			"must be in [1, 65535], got %d", cfg.Server.ListenPort)
-	}
-	if cfg.Server.MaxClientConn < 1 {
-		errs = errs.add("server.max_client_conn",
-			"must be >= 1, got %d", cfg.Server.MaxClientConn)
-	}
+	e.port("server.listen_port", cfg.Server.ListenPort)
+	e.minInt("server.max_client_conn", cfg.Server.MaxClientConn, 1)
 
 	// Pool.
-	switch cfg.Pool.Mode {
-	case PoolModeSession, PoolModeTransaction, PoolModeStatement:
-	default:
-		errs = errs.add("pool.mode",
-			"must be one of session|transaction|statement, got %q", cfg.Pool.Mode)
-	}
-	if cfg.Pool.DefaultPoolSize < 1 {
-		errs = errs.add("pool.default_pool_size",
-			"must be >= 1, got %d", cfg.Pool.DefaultPoolSize)
-	}
-	if cfg.Pool.MinPoolSize < 0 {
-		errs = errs.add("pool.min_pool_size",
-			"must be >= 0, got %d", cfg.Pool.MinPoolSize)
-	}
+	e.poolMode("pool.mode", cfg.Pool.Mode, true)
+	e.minInt("pool.default_pool_size", cfg.Pool.DefaultPoolSize, 1)
+	e.minInt("pool.min_pool_size", cfg.Pool.MinPoolSize, 0)
+	e.minInt("pool.reserve_pool_size", cfg.Pool.ReservePoolSize, 0)
 	if cfg.Pool.MinPoolSize > cfg.Pool.DefaultPoolSize {
-		errs = errs.add("pool.min_pool_size",
+		e.add("pool.min_pool_size",
 			"must not exceed default_pool_size (%d > %d)",
 			cfg.Pool.MinPoolSize, cfg.Pool.DefaultPoolSize)
-	}
-	if cfg.Pool.ReservePoolSize < 0 {
-		errs = errs.add("pool.reserve_pool_size",
-			"must be >= 0, got %d", cfg.Pool.ReservePoolSize)
 	}
 
 	// Auth.
 	switch cfg.Auth.Type {
 	case AuthTrust, AuthSCRAM, AuthMD5, AuthPeer, AuthCert, AuthHBA:
-		// supported in MVP/v1.0
 	default:
-		errs = errs.add("auth.type",
-			"unknown auth type %q", cfg.Auth.Type)
+		e.add("auth.type", "unknown auth type %q", cfg.Auth.Type)
 	}
 	if cfg.Auth.Type == AuthHBA && cfg.Auth.HBAFile == "" {
-		errs = errs.add("auth.hba_file",
-			"required when auth.type=hba")
+		e.add("auth.hba_file", "required when auth.type=hba")
 	}
 	if cfg.Auth.Type == AuthCert {
 		switch cfg.TLS.ClientMode {
 		case SSLVerifyCA, SSLVerifyFull:
-			// OK — verified peer cert available.
 		default:
-			errs = errs.add("auth.type",
+			e.add("auth.type",
 				"cert auth requires tls.client_mode=verify-ca or verify-full (got %q)",
 				cfg.TLS.ClientMode)
 		}
 	}
 	if cfg.Auth.Type == AuthSCRAM || cfg.Auth.Type == AuthMD5 {
 		if cfg.Auth.UserlistFile == "" && cfg.Auth.AuthQuery == "" {
-			errs = errs.add("auth",
-				"%s requires either auth.userlist_file or auth.auth_query", cfg.Auth.Type)
+			e.add("auth", "%s requires either auth.userlist_file or auth.auth_query", cfg.Auth.Type)
 		}
 	}
 	if cfg.Auth.Type == AuthPeer && cfg.Server.UnixSocketDir == "" {
-		errs = errs.add("auth.type",
-			"peer auth requires server.unix_socket_dir to be set")
+		e.add("auth.type", "peer auth requires server.unix_socket_dir to be set")
 	}
 	if cfg.Auth.AuthQuery != "" && cfg.Auth.AuthUser == "" {
-		errs = errs.add("auth.auth_user",
-			"required when auth.auth_query is set")
+		e.add("auth.auth_user", "required when auth.auth_query is set")
 	}
 
 	// TLS.
 	if err := validateSSLMode(cfg.TLS.ClientMode); err != nil {
-		errs = errs.add("tls.client_mode", "%s", err)
+		e.add("tls.client_mode", "%s", err)
 	}
 	if err := validateSSLMode(cfg.TLS.ServerMode); err != nil {
-		errs = errs.add("tls.server_mode", "%s", err)
+		e.add("tls.server_mode", "%s", err)
 	}
 	switch cfg.TLS.ClientMode {
 	case SSLRequire, SSLVerifyCA, SSLVerifyFull:
 		if cfg.TLS.ClientCertFile == "" || cfg.TLS.ClientKeyFile == "" {
-			errs = errs.add("tls",
-				"client_mode=%s requires client_cert_file + client_key_file",
+			e.add("tls", "client_mode=%s requires client_cert_file + client_key_file",
 				cfg.TLS.ClientMode)
 		}
 	}
 	switch cfg.TLS.ServerMode {
 	case SSLVerifyCA, SSLVerifyFull:
 		if cfg.TLS.ServerCAFile == "" {
-			errs = errs.add("tls.server_ca_file",
-				"required when server_mode=%s", cfg.TLS.ServerMode)
+			e.add("tls.server_ca_file", "required when server_mode=%s", cfg.TLS.ServerMode)
 		}
 	}
 
 	// Databases.
 	if len(cfg.Databases) == 0 {
-		errs = errs.add("databases",
-			"at least one database must be defined")
+		e.add("databases", "at least one database must be defined")
 	}
 	for name, db := range cfg.Databases {
-		path := fmt.Sprintf("databases.%s", name)
-		if db.Host == "" {
-			errs = errs.add(path+".host", "required")
-		}
-		if db.Port < 1 || db.Port > 65535 {
-			errs = errs.add(path+".port",
-				"must be in [1, 65535], got %d", db.Port)
-		}
-		if db.PoolMode != "" {
-			switch db.PoolMode {
-			case PoolModeSession, PoolModeTransaction, PoolModeStatement:
-			default:
-				errs = errs.add(path+".pool_mode",
-					"must be one of session|transaction|statement, got %q", db.PoolMode)
-			}
-		}
-		if db.PoolSize < 0 {
-			errs = errs.add(path+".pool_size",
-				"must be >= 0, got %d", db.PoolSize)
-		}
+		path := "databases." + name
+		e.required(path+".host", db.Host)
+		e.port(path+".port", db.Port)
+		e.poolMode(path+".pool_mode", db.PoolMode, false)
+		e.minInt(path+".pool_size", db.PoolSize, 0)
+		e.minInt64(path+".max_replica_lag_bytes", db.MaxReplicaLagBytes, 0)
 		for i, r := range db.Replicas {
 			rp := fmt.Sprintf("%s.replicas[%d]", path, i)
-			if r.Host == "" {
-				errs = errs.add(rp+".host", "required")
-			}
-			if r.Port < 1 || r.Port > 65535 {
-				errs = errs.add(rp+".port",
-					"must be in [1, 65535], got %d", r.Port)
-			}
-			if r.Weight < 0 {
-				errs = errs.add(rp+".weight",
-					"must be >= 0, got %d", r.Weight)
-			}
-		}
-		if db.MaxReplicaLagBytes < 0 {
-			errs = errs.add(path+".max_replica_lag_bytes",
-				"must be >= 0, got %d", db.MaxReplicaLagBytes)
+			e.required(rp+".host", r.Host)
+			e.port(rp+".port", r.Port)
+			e.minInt(rp+".weight", r.Weight, 0)
 		}
 	}
 
 	// Users.
 	for name, u := range cfg.Users {
-		path := fmt.Sprintf("users.%s", name)
-		if u.PoolMode != "" {
-			switch u.PoolMode {
-			case PoolModeSession, PoolModeTransaction, PoolModeStatement:
-			default:
-				errs = errs.add(path+".pool_mode",
-					"must be one of session|transaction|statement, got %q", u.PoolMode)
-			}
-		}
-		if u.PoolSize < 0 {
-			errs = errs.add(path+".pool_size",
-				"must be >= 0, got %d", u.PoolSize)
-		}
+		path := "users." + name
+		e.poolMode(path+".pool_mode", u.PoolMode, false)
+		e.minInt(path+".pool_size", u.PoolSize, 0)
 	}
 
-	if len(errs) > 0 {
-		return errs
+	if len(e.errs) > 0 {
+		return e.errs
 	}
 	return nil
+}
+
+// validator collects errors and exposes typed-guard helpers so each
+// field-level check is one line at the call site.
+type validator struct{ errs ValidationErrors }
+
+func (e *validator) add(path, format string, args ...any) {
+	e.errs = e.errs.add(path, format, args...)
+}
+
+func (e *validator) port(path string, v int) {
+	if v < 1 || v > 65535 {
+		e.add(path, "must be in [1, 65535], got %d", v)
+	}
+}
+
+func (e *validator) minInt(path string, v, min int) {
+	if v < min {
+		e.add(path, "must be >= %d, got %d", min, v)
+	}
+}
+
+func (e *validator) minInt64(path string, v, min int64) {
+	if v < min {
+		e.add(path, "must be >= %d, got %d", min, v)
+	}
+}
+
+func (e *validator) required(path, v string) {
+	if v == "" {
+		e.add(path, "required")
+	}
+}
+
+// poolMode validates against {session|transaction|statement}. When
+// required=false the empty value is accepted (per-db/user overrides).
+func (e *validator) poolMode(path string, m PoolMode, required bool) {
+	if m == "" {
+		if required {
+			e.add(path, "must be one of session|transaction|statement, got %q", m)
+		}
+		return
+	}
+	if _, ok := validPoolMode[m]; !ok {
+		e.add(path, "must be one of session|transaction|statement, got %q", m)
+	}
 }
 
 func validateSSLMode(m SSLMode) error {
