@@ -46,24 +46,42 @@ func newFakeBackend(t *testing.T) *fakeBackend {
 	return fb
 }
 
-// newPoolWithFake returns a fakeBackend + a one-conn pool that dials
-// into it. Collapses the boilerplate every PooledConn test repeats:
+// newDialPool builds a *pool.Pool wired for client tests: caller-
+// supplied dial, default 1s QueryWait, shared discard logger. opts
+// tweak the config in-place (size is required; everything else has
+// sensible defaults). t.Cleanup registers Pool.Close so test code
+// doesn't need its own defer.
 //
-//	fb := newFakeBackend(t)
-//	dial := func(ctx) (*backend.Conn, error) { return fb.Conn(), nil }
-//	p := pool.New("test", dial, pool.Config{...})
-//
-// onto one call. `size` is DefaultPoolSize (most tests want 1 or 2).
+// Use this directly when you need a custom dial (real PG, stall conn,
+// error injection). Use newPoolWithFake when a scripted fake backend
+// is enough.
+func newDialPool(t *testing.T, name string, dial pool.Dialer, size int, opts ...func(*pool.Config)) *pool.Pool {
+	t.Helper()
+	cfg := pool.Config{
+		DefaultPoolSize: size,
+		QueryWait:       time.Second,
+		Log:             testutil.Discard,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	p := pool.New(name, dial, cfg)
+	t.Cleanup(p.Close)
+	return p
+}
+
+// withQueryWait overrides QueryWait for newDialPool (default 1s).
+func withQueryWait(d time.Duration) func(*pool.Config) {
+	return func(c *pool.Config) { c.QueryWait = d }
+}
+
+// newPoolWithFake returns a fakeBackend + a one-conn pool dialing into
+// it. Sugar over newDialPool — covers the most common client-test shape.
 func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
 	t.Helper()
 	fb := newFakeBackend(t)
 	dial := func(context.Context) (*backend.Conn, error) { return fb.Conn(), nil }
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: size,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
-	return fb, p
+	return fb, newDialPool(t, "test", dial, size)
 }
 
 func (fb *fakeBackend) run() {
@@ -100,11 +118,7 @@ func TestPooledServeSelect(t *testing.T) {
 	dial := func(ctx context.Context) (*backend.Conn, error) {
 		return fb.Conn(), nil
 	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "test", dial, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()

@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil/statreset"
@@ -208,11 +207,7 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 			Log:      testutil.Discard,
 		}, nil
 	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "test", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()

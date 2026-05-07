@@ -82,11 +82,7 @@ func startPooledClient(t *testing.T, p *pool.Pool, resetOnRelease bool) (net.Con
 // stay attached even after subsequent idle RFQs.
 func TestForceSessionPinningOnLISTEN(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
-	p := pool.New("listen-test", fleet.Dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "listen-test", fleet.Dial, 2)
 
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
@@ -152,11 +148,7 @@ func TestForceSessionPinningOnLISTEN(t *testing.T) {
 // TestForceSessionPinningOnAdvisoryLock: pg_advisory_lock() pins too.
 func TestForceSessionPinningOnAdvisoryLock(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
-	p := pool.New("adv-test", fleet.Dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "adv-test", fleet.Dial, 2)
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
 
@@ -191,11 +183,7 @@ func TestForceSessionPinningOnAdvisoryLock(t *testing.T) {
 // TestSELECTOnlyDoesNotPin: pinned must be false for ordinary queries.
 func TestSELECTOnlyDoesNotPin(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
-	p := pool.New("sel-test", fleet.Dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "sel-test", fleet.Dial, 2)
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
 
@@ -257,12 +245,7 @@ func TestGUCReplayFiresOnFreshAcquire(t *testing.T) {
 // holds one backend at a time anyway.
 func TestPooledMultipleClientsShareSingleBackend(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
-	p := pool.New("share-test", fleet.Dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       2 * time.Second,
-		Log:             testutil.Discard,
-	})
-	defer p.Close()
+	p := newDialPool(t, "share-test", fleet.Dial, 1, withQueryWait(2*time.Second))
 
 	// Pre-script the SAME backend to answer both queries in order.
 	go func() {
@@ -335,11 +318,7 @@ func TestGUCReplayPropagatesError(t *testing.T) {
 // Sync with RFQ.
 func TestPrepareCacheObservesParse(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
-	p := pool.New("prep-test", fleet.Dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "prep-test", fleet.Dial, 1)
 	clt, fe, _ := startPooledClient(t, p, false)
 	defer clt.Close()
 

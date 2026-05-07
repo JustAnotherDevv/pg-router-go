@@ -19,8 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // syncBuf is a goroutine-safe wrapper around bytes.Buffer for use as
@@ -56,11 +54,7 @@ func TestSlowQueryEmitsWarn(t *testing.T) {
 	dial := func(ctx context.Context) (*backend.Conn, error) {
 		return fb.Conn(), nil
 	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "test", dial, 2)
 
 	buf := &syncBuf{}
 	captureLog := slog.New(slog.NewTextHandler(buf,
@@ -125,11 +119,7 @@ func TestSlowQueryDisabledByZero(t *testing.T) {
 	dial := func(ctx context.Context) (*backend.Conn, error) {
 		return fb.Conn(), nil
 	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "test", dial, 2)
 
 	buf := &syncBuf{}
 	captureLog := slog.New(slog.NewTextHandler(buf, nil))

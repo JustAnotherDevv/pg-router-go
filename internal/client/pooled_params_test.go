@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
@@ -31,12 +30,7 @@ func TestWelcomeUsesUpstreamParamsAfterFirstDial(t *testing.T) {
 			},
 		}, nil
 	}
-	p := pool.New("welcome-real", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
-	defer p.Close()
+	p := newDialPool(t, "welcome-real", dial, 2)
 
 	// Pre-warm: first acquire populates the cache.
 	c, err := p.Acquire(context.Background())
@@ -107,12 +101,7 @@ func TestWelcomeFallsBackToCannedWhenPoolEmpty(t *testing.T) {
 	dialErr := func(_ context.Context) (*backend.Conn, error) {
 		return nil, errFailDial
 	}
-	p := pool.New("welcome-cold", dialErr, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       50 * time.Millisecond,
-		Log:             testutil.Discard,
-	})
-	defer p.Close()
+	p := newDialPool(t, "welcome-cold", dialErr, 1, withQueryWait(50*time.Millisecond))
 
 	cli, srv := net.Pipe()
 	defer cli.Close()
@@ -162,12 +151,7 @@ func TestWelcomeEagerWarmsOnColdStart(t *testing.T) {
 			Params: map[string]string{"server_version": "16.1 (warmed)"},
 		}, nil
 	}
-	p := pool.New("cold-warm", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
-	defer p.Close()
+	p := newDialPool(t, "cold-warm", dial, 1)
 	require.Nil(t, p.CachedParams(), "fresh pool: nothing cached")
 
 	pc := &PooledConn{

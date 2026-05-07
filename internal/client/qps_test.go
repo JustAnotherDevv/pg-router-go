@@ -4,13 +4,11 @@ import (
 	"context"
 	"net"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
@@ -20,11 +18,7 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 	dial := func(ctx context.Context) (*backend.Conn, error) {
 		return fb.Conn(), nil
 	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "test", dial, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -86,11 +80,7 @@ func TestQPSLimiterAllowsWhenDisabled(t *testing.T) {
 	dial := func(ctx context.Context) (*backend.Conn, error) {
 		return fb.Conn(), nil
 	}
-	p := pool.New("test", dial, pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "test", dial, 2)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()

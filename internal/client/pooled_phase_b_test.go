@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
@@ -57,11 +56,7 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 	fb := newFakeBackend(t)
 	bConn := connWithCache(fb, 8)
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := pool.New("t", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "t", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -117,11 +112,7 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 	bConn.Prepared.Add(preCached) // simulate "previous client already Parsed this"
 
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := pool.New("t", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "t", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -172,11 +163,7 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 	bConn := connWithCache(fb, 8)
 	_ = bConn
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := pool.New("t", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "t", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -230,11 +217,7 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 	fb := newFakeBackend(t)
 	bConn := connWithCache(fb, 8)
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := pool.New("t", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "t", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -304,11 +287,7 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	bConn.Prepared.Add(preCached) // capacity full
 
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := pool.New("t", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "t", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
@@ -425,11 +404,7 @@ func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
 	fb := newFakeBackend(t)
 	bConn := connWithCache(fb, 8)
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := pool.New("welc-isolated", dial, pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	})
+	p := newDialPool(t, "welc-isolated", dial, 1)
 
 	clt, srv := net.Pipe()
 	defer clt.Close()
