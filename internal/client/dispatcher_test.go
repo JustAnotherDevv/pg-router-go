@@ -60,13 +60,7 @@ func TestDispatcherTrustAuthAndPoolRoute(t *testing.T) {
 	fe := pgproto3.NewFrontend(cli, cli)
 
 	// Drain welcome up to RFQ.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, cli, fe)
 
 	// Script the fake backend's response for the first Query.
 	go func() {
@@ -84,13 +78,7 @@ func TestDispatcherTrustAuthAndPoolRoute(t *testing.T) {
 
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, cli, fe)
 
 	// Pool now has one idle backend serving (appdb, alice).
 	require.Eventually(t, func() bool {
@@ -226,13 +214,7 @@ func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 	fe := pgproto3.NewFrontend(cli, cli)
 
 	// Drain welcome up to RFQ.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, cli, fe)
 
 	// Now send a Query — Acquire should fail, ErrorResponse arrives.
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
@@ -298,13 +280,7 @@ func TestDispatcherWithUserlistAuth(t *testing.T) {
 	require.NoError(t, auth.PerformClientAuth(fe, "alice", password, msg))
 
 	// Drain welcome up to RFQ.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, cli, fe)
 
 	_ = cli.Close()
 	<-doneC

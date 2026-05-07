@@ -4,7 +4,6 @@ package client
 
 import (
 	"context"
-	"net"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // --- ServerNameFor ---
@@ -88,7 +88,7 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 	fe.Send(&pgproto3.Parse{Name: "stmt1", Query: "SELECT $1::int"})
 	fe.Send(&pgproto3.Sync{})
 	require.NoError(t, fe.Flush())
-	drainToRFQ(t, clt, fe)
+	testutil.DrainToRFQ(t, clt, fe)
 }
 
 // --- PooledConn: cache hit synthesizes ParseComplete locally ---
@@ -177,7 +177,7 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 	fe.Send(&pgproto3.Bind{PreparedStatement: "stmt1"})
 	fe.Send(&pgproto3.Sync{})
 	require.NoError(t, fe.Flush())
-	drainToRFQ(t, clt, fe)
+	testutil.DrainToRFQ(t, clt, fe)
 }
 
 // --- PooledConn: Close('S') is suppressed (statement stays cached) ---
@@ -206,7 +206,7 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 	fe.Send(&pgproto3.Parse{Name: "stmt1", Query: "SELECT 1"})
 	fe.Send(&pgproto3.Sync{})
 	require.NoError(t, fe.Flush())
-	drainToRFQ(t, clt, fe)
+	testutil.DrainToRFQ(t, clt, fe)
 
 	// Now Close('S', stmt1) — should be SUPPRESSED on backend.
 	// Only Sync should reach the backend.
@@ -362,32 +362,4 @@ func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
 		Database: "appdb",
 		User:     "alice",
 	})
-}
-
-// --- helpers used by Phase B pooled tests ---
-
-func drainWelcome(t *testing.T, clt net.Conn, fe *pgproto3.Frontend) {
-	t.Helper()
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			_ = clt.SetReadDeadline(time.Time{})
-			return
-		}
-	}
-}
-
-func drainToRFQ(t *testing.T, clt net.Conn, fe *pgproto3.Frontend) {
-	t.Helper()
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(time.Second))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			_ = clt.SetReadDeadline(time.Time{})
-			return
-		}
-	}
 }

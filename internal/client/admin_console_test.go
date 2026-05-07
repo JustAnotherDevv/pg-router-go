@@ -25,13 +25,7 @@ func adminClient(t *testing.T, ac *AdminConsole, sql string) [][]string {
 
 	fe := pgproto3.NewFrontend(clt, clt)
 	// Drain welcome.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	fe.Send(&pgproto3.Query{String: sql})
 	require.NoError(t, fe.Flush())
 
@@ -117,12 +111,7 @@ func TestAdminUnknownCommand(t *testing.T) {
 	go ac.Serve(context.Background(), srv)
 
 	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	fe.Send(&pgproto3.Query{String: "DROP DATABASE prod"})
 	require.NoError(t, fe.Flush())
 
@@ -152,19 +141,9 @@ func TestAdminReloadFiresClosure(t *testing.T) {
 	defer clt.Close()
 	go ac.Serve(context.Background(), srv)
 	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	fe.Send(&pgproto3.Query{String: "RELOAD"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	require.True(t, called)
 }

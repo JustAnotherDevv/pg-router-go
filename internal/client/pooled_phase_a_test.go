@@ -219,15 +219,7 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	})
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
 	require.NoError(t, fe.Flush())
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	testutil.DrainToRFQ(t, clt, fe)
 
 	// COMMIT → backend replies RFQ 'I'.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -237,15 +229,7 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	})
 	fe.Send(&pgproto3.Query{String: "COMMIT"})
 	require.NoError(t, fe.Flush())
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	testutil.DrainToRFQ(t, clt, fe)
 
 	// Give the Serve goroutine a beat to publish metrics.
 	time.Sleep(20 * time.Millisecond)
@@ -284,15 +268,7 @@ func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
 	require.NoError(t, fe.Flush())
 
 	// Drain reply.
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	testutil.DrainToRFQ(t, clt, fe)
 
 	// Pool should now show active=1 idle=0 — backend pinned. (Without the
 	// pin it would be active=0 idle=1.) Give the Serve goroutine a beat

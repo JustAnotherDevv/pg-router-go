@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // syncBuf is a goroutine-safe wrapper around bytes.Buffer for use as
@@ -79,12 +80,7 @@ func TestSlowQueryEmitsWarn(t *testing.T) {
 
 	fe.Send(&pgproto3.Query{String: "SELECT pg_sleep(0.02) /* secret */"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, nil, fe)
 
 	// WARN log fires AFTER pgrouter forwards the RFQ to the client
 	// (drain-loop ordering). Poll for it.
@@ -121,11 +117,6 @@ func TestSlowQueryDisabledByZero(t *testing.T) {
 	})
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, nil, fe)
 	require.NotContains(t, buf.String(), "slow_query")
 }

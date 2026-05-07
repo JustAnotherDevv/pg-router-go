@@ -92,12 +92,7 @@ func TestForceSessionPinningOnLISTEN(t *testing.T) {
 	<-scripted
 
 	// Drain the LISTEN response (CC + RFQ).
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 
 	// After idle RFQ, the backend should still be ACTIVE because we
 	// pinned it. Use Eventually because the Serve goroutine is racing.
@@ -115,12 +110,7 @@ func TestForceSessionPinningOnLISTEN(t *testing.T) {
 	})
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	require.Equal(t, 1, fleet.Count(), "should NOT have dialed a second backend")
 	require.Equal(t, 1, p.Stats().Active)
 
@@ -150,12 +140,7 @@ func TestForceSessionPinningOnAdvisoryLock(t *testing.T) {
 
 	fe.Send(&pgproto3.Query{String: "SELECT pg_advisory_lock(42)"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	require.Eventually(t, func() bool {
 		s := p.Stats()
 		return s.Active == 1 && s.Idle == 0
@@ -181,12 +166,7 @@ func TestSELECTOnlyDoesNotPin(t *testing.T) {
 
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 	require.Eventually(t, func() bool {
 		s := p.Stats()
 		return s.Active == 0 && s.Idle == 1
@@ -325,6 +305,12 @@ func TestPrepareCacheObservesParse(t *testing.T) {
 	fe.Send(&pgproto3.Parse{Name: "stmt1", Query: "SELECT $1::int"})
 	fe.Send(&pgproto3.Sync{})
 	require.NoError(t, fe.Flush())
+	// Don't use testutil.DrainToRFQ here: the helper applies a per-
+	// Receive read deadline, but in extended-protocol the test goroutine
+	// must script TWO expects (Parse, then Sync) before either response
+	// flows, and the race between Acquire/scripted-mint and the helper's
+	// deadline is too tight under load. Keep the original deadline-less
+	// drain.
 	for {
 		m, _ := fe.Receive()
 		if _, ok := m.(*pgproto3.ReadyForQuery); ok {

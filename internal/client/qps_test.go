@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
@@ -30,12 +31,7 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 	})
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, clt, fe)
 
 	// Second Query immediately → bucket empty → pgrouter rejects locally.
 	fe.Send(&pgproto3.Query{String: "SELECT 2"})

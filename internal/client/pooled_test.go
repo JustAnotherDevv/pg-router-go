@@ -107,7 +107,7 @@ func startPooled(t *testing.T, p *pool.Pool, h *PooledConn) (clt net.Conn, fe *p
 		_ = h.Serve(context.Background(), srv)
 	}()
 	fe = pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	testutil.DrainToRFQ(t, clt, fe)
 	return clt, fe, doneCh
 }
 
@@ -204,12 +204,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
 	require.NoError(t, fe.Flush())
 
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, nil, fe)
 	// Inside a transaction — pool should still hold the backend ACTIVE.
 	require.Eventually(t, func() bool {
 		s := p.Stats()
@@ -225,12 +220,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	fe.Send(&pgproto3.Query{String: "COMMIT"})
 	require.NoError(t, fe.Flush())
 
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	testutil.DrainToRFQ(t, nil, fe)
 	// Boundary crossed — backend released.
 	require.Eventually(t, func() bool {
 		s := p.Stats()
