@@ -84,6 +84,33 @@ func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
 	return fb, newDialPool(t, "test", dial, size)
 }
 
+// startPooled wires h to a fresh net.Pipe pair, launches h.Serve in a
+// goroutine, drains the welcome to RFQ, and returns the client-side
+// conn + frontend + a "Serve has returned" channel. Replaces the ~25-
+// line boilerplate every PooledConn dispatch test repeats.
+//
+// Side effects on h: sets Pool=p; sets Log=testutil.Discard if unset.
+// Caller retains ownership of all other fields (PooledConfig, Database,
+// User, Router etc.). clt is registered with t.Cleanup so the test
+// shouldn't add `defer clt.Close()` (idempotent if it does).
+func startPooled(t *testing.T, p *pool.Pool, h *PooledConn) (clt net.Conn, fe *pgproto3.Frontend, done <-chan struct{}) {
+	t.Helper()
+	clt, srv := net.Pipe()
+	t.Cleanup(func() { _ = clt.Close() })
+	if h.Log == nil {
+		h.Log = testutil.Discard
+	}
+	h.Pool = p
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		_ = h.Serve(context.Background(), srv)
+	}()
+	fe = pgproto3.NewFrontend(clt, clt)
+	drainWelcome(t, clt, fe)
+	return clt, fe, doneCh
+}
+
 func (fb *fakeBackend) run() {
 	defer close(fb.doneC)
 	for fn := range fb.scriptC {
@@ -119,20 +146,11 @@ func TestPooledServeSelect(t *testing.T) {
 		return fb.Conn(), nil
 	}
 	p := newDialPool(t, "test", dial, 2)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.4"},
-			},
-			Log:  testutil.Discard,
-			Pool: p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.4"},
+		},
+	})
 
 	// Script the backend response for one SELECT.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -147,17 +165,6 @@ func TestPooledServeSelect(t *testing.T) {
 		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 		_ = be.Flush()
 	})
-
-	fe := pgproto3.NewFrontend(clt, clt)
-
-	// Drain welcome: AuthOk + ParameterStatus + BackendKeyData + RFQ.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
 
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
@@ -182,30 +189,11 @@ func TestPooledServeSelect(t *testing.T) {
 		return s.Idle == 1 && s.Active == 0
 	}, time.Second, 5*time.Millisecond)
 
-	_ = clt.Close()
 }
 
 func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	fb, p := newPoolWithFake(t, 2)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			Log:  testutil.Discard,
-			Pool: p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain welcome.
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{})
 
 	// BEGIN.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -248,7 +236,6 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 		s := p.Stats()
 		return s.Active == 0 && s.Idle == 1
 	}, time.Second, 5*time.Millisecond)
-	_ = clt.Close()
 }
 
 // NOTE: a multi-client share-test would need a fake upstream that
@@ -259,22 +246,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 
 func TestPooledClientTerminateReleasesBackend(t *testing.T) {
 	_, p := newPoolWithFake(t, 1)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	doneServe := make(chan struct{})
-	go func() {
-		defer close(doneServe)
-		h := &PooledConn{Log: testutil.Discard, Pool: p}
-		_ = h.Serve(context.Background(), srv)
-	}()
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, doneServe := startPooled(t, p, &PooledConn{})
 
 	fe.Send(&pgproto3.Terminate{})
 	require.NoError(t, fe.Flush())

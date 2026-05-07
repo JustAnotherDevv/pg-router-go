@@ -50,32 +50,14 @@ func (f *fakeBackendFleet) Count() int {
 	return len(f.backends)
 }
 
-// startPooledClient spawns a PooledConn.Serve on srv and returns a
-// pgproto3.Frontend on clt for the test to drive.
-func startPooledClient(t *testing.T, p *pool.Pool, resetOnRelease bool) (net.Conn, *pgproto3.Frontend, chan struct{}) {
-	clt, srv := net.Pipe()
-	doneC := make(chan struct{})
-	go func() {
-		defer close(doneC)
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				ResetOnRelease: resetOnRelease,
-			},
-			Log:  testutil.Discard,
-			Pool: p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain welcome.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			return clt, fe, doneC
-		}
-	}
+// startPooledClient is a thin compat wrapper over startPooled covering
+// the session-test shape (ResetOnRelease toggle). Prefer startPooled
+// for new tests.
+func startPooledClient(t *testing.T, p *pool.Pool, resetOnRelease bool) (net.Conn, *pgproto3.Frontend, <-chan struct{}) {
+	t.Helper()
+	return startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{ResetOnRelease: resetOnRelease},
+	})
 }
 
 // TestForceSessionPinningOnLISTEN: after a LISTEN, the backend must

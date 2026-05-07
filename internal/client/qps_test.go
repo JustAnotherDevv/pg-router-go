@@ -2,14 +2,12 @@ package client
 
 import (
 	"context"
-	"net"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
@@ -20,24 +18,9 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 	}
 	p := newDialPool(t, "test", dial, 2)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			Log:        testutil.Discard,
-			Pool:       p,
-			QPSLimiter: util.NewTokenBucket(1, 0.1), // 1 burst, 0.1/s refill
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		QPSLimiter: util.NewTokenBucket(1, 0.1), // 1 burst, 0.1/s refill
+	})
 
 	// First Query succeeds → backend responds.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -82,24 +65,9 @@ func TestQPSLimiterAllowsWhenDisabled(t *testing.T) {
 	}
 	p := newDialPool(t, "test", dial, 2)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			Log:        testutil.Discard,
-			Pool:       p,
-			QPSLimiter: nil, // disabled
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		QPSLimiter: nil, // disabled
+	})
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
 		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})

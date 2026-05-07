@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -60,29 +59,15 @@ func TestSlowQueryEmitsWarn(t *testing.T) {
 	captureLog := slog.New(slog.NewTextHandler(buf,
 		&slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				SlowQuery: 5 * time.Millisecond,
-				LogSQL:    "redacted",
-			},
-			Log:      captureLog,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			SlowQuery: 5 * time.Millisecond,
+			LogSQL:    "redacted",
+		},
+		Log:      captureLog,
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// Backend sleeps before responding → query crosses 5ms threshold.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -124,24 +109,10 @@ func TestSlowQueryDisabledByZero(t *testing.T) {
 	buf := &syncBuf{}
 	captureLog := slog.New(slog.NewTextHandler(buf, nil))
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{SlowQuery: 0}, // disabled
-			Log:          captureLog,
-			Pool:         p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{SlowQuery: 0}, // disabled
+		Log:          captureLog,
+	})
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		time.Sleep(20 * time.Millisecond)
 		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})

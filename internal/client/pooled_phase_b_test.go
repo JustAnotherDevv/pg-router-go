@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // --- ServerNameFor ---
@@ -58,23 +57,13 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	expectedServerName := ServerNameFor("SELECT $1::int")
 
@@ -114,23 +103,13 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// Backend should ONLY receive Sync — Parse is suppressed by cache hit.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -165,23 +144,13 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	wantServerName := ServerNameFor("SELECT $1::int")
 
@@ -219,23 +188,13 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// First Parse so the client cache has stmt1 → server-name.
 	fb.expect(func(_ *pgproto3.Backend, _ pgproto3.FrontendMessage) {})
@@ -289,23 +248,13 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	wantNewServerName := ServerNameFor("SELECT 'second'")
 
@@ -406,23 +355,13 @@ func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "welc-isolated", dial, 1)
 
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	drainWelcome(t, clt, fe)
+	_, _, _ = startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 }
 
 // --- helpers used by Phase B pooled tests ---

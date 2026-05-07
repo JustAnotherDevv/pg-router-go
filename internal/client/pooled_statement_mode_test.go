@@ -12,39 +12,18 @@
 package client
 
 import (
-	"context"
-	"net"
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
 
 func TestStatementModeRejectsExplicitBegin(t *testing.T) {
 	_, p := newPoolWithFake(t, 2)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{PoolMode: "statement"},
-			Log:          testutil.Discard,
-			Pool:         p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain welcome.
-	for {
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{PoolMode: "statement"},
+	})
 
 	// Client sends BEGIN.
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
@@ -72,30 +51,13 @@ func TestStatementModeRejectsExplicitBegin(t *testing.T) {
 	stats := p.Stats()
 	require.Equal(t, 0, stats.Active)
 
-	_ = clt.Close()
 }
 
 func TestStatementModeAllowsImplicitSelect(t *testing.T) {
 	fb, p := newPoolWithFake(t, 2)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{PoolMode: "statement"},
-			Log:          testutil.Discard,
-			Pool:         p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{PoolMode: "statement"},
+	})
 
 	// Script backend response.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -133,30 +95,13 @@ func TestStatementModeAllowsImplicitSelect(t *testing.T) {
 		return s.Idle == 1 && s.Active == 0
 	}, time.Second, 5*time.Millisecond)
 
-	_ = clt.Close()
 }
 
 func TestStatementModeRejectsBeginViaParse(t *testing.T) {
 	_, p := newPoolWithFake(t, 2)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{PoolMode: "statement"},
-			Log:          testutil.Discard,
-			Pool:         p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{PoolMode: "statement"},
+	})
 
 	// Extended-protocol BEGIN via Parse.
 	fe.Send(&pgproto3.Parse{Name: "", Query: "BEGIN"})
@@ -175,31 +120,14 @@ func TestStatementModeRejectsBeginViaParse(t *testing.T) {
 		}
 	}
 	require.True(t, sawErr)
-	_ = clt.Close()
 }
 
 func TestTransactionModeAllowsExplicitBegin(t *testing.T) {
 	// Sanity: NON-statement mode still permits BEGIN end-to-end.
 	fb, p := newPoolWithFake(t, 2)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{PoolMode: "transaction"},
-			Log:          testutil.Discard,
-			Pool:         p,
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		m, _ := fe.Receive()
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
+	_, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{PoolMode: "transaction"},
+	})
 
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		q, ok := msg.(*pgproto3.Query)
@@ -222,5 +150,4 @@ func TestTransactionModeAllowsExplicitBegin(t *testing.T) {
 		}
 	}
 
-	_ = clt.Close()
 }

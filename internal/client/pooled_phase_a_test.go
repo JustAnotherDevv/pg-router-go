@@ -62,37 +62,14 @@ var _ = (*dto.LabelPair)(nil)
 // connection within the deadline + small slack.
 func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 	_, p := newPoolWithFake(t, 1)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-
-	serveDone := make(chan struct{})
-	go func() {
-		defer close(serveDone)
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams:      map[string]string{"server_version": "16.0"},
-				ClientIdleTimeout: 100 * time.Millisecond,
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain the welcome.
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	_, _, serveDone := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams:      map[string]string{"server_version": "16.0"},
+			ClientIdleTimeout: 100 * time.Millisecond,
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// Don't send anything. After ClientIdleTimeout the server should send
 	// a FATAL ErrorResponse and close. We expect Serve() to exit.
@@ -109,29 +86,18 @@ func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 // ClientIdleTimeout to confirm the right limit was applied.
 func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 	fb, p := newPoolWithFake(t, 1)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-
-	serveDone := make(chan struct{})
-	go func() {
-		defer close(serveDone)
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams:      map[string]string{"server_version": "16.0"},
-				ClientIdleTimeout: 5 * time.Second, // ensure this doesn't fire
-				IdleTxTimeout:     100 * time.Millisecond,
-				// ResetOnRelease left false so the in-tx Release defer
-				// doesn't try to send DISCARD ALL through the fake
-				// backend (which has no scripted handler for it).
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
+	clt, fe, serveDone := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams:      map[string]string{"server_version": "16.0"},
+			ClientIdleTimeout: 5 * time.Second, // ensure this doesn't fire
+			IdleTxTimeout:     100 * time.Millisecond,
+			// ResetOnRelease left false so the in-tx Release defer
+			// doesn't try to send DISCARD ALL through the fake
+			// backend (which has no scripted handler for it).
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// Script the backend's BEGIN response: RFQ 'T' (in-transaction).
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -142,18 +108,6 @@ func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
 		_ = be.Flush()
 	})
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain welcome.
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
 
 	// Open transaction.
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
@@ -208,37 +162,14 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 		}, nil
 	}
 	p := newDialPool(t, "test", dial, 1)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-
-	serveDone := make(chan struct{})
-	go func() {
-		defer close(serveDone)
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-				QueryTimeout: 150 * time.Millisecond,
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain welcome.
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+			QueryTimeout: 150 * time.Millisecond,
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// Send a Query that will never get a response.
 	fe.Send(&pgproto3.Query{String: "SELECT pg_sleep(60)"})
@@ -272,33 +203,13 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	statreset.ResetStats(t)
 
 	fb, p := newPoolWithFake(t, 1)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	// Drain welcome.
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// BEGIN → backend replies RFQ 'T'.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -352,33 +263,13 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 // the backend.
 func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
 	fb, p := newPoolWithFake(t, 1)
-
-	clt, srv := net.Pipe()
-	defer clt.Close()
-
-	go func() {
-		h := &PooledConn{
-			PooledConfig: PooledConfig{
-				CannedParams: map[string]string{"server_version": "16.0"},
-			},
-			Log:      testutil.Discard,
-			Pool:     p,
-			Database: "appdb",
-			User:     "alice",
-		}
-		_ = h.Serve(context.Background(), srv)
-	}()
-
-	fe := pgproto3.NewFrontend(clt, clt)
-	for {
-		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		m, err := fe.Receive()
-		require.NoError(t, err)
-		if _, ok := m.(*pgproto3.ReadyForQuery); ok {
-			break
-		}
-	}
-	_ = clt.SetReadDeadline(time.Time{})
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams: map[string]string{"server_version": "16.0"},
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
 
 	// Backend handler for the `SET work_mem` query: RFQ 'I' (idle).
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
