@@ -16,13 +16,10 @@ import (
 // TestManagerPerPoolConfigOverride: ConfigFor lets one pool get bigger
 // limits than the default.
 func TestManagerPerPoolConfigOverride(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
 	m := NewManager(Config{
 		DefaultPoolSize: 5,
 		Log:             testutil.Discard,
-	}, func(_ Key) Dialer { return dial }).WithConfigFor(func(k Key) *Config {
+	}, func(_ Key) Dialer { return okDial }).WithConfigFor(func(k Key) *Config {
 		if k.DB == "big" {
 			return &Config{DefaultPoolSize: 50, MinPoolSize: 5}
 		}
@@ -39,13 +36,10 @@ func TestManagerPerPoolConfigOverride(t *testing.T) {
 }
 
 func TestManagerCloseWithDeadlineDrainsAllPools(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
 	m := NewManager(Config{
 		DefaultPoolSize: 1,
 		Log:             testutil.Discard,
-	}, func(_ Key) Dialer { return dial })
+	}, func(_ Key) Dialer { return okDial })
 
 	// Spawn 3 pools, each with one active checkout.
 	conns := make(map[Key]*backend.Conn, 3)
@@ -73,13 +67,10 @@ func TestManagerCloseWithDeadlineDrainsAllPools(t *testing.T) {
 }
 
 func TestManagerCloseWithDeadlineTimesOut(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
 	m := NewManager(Config{
 		DefaultPoolSize: 1,
 		Log:             testutil.Discard,
-	}, func(_ Key) Dialer { return dial })
+	}, func(_ Key) Dialer { return okDial })
 
 	_, _ = m.Acquire(context.Background(), Key{DB: "stuck", User: "u"})
 
@@ -92,10 +83,7 @@ func TestManagerCloseWithDeadlineTimesOut(t *testing.T) {
 // held backend N times. Each release must wake the earliest-parked
 // waiter.
 func TestStrictFIFOSerialWaiters(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("strict-fifo", dial, Config{
+	p := New("strict-fifo", okDial, Config{
 		DefaultPoolSize: 1,
 		QueryWait:       2 * time.Second,
 		Log:             testutil.Discard,
@@ -159,10 +147,7 @@ func TestStressLargeFleet(t *testing.T) {
 		poolSize   = 8
 	)
 	dialed := atomic.Int64{}
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		dialed.Add(1)
-		return &backend.Conn{}, nil
-	}
+	dial := countingDial(&dialed)
 	p := New("big-stress", dial, Config{
 		DefaultPoolSize: poolSize,
 		QueryWait:       5 * time.Second,

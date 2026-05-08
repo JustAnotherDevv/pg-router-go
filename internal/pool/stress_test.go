@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
@@ -22,10 +21,7 @@ func TestStressAcquireReleaseConcurrent(t *testing.T) {
 	)
 
 	dialed := atomic.Int64{}
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		dialed.Add(1)
-		return &backend.Conn{}, nil
-	}
+	dial := countingDial(&dialed)
 	p := New("stress", dial, Config{
 		DefaultPoolSize: poolSize,
 		QueryWait:       2 * time.Second,
@@ -73,10 +69,7 @@ func TestStressAcquireReleaseConcurrent(t *testing.T) {
 func TestStressCancelStorm(t *testing.T) {
 	const workers = 100
 
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("cancel-storm", dial, Config{
+	p := New("cancel-storm", okDial, Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Hour,
 		Log:             testutil.Discard,

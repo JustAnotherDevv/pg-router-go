@@ -18,10 +18,7 @@ import (
 
 func TestEnsureWarmSpawnsToFloor(t *testing.T) {
 	dialed := atomic.Int64{}
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		dialed.Add(1)
-		return &backend.Conn{}, nil
-	}
+	dial := countingDial(&dialed)
 	p := New("warm-test", dial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     3,
@@ -37,10 +34,7 @@ func TestEnsureWarmSpawnsToFloor(t *testing.T) {
 }
 
 func TestEnsureWarmRespectsExistingBackends(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("warm-test", dial, Config{
+	p := New("warm-test", okDial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     2,
 		Log:             testutil.Discard,
@@ -70,10 +64,7 @@ func TestEnsureWarmDialFailureStops(t *testing.T) {
 }
 
 func TestEvictRespectsMinPoolSize(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("floor-test", dial, Config{
+	p := New("floor-test", okDial, Config{
 		DefaultPoolSize: 5,
 		MinPoolSize:     2,
 		ServerIdle:      time.Millisecond,
@@ -99,10 +90,7 @@ func TestEvictRespectsMinPoolSize(t *testing.T) {
 }
 
 func TestEvictLifetimeRecycleBypassesMinPoolSize(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("lifetime-test", dial, Config{
+	p := New("lifetime-test", okDial, Config{
 		DefaultPoolSize: 5,
 		MinPoolSize:     2,
 		ServerLifetime:  time.Millisecond,
@@ -131,10 +119,7 @@ func TestEvictLifetimeRecycleBypassesMinPoolSize(t *testing.T) {
 // --- ReservePoolSize ---
 
 func TestReservePoolKicksAfterTimeout(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("reserve-test", dial, Config{
+	p := New("reserve-test", okDial, Config{
 		DefaultPoolSize:    1,
 		ReservePoolSize:    1,
 		ReservePoolTimeout: 30 * time.Millisecond,
@@ -166,10 +151,7 @@ func TestReservePoolKicksAfterTimeout(t *testing.T) {
 }
 
 func TestReservePoolCappedAtSize(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("reserve-cap", dial, Config{
+	p := New("reserve-cap", okDial, Config{
 		DefaultPoolSize:    1,
 		ReservePoolSize:    1,
 		ReservePoolTimeout: 20 * time.Millisecond,
@@ -193,10 +175,7 @@ func TestReservePoolCappedAtSize(t *testing.T) {
 // --- Drain timeout ---
 
 func TestCloseWithDeadlineWaitsForActive(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("drain-test", dial, Config{
+	p := New("drain-test", okDial, Config{
 		DefaultPoolSize: 2,
 		Log:             testutil.Discard,
 	})
@@ -218,10 +197,7 @@ func TestCloseWithDeadlineWaitsForActive(t *testing.T) {
 }
 
 func TestCloseWithDeadlineTimesOut(t *testing.T) {
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("drain-timeout", dial, Config{
+	p := New("drain-timeout", okDial, Config{
 		DefaultPoolSize: 2,
 		Log:             testutil.Discard,
 	})
@@ -241,10 +217,7 @@ func TestCallbacksFire(t *testing.T) {
 	var dialCalls int
 	var evictCalls int
 
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("cb-test", dial, Config{
+	p := New("cb-test", okDial, Config{
 		DefaultPoolSize: 2,
 		ServerIdle:      time.Millisecond,
 		Log:             testutil.Discard,

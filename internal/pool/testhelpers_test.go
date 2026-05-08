@@ -1,0 +1,35 @@
+package pool
+
+import (
+	"context"
+	"sync/atomic"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+)
+
+// Test-only dialer constructors. Keep both the closure form
+// (`okDial`) and the counter form (`countingDial`) so existing tests
+// can collapse their inline `dial := func(_ context.Context) ...`
+// boilerplate.
+
+// okDial returns a Dialer that always succeeds with a fresh empty
+// backend.Conn. Use when the test doesn't care about which conn is
+// returned.
+func okDial(_ context.Context) (*backend.Conn, error) {
+	return &backend.Conn{}, nil
+}
+
+// failDial returns a Dialer that always fails with the given error.
+func failDial(err error) Dialer {
+	return func(_ context.Context) (*backend.Conn, error) { return nil, err }
+}
+
+// countingDial returns a Dialer that succeeds with a fresh empty
+// backend.Conn while atomically incrementing the supplied counter on
+// every call.
+func countingDial(n *atomic.Int64) Dialer {
+	return func(_ context.Context) (*backend.Conn, error) {
+		n.Add(1)
+		return &backend.Conn{}, nil
+	}
+}

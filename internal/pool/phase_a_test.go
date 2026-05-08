@@ -54,10 +54,7 @@ func TestPostReleaseFiresOnSuccessfulRelease(t *testing.T) {
 			PostRelease: func() { post.Add(1) },
 		},
 	}
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return &backend.Conn{}, nil
-	}
-	p := New("t", dial, cfg)
+	p := New("t", okDial, cfg)
 
 	c, err := p.Acquire(context.Background())
 	require.NoError(t, err)
@@ -82,10 +79,7 @@ func TestPostReleaseFiresOnAcquireFailure(t *testing.T) {
 			PostRelease: func() { post.Add(1) },
 		},
 	}
-	dial := func(_ context.Context) (*backend.Conn, error) {
-		return nil, dialErr
-	}
-	p := New("t", dial, cfg)
+	p := New("t", failDial(dialErr), cfg)
 	c, err := p.Acquire(context.Background())
 	require.Error(t, err)
 	require.Nil(t, c)
