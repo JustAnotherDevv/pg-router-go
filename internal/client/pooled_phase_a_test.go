@@ -100,14 +100,7 @@ func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 	})
 
 	// Script the backend's BEGIN response: RFQ 'T' (in-transaction).
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		q, ok := msg.(*pgproto3.Query)
-		require.True(t, ok)
-		require.Equal(t, "BEGIN", q.String)
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
-		_ = be.Flush()
-	})
+	fb.scriptQuery(t, "BEGIN", "BEGIN", 'T')
 
 	// Open transaction.
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
@@ -212,21 +205,13 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	})
 
 	// BEGIN → backend replies RFQ 'T'.
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
-		_ = be.Flush()
-	})
+	fb.scriptReply("BEGIN", 'T')
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
 
 	// COMMIT → backend replies RFQ 'I'.
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("COMMIT")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-		_ = be.Flush()
-	})
+	fb.scriptReply("COMMIT", 'I')
 	fe.Send(&pgproto3.Query{String: "COMMIT"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)

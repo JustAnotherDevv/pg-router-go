@@ -214,16 +214,8 @@ func TestPooledMultipleClientsShareSingleBackend(t *testing.T) {
 		require.Eventually(t, func() bool { return fleet.Count() >= 1 },
 			2*time.Second, 5*time.Millisecond)
 		fb := fleet.Backend(0)
-		fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
-			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-			_ = be.Flush()
-		})
-		fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 2")})
-			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-			_ = be.Flush()
-		})
+		fb.scriptReply("SELECT 1", 'I')
+		fb.scriptReply("SELECT 2", 'I')
 	}()
 
 	runQuery := func() {

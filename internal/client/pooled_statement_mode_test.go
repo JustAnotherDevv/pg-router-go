@@ -129,14 +129,7 @@ func TestTransactionModeAllowsExplicitBegin(t *testing.T) {
 		PooledConfig: PooledConfig{PoolMode: "transaction"},
 	})
 
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		q, ok := msg.(*pgproto3.Query)
-		require.True(t, ok)
-		require.Equal(t, "BEGIN", q.String)
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
-		_ = be.Flush()
-	})
+	fb.scriptQuery(t, "BEGIN", "BEGIN", 'T')
 
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
 	require.NoError(t, fe.Flush())

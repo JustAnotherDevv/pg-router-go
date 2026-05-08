@@ -24,11 +24,7 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 	})
 
 	// First Query succeeds → backend responds.
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-		_ = be.Flush()
-	})
+	fb.scriptReply("SELECT 1", 'I')
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
@@ -64,11 +60,7 @@ func TestQPSLimiterAllowsWhenDisabled(t *testing.T) {
 	_, fe, _ := startPooled(t, p, &PooledConn{
 		QPSLimiter: nil, // disabled
 	})
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-		_ = be.Flush()
-	})
+	fb.scriptReply("SELECT 1", 'I')
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
 	var sawRFQ bool

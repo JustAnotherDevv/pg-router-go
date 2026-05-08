@@ -129,6 +129,32 @@ func (fb *fakeBackend) expect(fn func(*pgproto3.Backend, pgproto3.FrontendMessag
 	fb.scriptC <- fn
 }
 
+// scriptReply queues an expect handler that sends CommandComplete +
+// ReadyForQuery + Flush. Use for queries where the test only cares
+// about the response, not the inbound message content.
+func (fb *fakeBackend) scriptReply(tag string, txStatus byte) {
+	fb.expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
+		be.Send(&pgproto3.CommandComplete{CommandTag: []byte(tag)})
+		be.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus})
+		_ = be.Flush()
+	})
+}
+
+// scriptQuery is like scriptReply but also asserts the inbound message
+// is *pgproto3.Query{String: wantSQL}. Use when the test verifies the
+// exact SQL pgrouter forwarded.
+func (fb *fakeBackend) scriptQuery(t *testing.T, wantSQL, tag string, txStatus byte) {
+	t.Helper()
+	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+		q, ok := msg.(*pgproto3.Query)
+		require.True(t, ok, "expected *Query, got %T", msg)
+		require.Equal(t, wantSQL, q.String)
+		be.Send(&pgproto3.CommandComplete{CommandTag: []byte(tag)})
+		be.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus})
+		_ = be.Flush()
+	})
+}
+
 // Conn returns a *backend.Conn whose Frontend talks to the fake.
 func (fb *fakeBackend) Conn() *backend.Conn {
 	return &backend.Conn{
@@ -196,11 +222,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	_, fe, _ := startPooled(t, p, &PooledConn{})
 
 	// BEGIN.
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
-		_ = be.Flush()
-	})
+	fb.scriptReply("BEGIN", 'T')
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
 	require.NoError(t, fe.Flush())
 
@@ -212,11 +234,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	}, time.Second, 5*time.Millisecond)
 
 	// COMMIT.
-	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
-		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("COMMIT")})
-		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-		_ = be.Flush()
-	})
+	fb.scriptReply("COMMIT", 'I')
 	fe.Send(&pgproto3.Query{String: "COMMIT"})
 	require.NoError(t, fe.Flush())
 
