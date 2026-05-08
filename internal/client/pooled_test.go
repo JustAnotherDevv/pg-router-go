@@ -75,6 +75,22 @@ func withQueryWait(d time.Duration) func(*pool.Config) {
 	return func(c *pool.Config) { c.QueryWait = d }
 }
 
+// requirePoolStats polls p.Stats() and waits up to 1s for s.Idle ==
+// wantIdle && s.Active == wantActive. Replaces the per-test boilerplate:
+//
+//	require.Eventually(t, func() bool {
+//		s := p.Stats()
+//		return s.Idle == X && s.Active == Y
+//	}, time.Second, 5*time.Millisecond)
+func requirePoolStats(t *testing.T, p *pool.Pool, wantIdle, wantActive int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		s := p.Stats()
+		return s.Idle == wantIdle && s.Active == wantActive
+	}, time.Second, 5*time.Millisecond,
+		"pool stats never reached idle=%d active=%d", wantIdle, wantActive)
+}
+
 // newPoolWithFake returns a fakeBackend + a one-conn pool dialing into
 // it. Sugar over newDialPool — covers the most common client-test shape.
 func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
@@ -210,10 +226,7 @@ func TestPooledServeSelect(t *testing.T) {
 	require.True(t, sawRow)
 
 	// Backend should have been released after the idle RFQ.
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Idle == 1 && s.Active == 0
-	}, time.Second, 5*time.Millisecond)
+	requirePoolStats(t, p, 1, 0)
 
 }
 
@@ -228,10 +241,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 
 	testutil.DrainToRFQ(t, nil, fe)
 	// Inside a transaction — pool should still hold the backend ACTIVE.
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Active == 1 && s.Idle == 0
-	}, time.Second, 5*time.Millisecond)
+	requirePoolStats(t, p, 0, 1)
 
 	// COMMIT.
 	fb.scriptReply("COMMIT", 'I')
@@ -240,10 +250,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 
 	testutil.DrainToRFQ(t, nil, fe)
 	// Boundary crossed — backend released.
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Active == 0 && s.Idle == 1
-	}, time.Second, 5*time.Millisecond)
+	requirePoolStats(t, p, 1, 0)
 }
 
 // NOTE: a multi-client share-test would need a fake upstream that

@@ -13,7 +13,6 @@ package client
 
 import (
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
@@ -90,10 +89,7 @@ func TestStatementModeAllowsImplicitSelect(t *testing.T) {
 	require.True(t, sawRow)
 
 	// Backend released after RFQ.
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Idle == 1 && s.Active == 0
-	}, time.Second, 5*time.Millisecond)
+	requirePoolStats(t, p, 1, 0)
 
 }
 

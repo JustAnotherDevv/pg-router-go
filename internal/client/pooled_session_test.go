@@ -96,11 +96,7 @@ func TestForceSessionPinningOnLISTEN(t *testing.T) {
 
 	// After idle RFQ, the backend should still be ACTIVE because we
 	// pinned it. Use Eventually because the Serve goroutine is racing.
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Active == 1 && s.Idle == 0
-	}, time.Second, 5*time.Millisecond,
-		"LISTEN should pin the backend across the idle RFQ")
+	requirePoolStats(t, p, 0, 1)
 
 	// Send another query — must hit the SAME backend (still pinned).
 	go fleet.Backend(0).expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
@@ -141,10 +137,7 @@ func TestForceSessionPinningOnAdvisoryLock(t *testing.T) {
 	fe.Send(&pgproto3.Query{String: "SELECT pg_advisory_lock(42)"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Active == 1 && s.Idle == 0
-	}, time.Second, 5*time.Millisecond)
+	requirePoolStats(t, p, 0, 1)
 }
 
 // TestSELECTOnlyDoesNotPin: pinned must be false for ordinary queries.
@@ -167,11 +160,7 @@ func TestSELECTOnlyDoesNotPin(t *testing.T) {
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
-	require.Eventually(t, func() bool {
-		s := p.Stats()
-		return s.Active == 0 && s.Idle == 1
-	}, time.Second, 5*time.Millisecond,
-		"plain SELECT should NOT pin — backend goes back to idle")
+	requirePoolStats(t, p, 1, 0)
 }
 
 // TestGUCReplayFiresOnFreshAcquire: verifies fireReplay drives the
