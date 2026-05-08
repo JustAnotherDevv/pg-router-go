@@ -165,6 +165,82 @@ server:
 	require.Contains(t, err.Error(), "at least one database")
 }
 
+// baseValidCfg returns a minimum-valid Config: trust auth, transaction
+// pool, SSL disabled, one trivial database. Tests mutate one field to
+// exercise specific Validate paths.
+func baseValidCfg() *Config {
+	return &Config{
+		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
+		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
+		Auth:   AuthConfig{Type: AuthTrust},
+		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
+		Databases: map[string]DatabaseConfig{
+			"appdb": {Host: "127.0.0.1", Port: 5432},
+		},
+	}
+}
+
+// TestValidationCases drives the Validate path through a single table.
+// Each entry mutates baseValidCfg() and asserts (a) Validate errors,
+// and (b) each `wantContains` substring appears in the error.
+func TestValidationCases(t *testing.T) {
+	cases := []struct {
+		name         string
+		mutate       func(*Config)
+		wantContains []string
+	}{
+		{
+			name: "SCRAM requires userlist or auth_query",
+			mutate: func(c *Config) {
+				c.Auth.Type = AuthSCRAM
+			},
+			wantContains: []string{"userlist_file", "auth_query"},
+		},
+		{
+			name: "peer requires unix_socket_dir",
+			mutate: func(c *Config) {
+				c.Auth.Type = AuthPeer
+			},
+			wantContains: []string{"unix_socket_dir"},
+		},
+		{
+			name: "replica requires host and port",
+			mutate: func(c *Config) {
+				db := c.Databases["appdb"]
+				db.Replicas = []ReplicaConfig{{Host: "", Port: 70000}}
+				c.Databases["appdb"] = db
+			},
+			wantContains: []string{"replicas[0].host", "replicas[0].port"},
+		},
+		{
+			name: "TLS require needs client cert",
+			mutate: func(c *Config) {
+				c.TLS.ClientMode = SSLRequire
+			},
+			wantContains: []string{"client_cert_file"},
+		},
+		{
+			name: "server verify-ca needs CA file",
+			mutate: func(c *Config) {
+				c.TLS.ServerMode = SSLVerifyCA
+			},
+			wantContains: []string{"server_ca_file"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baseValidCfg()
+			tc.mutate(cfg)
+			err := Validate(cfg)
+			require.Error(t, err)
+			msg := err.Error()
+			for _, want := range tc.wantContains {
+				require.Contains(t, msg, want)
+			}
+		})
+	}
+}
+
 func TestValidationCollectsMultipleErrors(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{ListenPort: 999999, MaxClientConn: 0},
@@ -189,56 +265,6 @@ func TestValidationCollectsMultipleErrors(t *testing.T) {
 	require.Contains(t, msg, "databases.x.host")
 }
 
-func TestValidationSCRAMRequiresUserlistOrAuthQuery(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
-		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
-		Auth:   AuthConfig{Type: AuthSCRAM},
-		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
-		Databases: map[string]DatabaseConfig{
-			"appdb": {Host: "127.0.0.1", Port: 5432},
-		},
-	}
-	err := Validate(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "userlist_file")
-	require.Contains(t, err.Error(), "auth_query")
-}
-
-func TestValidationPeerRequiresUnixSocketDir(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
-		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
-		Auth:   AuthConfig{Type: AuthPeer},
-		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
-		Databases: map[string]DatabaseConfig{
-			"appdb": {Host: "127.0.0.1", Port: 5432},
-		},
-	}
-	err := Validate(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unix_socket_dir")
-}
-
-func TestValidationReplicaRequiresHostAndPort(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
-		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
-		Auth:   AuthConfig{Type: AuthTrust},
-		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
-		Databases: map[string]DatabaseConfig{
-			"appdb": {Host: "127.0.0.1", Port: 5432,
-				Replicas: []ReplicaConfig{
-					{Host: "", Port: 70000},
-				}},
-		},
-	}
-	err := Validate(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "replicas[0].host")
-	require.Contains(t, err.Error(), "replicas[0].port")
-}
-
 func TestValidationReplicaDefaultsApply(t *testing.T) {
 	cfg := &Config{
 		Databases: map[string]DatabaseConfig{
@@ -252,47 +278,10 @@ func TestValidationReplicaDefaultsApply(t *testing.T) {
 }
 
 func TestValidationPeerOKWithUnixSocketDir(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100,
-			UnixSocketDir: "/var/run/pgrouter"},
-		Pool: PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
-		Auth: AuthConfig{Type: AuthPeer},
-		TLS:  TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
-		Databases: map[string]DatabaseConfig{
-			"appdb": {Host: "127.0.0.1", Port: 5432},
-		},
-	}
+	cfg := baseValidCfg()
+	cfg.Server.UnixSocketDir = "/var/run/pgrouter"
+	cfg.Auth.Type = AuthPeer
 	require.NoError(t, Validate(cfg))
-}
-
-func TestValidationTLSRequireNeedsCert(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
-		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
-		Auth:   AuthConfig{Type: AuthTrust},
-		TLS:    TLSConfig{ClientMode: SSLRequire, ServerMode: SSLDisable},
-		Databases: map[string]DatabaseConfig{
-			"appdb": {Host: "127.0.0.1", Port: 5432},
-		},
-	}
-	err := Validate(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "client_cert_file")
-}
-
-func TestValidationServerVerifyCAneedsCAFile(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
-		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
-		Auth:   AuthConfig{Type: AuthTrust},
-		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLVerifyCA},
-		Databases: map[string]DatabaseConfig{
-			"appdb": {Host: "127.0.0.1", Port: 5432},
-		},
-	}
-	err := Validate(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "server_ca_file")
 }
 
 func TestEmptyFilePassesThroughDefaults(t *testing.T) {
