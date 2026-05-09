@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -97,10 +98,22 @@ func TestFrontendBind(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("42")}, b.Parameters)
 }
 
-func TestFrontendExecute(t *testing.T) {
-	got := roundTripFrontend(t, &pgproto3.Execute{Portal: "", MaxRows: 0})
-	_, ok := got.(*pgproto3.Execute)
-	require.True(t, ok)
+// TestFrontendTypeOnlyMessages collapses the per-type tests that only
+// verify the message type survives the round trip (no field-level
+// assertions needed beyond the type itself).
+func TestFrontendTypeOnlyMessages(t *testing.T) {
+	cases := []pgproto3.FrontendMessage{
+		&pgproto3.Execute{Portal: "", MaxRows: 0},
+		&pgproto3.Sync{},
+		&pgproto3.Flush{},
+		&pgproto3.CopyDone{},
+	}
+	for _, in := range cases {
+		t.Run(fmt.Sprintf("%T", in), func(t *testing.T) {
+			got := roundTripFrontend(t, in)
+			require.IsType(t, in, got)
+		})
+	}
 }
 
 func TestFrontendDescribe(t *testing.T) {
@@ -110,23 +123,11 @@ func TestFrontendDescribe(t *testing.T) {
 	require.Equal(t, byte('S'), d.ObjectType)
 }
 
-func TestFrontendSync(t *testing.T) {
-	got := roundTripFrontend(t, &pgproto3.Sync{})
-	_, ok := got.(*pgproto3.Sync)
-	require.True(t, ok)
-}
-
 func TestFrontendClose(t *testing.T) {
 	got := roundTripFrontend(t, &pgproto3.Close{ObjectType: 'S', Name: "stmt1"})
 	c, ok := got.(*pgproto3.Close)
 	require.True(t, ok)
 	require.Equal(t, byte('S'), c.ObjectType)
-}
-
-func TestFrontendFlush(t *testing.T) {
-	got := roundTripFrontend(t, &pgproto3.Flush{})
-	_, ok := got.(*pgproto3.Flush)
-	require.True(t, ok)
 }
 
 func TestFrontendTerminate(t *testing.T) {
@@ -143,12 +144,6 @@ func TestFrontendCopyData(t *testing.T) {
 	require.True(t, bytes.Equal([]byte("row1\trow2\n"), d.Data))
 }
 
-func TestFrontendCopyDone(t *testing.T) {
-	got := roundTripFrontend(t, &pgproto3.CopyDone{})
-	_, ok := got.(*pgproto3.CopyDone)
-	require.True(t, ok)
-}
-
 func TestFrontendCopyFail(t *testing.T) {
 	got := roundTripFrontend(t, &pgproto3.CopyFail{Message: "oops"})
 	cf, ok := got.(*pgproto3.CopyFail)
@@ -158,10 +153,25 @@ func TestFrontendCopyFail(t *testing.T) {
 
 // Backend message coverage.
 
-func TestBackendAuthenticationOk(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.AuthenticationOk{})
-	_, ok := got.(*pgproto3.AuthenticationOk)
-	require.True(t, ok)
+// TestBackendTypeOnlyMessages collapses backend round-trips whose only
+// check is that the message type survives the round trip.
+func TestBackendTypeOnlyMessages(t *testing.T) {
+	cases := []pgproto3.BackendMessage{
+		&pgproto3.AuthenticationOk{},
+		&pgproto3.ParseComplete{},
+		&pgproto3.BindComplete{},
+		&pgproto3.CloseComplete{},
+		&pgproto3.NoData{},
+		&pgproto3.EmptyQueryResponse{},
+		&pgproto3.PortalSuspended{},
+		&pgproto3.CopyBothResponse{OverallFormat: 0, ColumnFormatCodes: []uint16{0}},
+	}
+	for _, in := range cases {
+		t.Run(fmt.Sprintf("%T", in), func(t *testing.T) {
+			got := roundTripBackend(t, in)
+			require.IsType(t, in, got)
+		})
+	}
 }
 
 func TestBackendAuthenticationMD5(t *testing.T) {
@@ -230,47 +240,11 @@ func TestBackendCommandComplete(t *testing.T) {
 	require.Equal(t, "SELECT 1", string(cc.CommandTag))
 }
 
-func TestBackendParseComplete(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.ParseComplete{})
-	_, ok := got.(*pgproto3.ParseComplete)
-	require.True(t, ok)
-}
-
-func TestBackendBindComplete(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.BindComplete{})
-	_, ok := got.(*pgproto3.BindComplete)
-	require.True(t, ok)
-}
-
-func TestBackendCloseComplete(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.CloseComplete{})
-	_, ok := got.(*pgproto3.CloseComplete)
-	require.True(t, ok)
-}
-
-func TestBackendNoData(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.NoData{})
-	_, ok := got.(*pgproto3.NoData)
-	require.True(t, ok)
-}
-
 func TestBackendParameterDescription(t *testing.T) {
 	got := roundTripBackend(t, &pgproto3.ParameterDescription{ParameterOIDs: []uint32{23, 25}})
 	pd, ok := got.(*pgproto3.ParameterDescription)
 	require.True(t, ok)
 	require.Equal(t, []uint32{23, 25}, pd.ParameterOIDs)
-}
-
-func TestBackendEmptyQueryResponse(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.EmptyQueryResponse{})
-	_, ok := got.(*pgproto3.EmptyQueryResponse)
-	require.True(t, ok)
-}
-
-func TestBackendPortalSuspended(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.PortalSuspended{})
-	_, ok := got.(*pgproto3.PortalSuspended)
-	require.True(t, ok)
 }
 
 func TestBackendErrorResponse(t *testing.T) {
@@ -319,15 +293,6 @@ func TestBackendCopyOutResponse(t *testing.T) {
 	c, ok := got.(*pgproto3.CopyOutResponse)
 	require.True(t, ok)
 	require.Equal(t, uint8(1), c.OverallFormat)
-}
-
-func TestBackendCopyBothResponse(t *testing.T) {
-	got := roundTripBackend(t, &pgproto3.CopyBothResponse{
-		OverallFormat:     0,
-		ColumnFormatCodes: []uint16{0},
-	})
-	_, ok := got.(*pgproto3.CopyBothResponse)
-	require.True(t, ok)
 }
 
 func TestStartupMessageRoundTrip(t *testing.T) {
