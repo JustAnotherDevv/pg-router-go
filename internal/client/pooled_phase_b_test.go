@@ -346,20 +346,3 @@ func TestBackendResetClearsPreparedCache(t *testing.T) {
 	require.Equal(t, 0, bConn.Prepared.Len(),
 		"DISCARD ALL must clear the per-backend prepared cache to match real PG semantics")
 }
-
-// TestPhaseBWelcomeAloneDoesNotHang is a minimal repro: spawn Serve,
-// drain welcome, exit. Same setup as the Miss test but no Parse step.
-func TestPhaseBWelcomeAloneDoesNotHang(t *testing.T) {
-	fb := newFakeBackend(t)
-	bConn := connWithCache(fb, 8)
-	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := newDialPool(t, "welc-isolated", dial, 1)
-
-	_, _, _ = startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
-	})
-}

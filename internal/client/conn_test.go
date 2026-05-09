@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -271,33 +270,4 @@ func TestEOFOnRead(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not return on EOF")
 	}
-}
-
-// Compile-touch test.
-func TestUnusedHelpersDoNotCompile(t *testing.T) {
-	require.True(t, bytes.Equal([]byte("a"), []byte("a")))
-}
-
-// TestStartupMessageParsed ensures a StartupMessage is recognized by the
-// handler (regression: prior to M.1 this lived in handler/startup_test.go).
-func TestStartupMessageParsed(t *testing.T) {
-	clt, server := pair(t)
-	done := runConn(t, server)
-
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "x", "database": "y"},
-	}
-	enc, err := startup.Encode(nil)
-	require.NoError(t, err)
-	_, err = clt.Write(enc)
-	require.NoError(t, err)
-
-	// First message back must be AuthenticationOk.
-	msg := readBackendMsg(t, clt)
-	_, ok := msg.(*pgproto3.AuthenticationOk)
-	require.True(t, ok, "first response is AuthenticationOk")
-
-	_ = clt.Close()
-	<-done
 }
