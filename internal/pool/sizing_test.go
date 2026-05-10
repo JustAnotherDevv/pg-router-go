@@ -19,12 +19,10 @@ import (
 func TestEnsureWarmSpawnsToFloor(t *testing.T) {
 	dialed := atomic.Int64{}
 	dial := countingDial(&dialed)
-	p := New("warm-test", dial, Config{
+	p := newPool(t, "warm-test", dial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     3,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	require.Equal(t, 3, p.EnsureWarm(context.Background()))
 	require.Equal(t, int64(3), dialed.Load())
@@ -34,12 +32,10 @@ func TestEnsureWarmSpawnsToFloor(t *testing.T) {
 }
 
 func TestEnsureWarmRespectsExistingBackends(t *testing.T) {
-	p := New("warm-test", okDial, Config{
+	p := newPool(t, "warm-test", okDial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     2,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 	// Spawn 1 active.
 	c, _ := p.Acquire(context.Background())
 	require.Equal(t, 1, p.EnsureWarm(context.Background()),
@@ -53,24 +49,20 @@ func TestEnsureWarmDialFailureStops(t *testing.T) {
 		calls.Add(1)
 		return nil, errors.New("nope")
 	}
-	p := New("warm-test", dial, Config{
+	p := newPool(t, "warm-test", dial, Config{
 		DefaultPoolSize: 10,
 		MinPoolSize:     5,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 	require.Equal(t, 0, p.EnsureWarm(context.Background()))
 	require.Equal(t, int64(1), calls.Load(), "dial error stops the warming loop")
 }
 
 func TestEvictRespectsMinPoolSize(t *testing.T) {
-	p := New("floor-test", okDial, Config{
+	p := newPool(t, "floor-test", okDial, Config{
 		DefaultPoolSize: 5,
 		MinPoolSize:     2,
 		ServerIdle:      time.Millisecond,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	// Acquire + release 4 backends → 4 idle.
 	conns := make([]*backend.Conn, 4)
@@ -90,13 +82,11 @@ func TestEvictRespectsMinPoolSize(t *testing.T) {
 }
 
 func TestEvictLifetimeRecycleBypassesMinPoolSize(t *testing.T) {
-	p := New("lifetime-test", okDial, Config{
+	p := newPool(t, "lifetime-test", okDial, Config{
 		DefaultPoolSize: 5,
 		MinPoolSize:     2,
 		ServerLifetime:  time.Millisecond,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	// Acquire 3 distinct backends, THEN release all (otherwise the
 	// fast-path idle reuse would only dial one).
@@ -119,14 +109,12 @@ func TestEvictLifetimeRecycleBypassesMinPoolSize(t *testing.T) {
 // --- ReservePoolSize ---
 
 func TestReservePoolKicksAfterTimeout(t *testing.T) {
-	p := New("reserve-test", okDial, Config{
+	p := newPool(t, "reserve-test", okDial, Config{
 		DefaultPoolSize:    1,
 		ReservePoolSize:    1,
 		ReservePoolTimeout: 30 * time.Millisecond,
 		QueryWait:          time.Second,
-		Log:                testutil.Discard,
 	})
-	defer p.Close()
 
 	// Saturate regular pool.
 	c1, err := p.Acquire(context.Background())
@@ -151,14 +139,12 @@ func TestReservePoolKicksAfterTimeout(t *testing.T) {
 }
 
 func TestReservePoolCappedAtSize(t *testing.T) {
-	p := New("reserve-cap", okDial, Config{
+	p := newPool(t, "reserve-cap", okDial, Config{
 		DefaultPoolSize:    1,
 		ReservePoolSize:    1,
 		ReservePoolTimeout: 20 * time.Millisecond,
 		QueryWait:          200 * time.Millisecond,
-		Log:                testutil.Discard,
 	})
-	defer p.Close()
 
 	// Saturate: regular + reserve.
 	c1, _ := p.Acquire(context.Background())
@@ -217,10 +203,9 @@ func TestCallbacksFire(t *testing.T) {
 	var dialCalls int
 	var evictCalls int
 
-	p := New("cb-test", okDial, Config{
+	p := newPool(t, "cb-test", okDial, Config{
 		DefaultPoolSize: 2,
 		ServerIdle:      time.Millisecond,
-		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			OnAcquireWait: func(_ string, d time.Duration) {
 				waitMu.Lock()
@@ -231,7 +216,6 @@ func TestCallbacksFire(t *testing.T) {
 			OnEvict: func(_ string, n int) { evictCalls += n },
 		},
 	})
-	defer p.Close()
 
 	c, _ := p.Acquire(context.Background())
 	require.GreaterOrEqual(t, dialCalls, 1)
@@ -246,14 +230,12 @@ func TestCallbacksOnDialError(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) {
 		return nil, fakeError("boom")
 	}
-	p := New("cb-err", dial, Config{
+	p := newPool(t, "cb-err", dial, Config{
 		DefaultPoolSize: 1,
-		Log:             testutil.Discard,
 		Callbacks: Callbacks{
 			OnDialError: func(_ string, e error) { errors = append(errors, e) },
 		},
 	})
-	defer p.Close()
 	_, err := p.Acquire(context.Background())
 	require.Error(t, err)
 	require.Len(t, errors, 1)

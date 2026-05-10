@@ -6,8 +6,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestStressAcquireReleaseConcurrent fires many goroutines acquiring +
@@ -22,12 +20,10 @@ func TestStressAcquireReleaseConcurrent(t *testing.T) {
 
 	dialed := atomic.Int64{}
 	dial := countingDial(&dialed)
-	p := New("stress", dial, Config{
+	p := newPool(t, "stress", dial, Config{
 		DefaultPoolSize: poolSize,
 		QueryWait:       2 * time.Second,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(workers)
@@ -69,12 +65,10 @@ func TestStressAcquireReleaseConcurrent(t *testing.T) {
 func TestStressCancelStorm(t *testing.T) {
 	const workers = 100
 
-	p := New("cancel-storm", okDial, Config{
+	p := newPool(t, "cancel-storm", okDial, Config{
 		DefaultPoolSize: 1,
 		QueryWait:       time.Hour,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	// Saturate.
 	holder, err := p.Acquire(context.Background())

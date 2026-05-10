@@ -3,8 +3,10 @@ package pool
 import (
 	"context"
 	"sync/atomic"
+	"testing"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // Test-only dialer constructors. Keep both the closure form
@@ -32,4 +34,16 @@ func countingDial(n *atomic.Int64) Dialer {
 		n.Add(1)
 		return &backend.Conn{}, nil
 	}
+}
+
+// newPool wraps New: stamps Log=testutil.Discard onto the caller's
+// Config (caller leaves Log unset) and registers t.Cleanup(p.Close).
+// Saves the `Log: testutil.Discard,` Config field + `defer p.Close()`
+// line on every pool-test setup.
+func newPool(t *testing.T, name string, dial Dialer, cfg Config) *Pool {
+	t.Helper()
+	cfg.Log = testutil.Discard
+	p := New(name, dial, cfg)
+	t.Cleanup(p.Close)
+	return p
 }

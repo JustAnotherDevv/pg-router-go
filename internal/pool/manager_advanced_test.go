@@ -83,12 +83,10 @@ func TestManagerCloseWithDeadlineTimesOut(t *testing.T) {
 // held backend N times. Each release must wake the earliest-parked
 // waiter.
 func TestStrictFIFOSerialWaiters(t *testing.T) {
-	p := New("strict-fifo", okDial, Config{
+	p := newPool(t, "strict-fifo", okDial, Config{
 		DefaultPoolSize: 1,
 		QueryWait:       2 * time.Second,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	c1, err := p.Acquire(context.Background())
 	require.NoError(t, err)
@@ -148,12 +146,10 @@ func TestStressLargeFleet(t *testing.T) {
 	)
 	dialed := atomic.Int64{}
 	dial := countingDial(&dialed)
-	p := New("big-stress", dial, Config{
+	p := newPool(t, "big-stress", dial, Config{
 		DefaultPoolSize: poolSize,
 		QueryWait:       5 * time.Second,
-		Log:             testutil.Discard,
 	})
-	defer p.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(workers)
