@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil/statreset"
 	"github.com/JustAnotherDevv/pgrouter/internal/wire"
 
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
@@ -38,41 +38,6 @@ func readFile(t *testing.T, p string) string {
 	b, err := os.ReadFile(p)
 	require.NoError(t, err)
 	return string(b)
-}
-
-// getCounter scrapes the package Reg and returns the float value of the
-// named metric matching `labels` (subset-match: all label pairs must be
-// present). Returns 0 if no series matches.
-func getCounter(t *testing.T, name string, labels map[string]string) float64 {
-	t.Helper()
-	families, err := stats.Reg.Gather()
-	require.NoError(t, err)
-	for _, mf := range families {
-		if mf.GetName() != name {
-			continue
-		}
-		for _, m := range mf.GetMetric() {
-			if labelsMatch(m.GetLabel(), labels) {
-				if c := m.GetCounter(); c != nil {
-					return c.GetValue()
-				}
-			}
-		}
-	}
-	return 0
-}
-
-func labelsMatch(have []*dto.LabelPair, want map[string]string) bool {
-	got := make(map[string]string, len(have))
-	for _, lp := range have {
-		got[lp.GetName()] = lp.GetValue()
-	}
-	for k, v := range want {
-		if got[k] != v {
-			return false
-		}
-	}
-	return true
 }
 
 // minimalValidConfig writes a tiny config to disk that passes Load+Validate.
@@ -138,7 +103,7 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	hupCh <- syscall.SIGHUP
 	// Tiny sleep for the goroutine to drain the channel + finish a Load.
 	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, float64(1), getCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "ok"}))
+	require.Equal(t, float64(1), statreset.GetCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "ok"}))
 
 	// Mutate the file: pool size goes from 10 → 25.
 	require.NoError(t, os.WriteFile(path,
@@ -147,13 +112,13 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 
 	hupCh <- syscall.SIGHUP
 	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, float64(2), getCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "ok"}))
+	require.Equal(t, float64(2), statreset.GetCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "ok"}))
 
 	// Corrupt the file: empty databases map is a validation error.
 	require.NoError(t, os.WriteFile(path, []byte("server:\n  listen_port: 6432\n"), 0o644))
 	hupCh <- syscall.SIGHUP
 	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, float64(1), getCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "fail"}))
+	require.Equal(t, float64(1), statreset.GetCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "fail"}))
 
 	// Cancel → reloader exits cleanly.
 	cancel()
@@ -198,7 +163,7 @@ func TestSighupReloaderReloadsUserlist(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	require.Equal(t, float64(1),
-		getCounter(t, "pgrouter_sighup_userlist_reloads_total",
+		statreset.GetCounter(t, "pgrouter_sighup_userlist_reloads_total",
 			map[string]string{"outcome": "ok"}))
 	require.Equal(t, 2, ul.Len())
 	a, ok := ul.Lookup("alice")
@@ -239,7 +204,7 @@ func TestSighupReloaderUserlistSkipWhenNil(t *testing.T) {
 	hupCh <- syscall.SIGHUP
 	time.Sleep(50 * time.Millisecond)
 	require.Equal(t, float64(1),
-		getCounter(t, "pgrouter_sighup_userlist_reloads_total",
+		statreset.GetCounter(t, "pgrouter_sighup_userlist_reloads_total",
 			map[string]string{"outcome": "skip"}))
 
 	cancel()

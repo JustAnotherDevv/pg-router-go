@@ -2,69 +2,25 @@ package client
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/binary"
-	"encoding/pem"
-	"math/big"
 	"net"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil/testcerts"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
-
-// writeMinimalCert writes a single self-signed cert + key into t.TempDir().
-// Mirrors internal/listener/testcerts_test.go but local to client.
-func writeMinimalCert(t *testing.T) (certFile, keyFile string) {
-	t.Helper()
-	dir := t.TempDir()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	tpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "127.0.0.1"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
-	require.NoError(t, err)
-
-	certFile = filepath.Join(dir, "cert.pem")
-	keyFile = filepath.Join(dir, "key.pem")
-
-	f, err := os.Create(certFile)
-	require.NoError(t, err)
-	require.NoError(t, pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}))
-	require.NoError(t, f.Close())
-
-	kd, err := x509.MarshalECPrivateKey(key)
-	require.NoError(t, err)
-	f, err = os.Create(keyFile)
-	require.NoError(t, err)
-	require.NoError(t, pem.Encode(f, &pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}))
-	require.NoError(t, f.Close())
-	return
-}
 
 // TestSSLRequestAcceptedThenStartup is the end-to-end TLS path: client
 // sends SSLRequest, server responds 'S', handshakes TLS, then client
 // sends a normal StartupMessage over the encrypted stream and expects
 // AuthenticationOk back.
 func TestSSLRequestAcceptedThenStartup(t *testing.T) {
-	certFile, keyFile := writeMinimalCert(t)
-	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	certs := testcerts.Write(t)
+	pair, err := tls.LoadX509KeyPair(certs.ServerCert, certs.ServerKey)
 	require.NoError(t, err)
 	srvCfg := &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 

@@ -11,49 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil/statreset"
 )
-
-// gatherCounter reads a counter value from stats.Reg.
-func gatherCounter(t *testing.T, name string, labels map[string]string) float64 {
-	t.Helper()
-	families, err := stats.Reg.Gather()
-	require.NoError(t, err)
-	for _, mf := range families {
-		if mf.GetName() != name {
-			continue
-		}
-		for _, m := range mf.GetMetric() {
-			lp := m.GetLabel()
-			match := true
-			got := make(map[string]string, len(lp))
-			for _, p := range lp {
-				got[p.GetName()] = p.GetValue()
-			}
-			for k, v := range labels {
-				if got[k] != v {
-					match = false
-					break
-				}
-			}
-			if match {
-				if c := m.GetCounter(); c != nil {
-					return c.GetValue()
-				}
-			}
-		}
-	}
-	return 0
-}
-
-// keep the dto alias used (compiler check that we link the right pkg).
-var _ = (*dto.LabelPair)(nil)
 
 // --- client_idle_timeout (M.6.4) ---
 
@@ -219,10 +182,10 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	// Give the Serve goroutine a beat to publish metrics.
 	time.Sleep(20 * time.Millisecond)
 
-	require.Equal(t, float64(1), gatherCounter(t,
+	require.Equal(t, float64(1), statreset.GetCounter(t,
 		"pgrouter_tx_starts_total",
 		map[string]string{"database": "appdb", "user": "alice"}))
-	require.Equal(t, float64(1), gatherCounter(t,
+	require.Equal(t, float64(1), statreset.GetCounter(t,
 		"pgrouter_tx_commits_total",
 		map[string]string{"database": "appdb", "user": "alice"}))
 }

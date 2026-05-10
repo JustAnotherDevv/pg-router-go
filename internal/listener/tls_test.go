@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil/testcerts"
 )
 
 func TestWriteSSLAcceptAndDecline(t *testing.T) {
@@ -30,7 +31,7 @@ func TestWriteSSLAcceptAndDecline(t *testing.T) {
 }
 
 func TestCertStoreReload(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cs, err := NewCertStore(certs.ServerCert, certs.ServerKey)
 	require.NoError(t, err)
 
@@ -51,7 +52,7 @@ func TestCertStoreMissingFile(t *testing.T) {
 }
 
 func TestCertStoreCorruptedReloadRetainsCurrent(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cs, err := NewCertStore(certs.ServerCert, certs.ServerKey)
 	require.NoError(t, err)
 	good, err := cs.GetCertificate(&tls.ClientHelloInfo{})
@@ -82,7 +83,7 @@ func TestBuildServerTLSConfigRequireNeedsCert(t *testing.T) {
 }
 
 func TestBuildServerTLSConfigRequireWithCert(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cfg, cs, err := BuildServerTLSConfig(config.TLSConfig{
 		ClientMode:     config.SSLRequire,
 		ClientCertFile: certs.ServerCert,
@@ -95,7 +96,7 @@ func TestBuildServerTLSConfigRequireWithCert(t *testing.T) {
 }
 
 func TestBuildServerTLSConfigWithClientCA(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cfg, _, err := BuildServerTLSConfig(config.TLSConfig{
 		ClientMode:     config.SSLRequire,
 		ClientCertFile: certs.ServerCert,
@@ -121,7 +122,7 @@ func TestBuildBackendTLSConfigPrefer(t *testing.T) {
 }
 
 func TestBuildBackendTLSConfigVerifyCA(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cfg, err := BuildBackendTLSConfig(config.TLSConfig{
 		ServerMode:   config.SSLVerifyCA,
 		ServerCAFile: certs.CAFile,
@@ -133,7 +134,7 @@ func TestBuildBackendTLSConfigVerifyCA(t *testing.T) {
 }
 
 func TestBuildBackendTLSConfigVerifyFull(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cfg, err := BuildBackendTLSConfig(config.TLSConfig{
 		ServerMode:   config.SSLVerifyFull,
 		ServerCAFile: certs.CAFile,
@@ -149,7 +150,7 @@ func TestBuildBackendTLSConfigVerifyCAneedsFile(t *testing.T) {
 }
 
 func TestBuildBackendTLSConfigWithClientCert(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 	cfg, err := BuildBackendTLSConfig(config.TLSConfig{
 		ServerMode:     config.SSLVerifyCA,
 		ServerCAFile:   certs.CAFile,
@@ -166,7 +167,7 @@ func TestBuildBackendTLSConfigWithClientCert(t *testing.T) {
 // Useful as a smoke test that BuildServerTLSConfig + BuildBackendTLSConfig
 // produce config objects that actually work together.
 func TestEndToEndTLSHandshake(t *testing.T) {
-	certs := writeTestCerts(t)
+	certs := testcerts.Write(t)
 
 	srvCfg, _, err := BuildServerTLSConfig(config.TLSConfig{
 		ClientMode:     config.SSLRequire,

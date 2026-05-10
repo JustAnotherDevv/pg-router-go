@@ -1,4 +1,8 @@
-package listener
+// Package testcerts generates an in-tree CA + server + client certificate
+// triple for tests that need real PEM files (TLS listener tests, mTLS
+// client-cert tests, sslmode=verify-full integration). Only consumed by
+// _test.go files; nothing in production should import this.
+package testcerts
 
 import (
 	"crypto/ecdsa"
@@ -17,9 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testCertPaths is the output of writeTestCerts: dir holding ca.pem,
-// server.crt, server.key, client.crt, client.key.
-type testCertPaths struct {
+// Paths is the output of Write: dir holding ca.pem, server.crt,
+// server.key, client.crt, client.key.
+type Paths struct {
 	CAFile     string
 	ServerCert string
 	ServerKey  string
@@ -27,12 +31,13 @@ type testCertPaths struct {
 	ClientKey  string
 }
 
-// writeTestCerts creates a CA + server cert (CN=localhost, SAN=127.0.0.1)
-// + client cert and writes PEM files into t.TempDir().
+// Write creates a CA + server cert (CN=localhost, SAN=127.0.0.1) + client
+// cert and writes PEM files into t.TempDir(). The CA is self-signed and
+// only trusted by the tests that load it.
 //
-// Used by TLS unit + integration tests. The CA is self-signed and only
-// trusted by the tests that load it.
-func writeTestCerts(t *testing.T) testCertPaths {
+// Hoisted from the listener and client test packages where two
+// near-identical generators existed.
+func Write(t *testing.T) Paths {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -93,7 +98,7 @@ func writeTestCerts(t *testing.T) testCertPaths {
 	require.NoError(t, writePEM(cliPath, "CERTIFICATE", cliDER))
 	require.NoError(t, writeECKey(cliKeyPath, cliKey))
 
-	return testCertPaths{
+	return Paths{
 		CAFile:     caPath,
 		ServerCert: srvPath,
 		ServerKey:  srvKeyPath,
