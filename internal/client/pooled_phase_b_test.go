@@ -4,6 +4,7 @@ package client
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -51,12 +52,18 @@ func connWithCache(fb *fakeBackend, cap int) *backend.Conn {
 	return c
 }
 
-func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
+// newCachedSession is the canonical setup for every prepared-cache
+// dispatch test in this file: spawn a fakeBackend, attach a fresh
+// 8-entry PreparedCache, build a 1-size pool that dials into it, and
+// start a PooledConn server. Returns the fake (for fb.expect /
+// scriptReply), the cached backend.Conn (so tests can pre-warm the
+// prepared cache), and the wired client conn + frontend.
+func newCachedSession(t *testing.T) (*fakeBackend, *backend.Conn, net.Conn, *pgproto3.Frontend) {
+	t.Helper()
 	fb := newFakeBackend(t)
 	bConn := connWithCache(fb, 8)
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
-
 	clt, fe, _ := startPooled(t, p, &PooledConn{
 		PooledConfig: PooledConfig{
 			CannedParams: map[string]string{"server_version": "16.0"},
@@ -64,6 +71,11 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 		Database: "appdb",
 		User:     "alice",
 	})
+	return fb, bConn, clt, fe
+}
+
+func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
+	fb, _, clt, fe := newCachedSession(t)
 
 	expectedServerName := ServerNameFor("SELECT $1::int")
 
@@ -94,22 +106,9 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 // --- PooledConn: cache hit synthesizes ParseComplete locally ---
 
 func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
-	fb := newFakeBackend(t)
+	fb, bConn, clt, fe := newCachedSession(t)
 	// Pre-warm the backend cache with our SQL's hash.
-	preCached := ServerNameFor("SELECT 1")
-	bConn := connWithCache(fb, 8)
-	bConn.Prepared.Add(preCached) // simulate "previous client already Parsed this"
-
-	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := newDialPool(t, "t", dial, 1)
-
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
-	})
+	bConn.Prepared.Add(ServerNameFor("SELECT 1")) // simulate "previous client already Parsed this"
 
 	// Backend should ONLY receive Sync — Parse is suppressed by cache hit.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
@@ -138,19 +137,7 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 // --- PooledConn: Bind rewrites the prepared-statement field ---
 
 func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
-	fb := newFakeBackend(t)
-	bConn := connWithCache(fb, 8)
-	_ = bConn
-	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := newDialPool(t, "t", dial, 1)
-
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
-	})
+	fb, _, clt, fe := newCachedSession(t)
 
 	wantServerName := ServerNameFor("SELECT $1::int")
 
@@ -183,18 +170,7 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 // --- PooledConn: Close('S') is suppressed (statement stays cached) ---
 
 func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T) {
-	fb := newFakeBackend(t)
-	bConn := connWithCache(fb, 8)
-	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
-	p := newDialPool(t, "t", dial, 1)
-
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
-	})
+	fb, bConn, clt, fe := newCachedSession(t)
 
 	// First Parse so the client cache has stmt1 → server-name.
 	fb.expect(func(_ *pgproto3.Backend, _ pgproto3.FrontendMessage) {})
