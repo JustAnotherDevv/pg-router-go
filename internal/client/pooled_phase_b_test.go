@@ -18,18 +18,17 @@ import (
 
 // --- ServerNameFor ---
 
-func TestServerNameForIsDeterministic(t *testing.T) {
+// TestServerNameForShape verifies determinism, format, and
+// distinguishability of the SQL → server-name mapping. Collapses
+// what were 3 tiny tests (determinism, prefix+length, different SQL
+// yields different names) into one because each was 3 LOC.
+func TestServerNameForShape(t *testing.T) {
 	a := ServerNameFor("SELECT $1::int")
 	b := ServerNameFor("SELECT $1::int")
-	require.Equal(t, a, b, "same SQL must yield same server name")
-	require.True(t, strings.HasPrefix(a, "pgr_"), "server name must be prefixed pgr_")
-	require.Equal(t, 4+16, len(a), "pgr_ + 16 hex chars")
-}
-
-func TestServerNameForDiffersByQuery(t *testing.T) {
-	a := ServerNameFor("SELECT 1")
-	b := ServerNameFor("SELECT 2")
-	require.NotEqual(t, a, b)
+	require.Equal(t, a, b, "deterministic: same SQL same name")
+	require.True(t, strings.HasPrefix(a, "pgr_"), "prefix is pgr_")
+	require.Equal(t, 4+16, len(a), "name is pgr_ + 16 hex chars")
+	require.NotEqual(t, a, ServerNameFor("SELECT 1"), "different SQL → different name")
 }
 
 // --- PrepareCache.ServerNameOf ---
