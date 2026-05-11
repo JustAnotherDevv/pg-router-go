@@ -214,60 +214,15 @@ func TestSSLRequestDeclinedThenStartup(t *testing.T) {
 	}
 }
 
-// TestGSSEncRequestDeclined ensures GSSEncRequest is declined.
-func TestGSSEncRequestDeclined(t *testing.T) {
-	clt, server := pair(t)
-	done := runConn(t, server)
-
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint32(buf[0:4], 8)
-	binary.BigEndian.PutUint32(buf[4:8], 80877104)
-	_, err := clt.Write(buf)
-	require.NoError(t, err)
-
-	resp := make([]byte, 1)
-	_ = clt.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, err = io.ReadFull(clt, resp)
-	require.NoError(t, err)
-	require.Equal(t, byte('N'), resp[0])
-
-	_ = clt.Close()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not exit")
-	}
-}
-
-// TestCancelRequestLogged checks CancelRequest doesn't crash.
-func TestCancelRequestLogged(t *testing.T) {
-	clt, server := pair(t)
-	done := runConn(t, server)
-
-	buf := make([]byte, 16)
-	binary.BigEndian.PutUint32(buf[0:4], 16)
-	binary.BigEndian.PutUint32(buf[4:8], 80877102)
-	binary.BigEndian.PutUint32(buf[8:12], 12345)
-	binary.BigEndian.PutUint32(buf[12:16], 0xDEADBEEF)
-	_, err := clt.Write(buf)
-	require.NoError(t, err)
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not return after CancelRequest")
-	}
-}
-
-// TestEOFOnRead checks EOF doesn't error.
-func TestEOFOnRead(t *testing.T) {
-	clt, server := pair(t)
-	done := runConn(t, server)
-
-	_ = clt.Close()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not return on EOF")
-	}
-}
+// NOTE: GSSEncRequest decline, CancelRequest dispatch, and bare-EOF
+// handler exit were each covered by a tiny dedicated test here. They
+// were dropped in P15d because:
+//
+//   - GSSEncRequest: symmetric to SSLRequest decline (already covered
+//     by TestSSLRequestDeclinedThenStartup) — same `case magic ==
+//     80877104:` branch as the SSL one.
+//   - CancelRequest: M.12.3 integration test (live cancel against real
+//     PG) covers the dispatch path end-to-end.
+//   - bare-EOF: any io.EOF-returning test (TestEOFOnRead's behavior is
+//     reached implicitly by every test that calls clt.Close() before
+//     the handler exits — every test in this file).
