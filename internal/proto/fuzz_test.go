@@ -29,7 +29,7 @@ func FuzzClientSideReceive(f *testing.F) {
 	// Also feed pure garbage.
 	f.Add([]byte{0})
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
-	f.Add([]byte{'Q', 0, 0, 0, 0})       // length 0 — truncated
+	f.Add([]byte{'Q', 0, 0, 0, 0})             // length 0 — truncated
 	f.Add([]byte{'P', 0xff, 0xff, 0xff, 0xff}) // huge length
 
 	f.Fuzz(func(_ *testing.T, data []byte) {

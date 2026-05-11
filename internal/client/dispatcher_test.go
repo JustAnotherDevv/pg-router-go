@@ -101,9 +101,7 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 	require.NoError(t, err)
 
 	// Stand up a TCP listener that captures whatever the client writes.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 	gotCh := make(chan []byte, 1)
 	go func() {
 		c, err := ln.Accept()
@@ -204,12 +202,7 @@ func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 		h.Handle(context.Background(), srv)
 	}()
 
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "u", "database": "nope"},
-	}
-	buf, _ := startup.Encode(nil)
-	_, _ = cli.Write(buf)
+	testutil.SendStartup(t, cli, "u", "nope")
 
 	fe := pgproto3.NewFrontend(cli, cli)
 
@@ -265,12 +258,7 @@ func TestDispatcherWithUserlistAuth(t *testing.T) {
 		h.Handle(context.Background(), srv)
 	}()
 
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "alice", "database": "appdb"},
-	}
-	buf, _ := startup.Encode(nil)
-	_, _ = cli.Write(buf)
+	testutil.SendStartup(t, cli, "alice", "appdb")
 
 	fe := pgproto3.NewFrontend(cli, cli)
 

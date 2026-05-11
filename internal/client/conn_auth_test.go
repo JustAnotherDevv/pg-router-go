@@ -36,9 +36,7 @@ func TestServerSCRAMSuccess(t *testing.T) {
 	ul, err := auth.NewUserlist(ulPath)
 	require.NoError(t, err)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	done := make(chan struct{})
 	go func() {
@@ -66,13 +64,7 @@ func TestServerSCRAMSuccess(t *testing.T) {
 	_ = cli.SetDeadline(time.Now().Add(5 * time.Second))
 
 	// Send StartupMessage.
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "alice", "database": "appdb"},
-	}
-	enc, _ := startup.Encode(nil)
-	_, err = cli.Write(enc)
-	require.NoError(t, err)
+	testutil.SendStartup(t, cli, "alice", "appdb")
 
 	fe := pgproto3.NewFrontend(cli, cli)
 
@@ -102,9 +94,7 @@ func TestServerSCRAMWrongPassword(t *testing.T) {
 	ul, err := auth.NewUserlist(ulPath)
 	require.NoError(t, err)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	done := make(chan struct{})
 	go func() {
@@ -130,12 +120,7 @@ func TestServerSCRAMWrongPassword(t *testing.T) {
 	defer cli.Close()
 	_ = cli.SetDeadline(time.Now().Add(5 * time.Second))
 
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "alice", "database": "appdb"},
-	}
-	enc, _ := startup.Encode(nil)
-	_, _ = cli.Write(enc)
+	testutil.SendStartup(t, cli, "alice", "appdb")
 
 	fe := pgproto3.NewFrontend(cli, cli)
 	_, _ = fe.Receive() // AuthenticationSASL
@@ -173,9 +158,7 @@ func TestServerMD5Success(t *testing.T) {
 	ul, err := auth.NewUserlist(ulPath)
 	require.NoError(t, err)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	done := make(chan struct{})
 	go func() {
@@ -201,12 +184,7 @@ func TestServerMD5Success(t *testing.T) {
 	defer cli.Close()
 	_ = cli.SetDeadline(time.Now().Add(5 * time.Second))
 
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "bob", "database": "appdb"},
-	}
-	enc, _ := startup.Encode(nil)
-	_, _ = cli.Write(enc)
+	testutil.SendStartup(t, cli, "bob", "appdb")
 
 	fe := pgproto3.NewFrontend(cli, cli)
 	msg, _ := fe.Receive()

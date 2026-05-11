@@ -53,17 +53,7 @@ func TestStartupResponseSequence(t *testing.T) {
 	done := runConn(t, server)
 
 	// Send a StartupMessage.
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters: map[string]string{
-			"user":     "alice",
-			"database": "appdb",
-		},
-	}
-	buf, err := startup.Encode(nil)
-	require.NoError(t, err)
-	_, err = clt.Write(buf)
-	require.NoError(t, err)
+	testutil.SendStartup(t, clt, "alice", "appdb")
 
 	fe := pgproto3.NewFrontend(clt, clt)
 
@@ -120,13 +110,7 @@ func TestQueryInIdleModeReturnsError(t *testing.T) {
 	done := runConn(t, server)
 
 	// Startup.
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "u", "database": "d"},
-	}
-	enc, err := startup.Encode(nil)
-	require.NoError(t, err)
-	_, _ = clt.Write(enc)
+	testutil.SendStartup(t, clt, "u", "d")
 
 	fe := pgproto3.NewFrontend(clt, clt)
 	// Drain until ReadyForQuery 'I'.
@@ -191,13 +175,7 @@ func TestSSLRequestDeclinedThenStartup(t *testing.T) {
 	require.Equal(t, byte('N'), resp[0])
 
 	// Now send a real StartupMessage and verify the handler responds.
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "u", "database": "d"},
-	}
-	enc, err := startup.Encode(nil)
-	require.NoError(t, err)
-	_, _ = clt.Write(enc)
+	testutil.SendStartup(t, clt, "u", "d")
 
 	fe := pgproto3.NewFrontend(clt, clt)
 	m, err := fe.Receive()

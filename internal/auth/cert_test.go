@@ -10,7 +10,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
-	"log/slog"
 	"math/big"
 	"net"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // makeMTLSPair returns a CA + a server cert + a client cert (CN=`cn`).
@@ -84,9 +84,7 @@ func mTLSPair(t *testing.T, cn string) (net.Conn, net.Conn) {
 	caPool := x509.NewCertPool()
 	caPool.AppendCertsFromPEM(caPEM)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	serverTLSCfg := &tls.Config{
 		Certificates: []tls.Certificate{serverCert},
@@ -148,7 +146,7 @@ func TestPerformServerAuthConnCertOK(t *testing.T) {
 
 	opts := ServerAuthOptions{
 		Type: config.AuthCert,
-		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:  testutil.Discard,
 	}
 	be := pgproto3.NewBackend(srv, srv)
 	err := PerformServerAuthConn(be, srv, opts, "alice")
@@ -162,7 +160,7 @@ func TestPerformServerAuthConnCertMismatch(t *testing.T) {
 
 	opts := ServerAuthOptions{
 		Type: config.AuthCert,
-		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:  testutil.Discard,
 	}
 	be := pgproto3.NewBackend(srv, srv)
 	// Drain the FATAL response on the client side.

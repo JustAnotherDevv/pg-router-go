@@ -4,7 +4,6 @@ package auth
 
 import (
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/user"
@@ -17,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
 // TestPerformServerAuthConnPeerOK runs a real peer-auth handshake over
@@ -31,7 +31,7 @@ func TestPerformServerAuthConnPeerOK(t *testing.T) {
 
 	opts := ServerAuthOptions{
 		Type: config.AuthPeer,
-		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:  testutil.Discard,
 	}
 	be := pgproto3.NewBackend(srv, srv)
 	err = PerformServerAuthConn(be, srv, opts, me.Username)
@@ -45,7 +45,7 @@ func TestPerformServerAuthConnPeerMismatch(t *testing.T) {
 
 	opts := ServerAuthOptions{
 		Type: config.AuthPeer,
-		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:  testutil.Discard,
 	}
 	be := pgproto3.NewBackend(srv, srv)
 	// Drain the FATAL ErrorResponse on the client side in a goroutine
@@ -64,7 +64,7 @@ func TestPerformServerAuthConnPeerRequiresUnixConn(t *testing.T) {
 
 	opts := ServerAuthOptions{
 		Type: config.AuthPeer,
-		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:  testutil.Discard,
 	}
 	be := pgproto3.NewBackend(c1, c1)
 	go io.Copy(io.Discard, c2)

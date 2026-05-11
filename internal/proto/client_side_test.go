@@ -21,6 +21,9 @@ func TestClientSideReceiveStartup(t *testing.T) {
 	cs := NewClientSide(srv)
 
 	// Client encodes + writes a StartupMessage.
+	// NOTE: net.Pipe Write blocks until matching Read, so wrap in a
+	// goroutine — testutil.SendStartup's synchronous Write would
+	// deadlock here. Used inline for that reason.
 	startup := &pgproto3.StartupMessage{
 		ProtocolVersion: pgproto3.ProtocolVersionNumber,
 		Parameters:      map[string]string{"user": "u", "database": "d"},

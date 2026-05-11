@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil/testcerts"
 )
 
@@ -185,9 +186,7 @@ func TestEndToEndTLSHandshake(t *testing.T) {
 	require.NotNil(t, cliCfg)
 	cliCfg.ServerName = "localhost"
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	type handshakeResult struct {
 		err     error

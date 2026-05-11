@@ -24,9 +24,7 @@ func TestSSLRequestAcceptedThenStartup(t *testing.T) {
 	require.NoError(t, err)
 	srvCfg := &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	done := make(chan struct{})
 	go func() {
@@ -70,13 +68,7 @@ func TestSSLRequestAcceptedThenStartup(t *testing.T) {
 	require.NoError(t, tlsCli.Handshake())
 
 	// 4. Send StartupMessage on the TLS stream.
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "u", "database": "d"},
-	}
-	enc, _ := startup.Encode(nil)
-	_, err = tlsCli.Write(enc)
-	require.NoError(t, err)
+	testutil.SendStartup(t, tlsCli, "u", "d")
 
 	// 5. Read AuthenticationOk over TLS.
 	fe := pgproto3.NewFrontend(tlsCli, tlsCli)
@@ -93,9 +85,7 @@ func TestSSLRequestAcceptedThenStartup(t *testing.T) {
 // no TLSConfig is set, SSLRequest must be answered with 'N' and a
 // follow-up StartupMessage must still succeed.
 func TestSSLRequestDeclinedWhenTLSDisabled(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	done := make(chan struct{})
 	go func() {
@@ -127,12 +117,7 @@ func TestSSLRequestDeclinedWhenTLSDisabled(t *testing.T) {
 	require.Equal(t, byte('N'), one[0])
 
 	// Plaintext StartupMessage.
-	startup := &pgproto3.StartupMessage{
-		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters:      map[string]string{"user": "u", "database": "d"},
-	}
-	enc, _ := startup.Encode(nil)
-	_, _ = cli.Write(enc)
+	testutil.SendStartup(t, cli, "u", "d")
 
 	fe := pgproto3.NewFrontend(cli, cli)
 	msg, err := fe.Receive()

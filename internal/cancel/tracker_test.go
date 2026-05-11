@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"net"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -142,9 +142,7 @@ func TestTrackerConcurrent(t *testing.T) {
 }
 
 func TestForwardCancelWritesCorrectPacket(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	ln, _ := testutil.TCPListener(t)
 
 	recvCh := make(chan []byte, 1)
 	go func() {
