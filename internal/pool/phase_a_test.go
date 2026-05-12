@@ -141,17 +141,7 @@ func blockingDialer(d time.Duration) Dialer {
 // TestGlobalDBLimitCapsConcurrentCheckouts: two pools sharing the same
 // db are jointly capped by maxDBConn=1.
 func TestGlobalDBLimitCapsConcurrentCheckouts(t *testing.T) {
-	dialFor := func(_ Key) Dialer {
-		return func(_ context.Context) (*backend.Conn, error) {
-			return &backend.Conn{}, nil
-		}
-	}
-	m := NewManager(Config{
-		DefaultPoolSize: 5, // per-pool slack
-		QueryWait:       50 * time.Millisecond,
-		Log:             testutil.Discard,
-	}, dialFor).WithGlobalLimits(1, 0, nil)
-	defer m.Close()
+	m := newGlobalLimitManager(t, 50*time.Millisecond, 1, 0, nil)
 
 	ka := Key{DB: "appdb", User: "alice"}
 	kb := Key{DB: "appdb", User: "bob"}
@@ -179,17 +169,7 @@ func TestGlobalDBLimitCapsConcurrentCheckouts(t *testing.T) {
 // TestGlobalUserLimitCapsConcurrentCheckouts: two pools sharing the
 // same user but DIFFERENT db are jointly capped by maxUserConn=1.
 func TestGlobalUserLimitCapsConcurrentCheckouts(t *testing.T) {
-	dialFor := func(_ Key) Dialer {
-		return func(_ context.Context) (*backend.Conn, error) {
-			return &backend.Conn{}, nil
-		}
-	}
-	m := NewManager(Config{
-		DefaultPoolSize: 5,
-		QueryWait:       50 * time.Millisecond,
-		Log:             testutil.Discard,
-	}, dialFor).WithGlobalLimits(0, 1, nil)
-	defer m.Close()
+	m := newGlobalLimitManager(t, 50*time.Millisecond, 0, 1, nil)
 
 	ka := Key{DB: "appdb", User: "alice"}
 	kb := Key{DB: "warehouse", User: "alice"} // same user, different db
@@ -215,17 +195,7 @@ func TestGlobalLimitObserverFiresOnReject(t *testing.T) {
 		v, _ := rejects.LoadOrStore(key, new(atomic.Int64))
 		v.(*atomic.Int64).Add(1)
 	}
-	dialFor := func(_ Key) Dialer {
-		return func(_ context.Context) (*backend.Conn, error) {
-			return &backend.Conn{}, nil
-		}
-	}
-	m := NewManager(Config{
-		DefaultPoolSize: 5,
-		QueryWait:       30 * time.Millisecond,
-		Log:             testutil.Discard,
-	}, dialFor).WithGlobalLimits(1, 0, obs)
-	defer m.Close()
+	m := newGlobalLimitManager(t, 30*time.Millisecond, 1, 0, obs)
 
 	ka := Key{DB: "appdb", User: "alice"}
 	c1, err := m.Acquire(context.Background(), ka)
@@ -245,17 +215,7 @@ func TestGlobalLimitObserverFiresOnReject(t *testing.T) {
 // TestGlobalLimitNoOpWhenDisabled: 0/0 → no semaphore, no PreAcquire,
 // concurrent acquires from same db succeed.
 func TestGlobalLimitNoOpWhenDisabled(t *testing.T) {
-	dialFor := func(_ Key) Dialer {
-		return func(_ context.Context) (*backend.Conn, error) {
-			return &backend.Conn{}, nil
-		}
-	}
-	m := NewManager(Config{
-		DefaultPoolSize: 5,
-		QueryWait:       50 * time.Millisecond,
-		Log:             testutil.Discard,
-	}, dialFor) // no WithGlobalLimits
-	defer m.Close()
+	m := newGlobalLimitManager(t, 50*time.Millisecond, 0, 0, nil)
 
 	c1, err := m.Acquire(context.Background(), Key{DB: "appdb", User: "a"})
 	require.NoError(t, err)

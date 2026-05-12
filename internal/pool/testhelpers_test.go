@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
@@ -46,4 +47,23 @@ func newPool(t *testing.T, name string, dial Dialer, cfg Config) *Pool {
 	p := New(name, dial, cfg)
 	t.Cleanup(p.Close)
 	return p
+}
+
+// newGlobalLimitManager builds a Manager with the most common test
+// shape: DefaultPoolSize=5, configurable QueryWait, a no-op dialer,
+// and optional WithGlobalLimits. Collapses the 12-line manager setup
+// that repeated 4 times in phase_a_test.
+func newGlobalLimitManager(t *testing.T, queryWait time.Duration, dbLim, userLim int, obs func(scope, name string)) *Manager {
+	t.Helper()
+	dialFor := func(_ Key) Dialer { return okDial }
+	m := NewManager(Config{
+		DefaultPoolSize: 5,
+		QueryWait:       queryWait,
+		Log:             testutil.Discard,
+	}, dialFor)
+	if dbLim != 0 || userLim != 0 || obs != nil {
+		m = m.WithGlobalLimits(dbLim, userLim, obs)
+	}
+	t.Cleanup(m.Close)
+	return m
 }
