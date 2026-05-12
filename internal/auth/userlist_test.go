@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeUserlist writes body to a fresh userlist.txt in t.TempDir() and
+// returns the path. Reload tests overwrite the same path with new
+// content.
+func writeUserlist(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "userlist.txt")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return path
+}
+
 func TestUserlistParsesAllSecretTypes(t *testing.T) {
 	verifier, err := MakeSCRAMVerifier("hunter2")
 	require.NoError(t, err)
@@ -21,9 +31,7 @@ func TestUserlistParsesAllSecretTypes(t *testing.T) {
 		`"carol"   "` + verifier.String() + `"`,
 	}, "\n")
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "userlist.txt")
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	path := writeUserlist(t, body)
 
 	ul, err := NewUserlist(path)
 	require.NoError(t, err)
@@ -49,9 +57,7 @@ func TestUserlistParsesAllSecretTypes(t *testing.T) {
 
 func TestUserlistEscapes(t *testing.T) {
 	body := `"name with \"quote\"" "pass \\with \\bs"`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "userlist.txt")
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	path := writeUserlist(t, body)
 
 	ul, err := NewUserlist(path)
 	require.NoError(t, err)
@@ -67,9 +73,7 @@ func TestUserlistMissingFile(t *testing.T) {
 
 func TestUserlistMalformedLine(t *testing.T) {
 	body := `"alice"`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "userlist.txt")
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	path := writeUserlist(t, body)
 
 	_, err := NewUserlist(path)
 	require.Error(t, err)
@@ -77,9 +81,7 @@ func TestUserlistMalformedLine(t *testing.T) {
 }
 
 func TestUserlistReload(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "userlist.txt")
-	require.NoError(t, os.WriteFile(path, []byte(`"alice" "old"`), 0o600))
+	path := writeUserlist(t, `"alice" "old"`)
 	ul, err := NewUserlist(path)
 	require.NoError(t, err)
 	a, _ := ul.Lookup("alice")
@@ -116,9 +118,7 @@ func TestUserlistReloadDiffAddRemoveRotate(t *testing.T) {
 }
 
 func TestUserlistReloadDiffParseErrorPreservesOldEntries(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "userlist.txt")
-	require.NoError(t, os.WriteFile(path, []byte(`"alice" "good"`), 0o600))
+	path := writeUserlist(t, `"alice" "good"`)
 	ul, err := NewUserlist(path)
 	require.NoError(t, err)
 
@@ -135,9 +135,7 @@ func TestUserlistReloadDiffParseErrorPreservesOldEntries(t *testing.T) {
 }
 
 func TestUserlistReloadDiffNoChangeNoEntries(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "userlist.txt")
-	require.NoError(t, os.WriteFile(path, []byte(`"alice" "x"`), 0o600))
+	path := writeUserlist(t, `"alice" "x"`)
 	ul, err := NewUserlist(path)
 	require.NoError(t, err)
 	diff, err := ul.ReloadDiff()
