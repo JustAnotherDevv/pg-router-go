@@ -35,75 +35,54 @@ func (f *fakeQueryConn) Receive() (pgproto3.BackendMessage, error) {
 }
 func (f *fakeQueryConn) Close() error { f.closed = true; return f.closeErr }
 
-func TestAuthQueryLookupSuccess(t *testing.T) {
-	fc := &fakeQueryConn{
-		responses: []pgproto3.BackendMessage{
-			&pgproto3.DataRow{Values: [][]byte{
-				[]byte("alice"),
-				[]byte("md5d8578edf8458ce06fbc5bb76a58c5ca4"),
-			}},
-			&pgproto3.ReadyForQuery{TxStatus: 'I'},
-		},
-	}
-	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) {
-			require.Equal(t, "appdb", db)
-			return fc, nil
-		},
-		"SELECT usename, passwd FROM pg_shadow WHERE usename = $1",
-		time.Minute,
+// newFetcher builds an AuthQueryFetcher that dials fc on every call.
+// 5-line site-level boilerplate -> 1 line.
+func newFetcher(fc *fakeQueryConn, sql string) *AuthQueryFetcher {
+	return NewAuthQueryFetcher(
+		func(_ context.Context, _ string) (QueryConn, error) { return fc, nil },
+		sql, time.Minute,
 	)
+}
+
+// dataRow returns a DataRow with the given byte-string values. Saves
+// the repetitive `&pgproto3.DataRow{Values: [][]byte{...}}` literal.
+func dataRow(values ...string) *pgproto3.DataRow {
+	bs := make([][]byte, len(values))
+	for i, v := range values {
+		bs[i] = []byte(v)
+	}
+	return &pgproto3.DataRow{Values: bs}
+}
+
+var rfqIdle = &pgproto3.ReadyForQuery{TxStatus: 'I'}
+
+// --- happy paths ---
+
+func TestAuthQueryLookupSuccess(t *testing.T) {
+	fc := &fakeQueryConn{responses: []pgproto3.BackendMessage{
+		dataRow("alice", "md5d8578edf8458ce06fbc5bb76a58c5ca4"),
+		rfqIdle,
+	}}
+	f := newFetcher(fc, "SELECT usename, passwd FROM pg_shadow WHERE usename = $1")
 	entry, err := f.Lookup(context.Background(), "appdb", "alice")
 	require.NoError(t, err)
 	require.Equal(t, "md5d8578edf8458ce06fbc5bb76a58c5ca4", entry.MD5Hash)
 	require.True(t, fc.closed)
-
 	q, ok := fc.got.(*pgproto3.Query)
 	require.True(t, ok)
 	require.Contains(t, q.String, "'alice'")
 }
 
-func TestAuthQueryRejectsBadUsername(t *testing.T) {
-	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) {
-			t.Fatal("Dial should not be called for invalid username")
-			return nil, nil
-		},
-		"SELECT 1",
-		time.Minute,
-	)
-	_, err := f.Lookup(context.Background(), "appdb", "alice'; DROP--")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid username")
-}
-
-func TestAuthQueryEmptyRow(t *testing.T) {
-	fc := &fakeQueryConn{
-		responses: []pgproto3.BackendMessage{
-			&pgproto3.ReadyForQuery{TxStatus: 'I'},
-		},
-	}
-	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) { return fc, nil },
-		"SELECT 1 WHERE false", time.Minute,
-	)
-	_, err := f.Lookup(context.Background(), "appdb", "alice")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no row")
-}
-
 func TestAuthQueryCachesByUsername(t *testing.T) {
 	calls := 0
 	mkResp := func() *fakeQueryConn {
-		return &fakeQueryConn{
-			responses: []pgproto3.BackendMessage{
-				&pgproto3.DataRow{Values: [][]byte{[]byte("alice"), []byte("wonderland")}},
-				&pgproto3.ReadyForQuery{TxStatus: 'I'},
-			},
-		}
+		return &fakeQueryConn{responses: []pgproto3.BackendMessage{
+			dataRow("alice", "wonderland"),
+			rfqIdle,
+		}}
 	}
 	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) {
+		func(_ context.Context, _ string) (QueryConn, error) {
 			calls++
 			return mkResp(), nil
 		},
@@ -116,68 +95,78 @@ func TestAuthQueryCachesByUsername(t *testing.T) {
 	require.Equal(t, 1, calls, "second lookup should hit cache")
 }
 
-func TestAuthQueryMultipleRowsRejected(t *testing.T) {
-	// A wildcard LIKE in auth_query (operator typo) could return many
-	// rows. The fetcher must reject rather than silently use the first
-	// row — the wrong row could grant the wrong user's credential.
-	fc := &fakeQueryConn{
-		responses: []pgproto3.BackendMessage{
-			&pgproto3.DataRow{Values: [][]byte{[]byte("alice"), []byte("pw1")}},
-			&pgproto3.DataRow{Values: [][]byte{[]byte("alex"), []byte("pw2")}},
-			&pgproto3.ReadyForQuery{TxStatus: 'I'},
+// --- error paths via table ---
+
+func TestAuthQueryErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		responses []pgproto3.BackendMessage
+		sql       string
+		username  string
+		wantSub   []string // substrings expected in error message
+		noDial    bool     // true: Dial must not be called
+	}{
+		{
+			name:     "rejects bad username (no dial)",
+			sql:      "SELECT 1",
+			username: "alice'; DROP--",
+			wantSub:  []string{"invalid username"},
+			noDial:   true,
+		},
+		{
+			name:      "empty row → no row error",
+			responses: []pgproto3.BackendMessage{rfqIdle},
+			sql:       "SELECT 1 WHERE false",
+			username:  "alice",
+			wantSub:   []string{"no row"},
+		},
+		{
+			name: "multiple rows rejected (catches wildcard LIKE)",
+			responses: []pgproto3.BackendMessage{
+				dataRow("alice", "pw1"),
+				dataRow("alex", "pw2"),
+				rfqIdle,
+			},
+			sql:      "SELECT usename, passwd FROM pg_shadow WHERE usename LIKE $1",
+			username: "alice",
+			wantSub:  []string{"returned 2 rows", "LIKE"},
+		},
+		{
+			name: "server ErrorResponse surfaced",
+			responses: []pgproto3.BackendMessage{
+				&pgproto3.ErrorResponse{Message: "boom"},
+				rfqIdle,
+			},
+			sql:      "SELECT 1",
+			username: "alice",
+			wantSub:  []string{"boom"},
 		},
 	}
-	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) { return fc, nil },
-		"SELECT usename, passwd FROM pg_shadow WHERE usename LIKE $1",
-		time.Minute,
-	)
-	_, err := f.Lookup(context.Background(), "appdb", "alice")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "returned 2 rows")
-	require.Contains(t, err.Error(), "LIKE")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var f *AuthQueryFetcher
+			if tc.noDial {
+				f = NewAuthQueryFetcher(
+					func(_ context.Context, _ string) (QueryConn, error) {
+						t.Fatal("Dial should not be called")
+						return nil, nil
+					},
+					tc.sql, time.Minute,
+				)
+			} else {
+				fc := &fakeQueryConn{responses: tc.responses}
+				f = newFetcher(fc, tc.sql)
+			}
+			_, err := f.Lookup(context.Background(), "appdb", tc.username)
+			require.Error(t, err)
+			for _, sub := range tc.wantSub {
+				require.Contains(t, err.Error(), sub)
+			}
+		})
+	}
 }
 
-func TestAuthQuerySingleRowMultiColumn(t *testing.T) {
-	// Single DataRow with the expected (user, pwd) — must succeed.
-	// Regression: the old accumulator built `row = append(...)` per
-	// value across all DataRows, so a future regression to per-call
-	// append would silently pass this test by treating extra rows as
-	// continuation. The single-row case must keep working.
-	fc := &fakeQueryConn{
-		responses: []pgproto3.BackendMessage{
-			&pgproto3.DataRow{Values: [][]byte{
-				[]byte("alice"),
-				[]byte("md5d8578edf8458ce06fbc5bb76a58c5ca4"),
-			}},
-			&pgproto3.ReadyForQuery{TxStatus: 'I'},
-		},
-	}
-	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) { return fc, nil },
-		"SELECT usename, passwd FROM pg_shadow WHERE usename = $1",
-		time.Minute,
-	)
-	entry, err := f.Lookup(context.Background(), "appdb", "alice")
-	require.NoError(t, err)
-	require.Equal(t, "md5d8578edf8458ce06fbc5bb76a58c5ca4", entry.MD5Hash)
-}
-
-func TestAuthQueryServerError(t *testing.T) {
-	fc := &fakeQueryConn{
-		responses: []pgproto3.BackendMessage{
-			&pgproto3.ErrorResponse{Message: "boom"},
-			&pgproto3.ReadyForQuery{TxStatus: 'I'},
-		},
-	}
-	f := NewAuthQueryFetcher(
-		func(ctx context.Context, db string) (QueryConn, error) { return fc, nil },
-		"SELECT 1", time.Minute,
-	)
-	_, err := f.Lookup(context.Background(), "appdb", "alice")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "boom")
-}
+// --- pure helpers (no fake-conn needed) ---
 
 func TestSubstituteOne(t *testing.T) {
 	require.Equal(t, "SELECT 'alice'",
