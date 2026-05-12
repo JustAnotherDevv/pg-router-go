@@ -1,0 +1,49 @@
+server:
+  listen_addr: 127.0.0.1
+  listen_port: 16432
+  max_client_conn: 500
+  client_login_timeout: 30s
+
+pool:
+  mode: session
+  default_pool_size: 10
+  min_pool_size: 2
+  reserve_pool_size: 3
+  query_wait_timeout: 60s
+  server_idle_timeout: 300s
+  server_lifetime: 1800s
+
+auth:
+  type: scram-sha-256
+  userlist_file: /etc/pgrouter/userlist.txt
+
+tls:
+  client_mode: require
+  client_cert_file: /etc/pgrouter/tls/cert.pem
+  client_key_file: /etc/pgrouter/tls/key.pem
+  server_mode: verify-full
+  server_ca_file: /etc/ssl/certs/ca-bundle.pem
+
+metrics:
+  listen: 127.0.0.1:9100
+  path: /metrics
+
+logging:
+  level: debug
+  format: json
+
+databases:
+  appdb:
+    host: db.internal
+    port: 5433
+    dbname: production
+  reporting:
+    host: warehouse.internal
+    pool_mode: session
+    pool_size: 5
+
+users:
+  app_user:
+    pool_size: 30
+  reporter:
+    pool_mode: session

@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -44,36 +45,21 @@ func readFile(t *testing.T, p string) string {
 func minimalValidConfig(t *testing.T, defaultPoolSize int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pgrouter.yaml")
-	body := "" +
-		"server:\n" +
-		"  listen_addr: 127.0.0.1\n" +
-		"  listen_port: 6432\n" +
-		"pool:\n" +
-		"  mode: transaction\n" +
-		"  default_pool_size: " + itoaSmall(defaultPoolSize) + "\n" +
-		"auth:\n" +
-		"  type: trust\n" +
-		"databases:\n" +
-		"  appdb:\n" +
-		"    host: 127.0.0.1\n" +
-		"    port: 5432\n"
+	body := fmt.Sprintf(`server:
+  listen_addr: 127.0.0.1
+  listen_port: 6432
+pool:
+  mode: transaction
+  default_pool_size: %d
+auth:
+  type: trust
+databases:
+  appdb:
+    host: 127.0.0.1
+    port: 5432
+`, defaultPoolSize)
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 	return path
-}
-
-// itoaSmall avoids strconv just so this test file's imports stay tight.
-func itoaSmall(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
