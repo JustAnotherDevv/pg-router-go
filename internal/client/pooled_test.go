@@ -75,6 +75,23 @@ func withQueryWait(d time.Duration) func(*pool.Config) {
 	return func(c *pool.Config) { c.QueryWait = d }
 }
 
+// newDispatcherMgr builds a pool.Manager wired for client/dispatcher
+// tests: configurable DefaultPoolSize, configurable QueryWait (0 = no
+// QueryWait), shared discard logger, every-key returns the supplied
+// dial. Saves the 7-line `pool.NewManager(pool.Config{...}, dialerFor)
+// + defer mgr.Close()` boilerplate.
+func newDispatcherMgr(t *testing.T, dial pool.Dialer, size int, queryWait time.Duration) *pool.Manager {
+	t.Helper()
+	cfg := pool.Config{
+		DefaultPoolSize: size,
+		QueryWait:       queryWait,
+		Log:             testutil.Discard,
+	}
+	m := pool.NewManager(cfg, func(_ pool.Key) pool.Dialer { return dial })
+	t.Cleanup(m.Close)
+	return m
+}
+
 // requirePoolStats polls p.Stats() and waits up to 1s for s.Idle ==
 // wantIdle && s.Active == wantActive. Replaces the per-test boilerplate:
 //

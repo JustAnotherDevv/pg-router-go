@@ -26,12 +26,7 @@ func TestDispatcherTrustAuthAndPoolRoute(t *testing.T) {
 
 	// Manager wires one dialer for any key — the fleet doesn't care
 	// which (db, user) it serves.
-	mgr := pool.NewManager(pool.Config{
-		DefaultPoolSize: 2,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	}, func(_ pool.Key) pool.Dialer { return fleet.Dial })
-	defer mgr.Close()
+	mgr := newDispatcherMgr(t, fleet.Dial, 2, time.Second)
 
 	h := &PooledHandler{
 		Log:            testutil.Discard,
@@ -123,15 +118,9 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 	})
 
 	// Dummy manager — we don't go through the StartupMessage path.
-	mgr := pool.NewManager(pool.Config{
-		DefaultPoolSize: 1,
-		Log:             testutil.Discard,
-	}, func(_ pool.Key) pool.Dialer {
-		return func(_ context.Context) (*backend.Conn, error) {
-			return &backend.Conn{}, nil
-		}
-	})
-	defer mgr.Close()
+	mgr := newDispatcherMgr(t, func(_ context.Context) (*backend.Conn, error) {
+		return &backend.Conn{}, nil
+	}, 1, 0)
 
 	h := &PooledHandler{
 		Log:           testutil.Discard,
@@ -177,16 +166,9 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 // an error and the client must see a FATAL ErrorResponse.
 func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 	// Manager whose dialer always errors (mimics "unknown database").
-	mgr := pool.NewManager(pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       100 * time.Millisecond,
-		Log:             testutil.Discard,
-	}, func(_ pool.Key) pool.Dialer {
-		return func(_ context.Context) (*backend.Conn, error) {
-			return nil, &fakeErr{msg: "unknown database \"nope\""}
-		}
-	})
-	defer mgr.Close()
+	mgr := newDispatcherMgr(t, func(_ context.Context) (*backend.Conn, error) {
+		return nil, &fakeErr{msg: "unknown database \"nope\""}
+	}, 1, 100*time.Millisecond)
 
 	h := &PooledHandler{
 		Log:          testutil.Discard,
@@ -233,12 +215,7 @@ func TestDispatcherWithUserlistAuth(t *testing.T) {
 	require.NoError(t, err)
 
 	fleet := newFakeBackendFleet(t)
-	mgr := pool.NewManager(pool.Config{
-		DefaultPoolSize: 1,
-		QueryWait:       time.Second,
-		Log:             testutil.Discard,
-	}, func(_ pool.Key) pool.Dialer { return fleet.Dial })
-	defer mgr.Close()
+	mgr := newDispatcherMgr(t, fleet.Dial, 1, time.Second)
 
 	h := &PooledHandler{
 		Log:     testutil.Discard,
