@@ -1,23 +1,17 @@
 package client
 
 import (
-	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := newDialPool(t, "test", dial, 2)
+	fb, p := newPoolWithFake(t, 2)
 
 	clt, fe, _ := startPooled(t, p, &PooledConn{
 		QPSLimiter: util.NewTokenBucket(1, 0.1), // 1 burst, 0.1/s refill
@@ -51,11 +45,7 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 }
 
 func TestQPSLimiterAllowsWhenDisabled(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := newDialPool(t, "test", dial, 2)
+	fb, p := newPoolWithFake(t, 2)
 
 	_, fe, _ := startPooled(t, p, &PooledConn{
 		QPSLimiter: nil, // disabled

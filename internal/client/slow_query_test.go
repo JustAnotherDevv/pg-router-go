@@ -8,7 +8,6 @@ package client
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"sync"
 	"testing"
@@ -17,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
@@ -50,11 +48,7 @@ func (s *syncBuf) Bytes() []byte {
 }
 
 func TestSlowQueryEmitsWarn(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := newDialPool(t, "test", dial, 2)
+	fb, p := newPoolWithFake(t, 2)
 
 	buf := &syncBuf{}
 	captureLog := slog.New(slog.NewTextHandler(buf,
@@ -96,11 +90,7 @@ func bytesContains(b []byte, sub string) bool {
 }
 
 func TestSlowQueryDisabledByZero(t *testing.T) {
-	fb := newFakeBackend(t)
-	dial := func(ctx context.Context) (*backend.Conn, error) {
-		return fb.Conn(), nil
-	}
-	p := newDialPool(t, "test", dial, 2)
+	fb, p := newPoolWithFake(t, 2)
 
 	buf := &syncBuf{}
 	captureLog := slog.New(slog.NewTextHandler(buf, nil))
