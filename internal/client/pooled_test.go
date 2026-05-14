@@ -117,6 +117,22 @@ func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
 	return fb, newDialPool(t, "test", dial, size)
 }
 
+// startPooledDefault is sugar over startPooled that injects the
+// canonical test identity: Database="appdb", User="alice",
+// CannedParams={"server_version":"16.0"} (unless caller overrode it).
+// Use this when the test doesn't care about identity.
+func startPooledDefault(t *testing.T, p *pool.Pool, cfg PooledConfig) (net.Conn, *pgproto3.Frontend, <-chan struct{}) {
+	t.Helper()
+	if cfg.CannedParams == nil {
+		cfg.CannedParams = map[string]string{"server_version": "16.0"}
+	}
+	return startPooled(t, p, &PooledConn{
+		PooledConfig: cfg,
+		Database:     "appdb",
+		User:         "alice",
+	})
+}
+
 // startPooled wires h to a fresh net.Pipe pair, launches h.Serve in a
 // goroutine, drains the welcome to RFQ, and returns the client-side
 // conn + frontend + a "Serve has returned" channel. Replaces the ~25-

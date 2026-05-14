@@ -25,13 +25,9 @@ import (
 // connection within the deadline + small slack.
 func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 	_, p := newPoolWithFake(t, 1)
-	_, _, serveDone := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams:      map[string]string{"server_version": "16.0"},
-			ClientIdleTimeout: 100 * time.Millisecond,
-		},
-		Database: "appdb",
-		User:     "alice",
+	_, _, serveDone := startPooledDefault(t, p, PooledConfig{
+		CannedParams:      map[string]string{"server_version": "16.0"},
+		ClientIdleTimeout: 100 * time.Millisecond,
 	})
 
 	// Don't send anything. After ClientIdleTimeout the server should send
@@ -49,17 +45,13 @@ func TestPooledClientIdleTimeoutClosesIdleClient(t *testing.T) {
 // ClientIdleTimeout to confirm the right limit was applied.
 func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 	fb, p := newPoolWithFake(t, 1)
-	clt, fe, serveDone := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams:      map[string]string{"server_version": "16.0"},
-			ClientIdleTimeout: 5 * time.Second, // ensure this doesn't fire
-			IdleTxTimeout:     100 * time.Millisecond,
-			// ResetOnRelease left false so the in-tx Release defer
-			// doesn't try to send DISCARD ALL through the fake
-			// backend (which has no scripted handler for it).
-		},
-		Database: "appdb",
-		User:     "alice",
+	clt, fe, serveDone := startPooledDefault(t, p, PooledConfig{
+		CannedParams:      map[string]string{"server_version": "16.0"},
+		ClientIdleTimeout: 5 * time.Second, // ensure this doesn't fire
+		IdleTxTimeout:     100 * time.Millisecond,
+		// ResetOnRelease left false so the in-tx Release defer
+		// doesn't try to send DISCARD ALL through the fake
+		// backend (which has no scripted handler for it).
 	})
 
 	// Script the backend's BEGIN response: RFQ 'T' (in-transaction).
@@ -118,13 +110,9 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 		}, nil
 	}
 	p := newDialPool(t, "test", dial, 1)
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-			QueryTimeout: 150 * time.Millisecond,
-		},
-		Database: "appdb",
-		User:     "alice",
+	clt, fe, _ := startPooledDefault(t, p, PooledConfig{
+		CannedParams: map[string]string{"server_version": "16.0"},
+		QueryTimeout: 150 * time.Millisecond,
 	})
 
 	// Send a Query that will never get a response.
@@ -159,12 +147,8 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	statreset.ResetStats(t)
 
 	fb, p := newPoolWithFake(t, 1)
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
+	clt, fe, _ := startPooledDefault(t, p, PooledConfig{
+		CannedParams: map[string]string{"server_version": "16.0"},
 	})
 
 	// BEGIN → backend replies RFQ 'T'.
@@ -195,12 +179,8 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 // the backend.
 func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
 	fb, p := newPoolWithFake(t, 1)
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
+	clt, fe, _ := startPooledDefault(t, p, PooledConfig{
+		CannedParams: map[string]string{"server_version": "16.0"},
 	})
 
 	// Backend handler for the `SET work_mem` query: RFQ 'I' (idle).

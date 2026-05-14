@@ -63,12 +63,8 @@ func newCachedSession(t *testing.T) (*fakeBackend, *backend.Conn, net.Conn, *pgp
 	bConn := connWithCache(fb, 8)
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
+	clt, fe, _ := startPooledDefault(t, p, PooledConfig{
+		CannedParams: map[string]string{"server_version": "16.0"},
 	})
 	return fb, bConn, clt, fe
 }
@@ -223,12 +219,8 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
 	p := newDialPool(t, "t", dial, 1)
 
-	clt, fe, _ := startPooled(t, p, &PooledConn{
-		PooledConfig: PooledConfig{
-			CannedParams: map[string]string{"server_version": "16.0"},
-		},
-		Database: "appdb",
-		User:     "alice",
+	clt, fe, _ := startPooledDefault(t, p, PooledConfig{
+		CannedParams: map[string]string{"server_version": "16.0"},
 	})
 
 	wantNewServerName := ServerNameFor("SELECT 'second'")
