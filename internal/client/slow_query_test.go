@@ -9,7 +9,6 @@ package client
 import (
 	"bytes"
 	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,38 +18,10 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
 
-// syncBuf is a goroutine-safe wrapper around bytes.Buffer for use as
-// a slog handler sink in tests. The PooledConn writes from one
-// goroutine while the test polls Bytes()/String() from another;
-// without this, `go test -race` flags the bare bytes.Buffer.
-type syncBuf struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (s *syncBuf) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.Write(p)
-}
-func (s *syncBuf) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.String()
-}
-func (s *syncBuf) Bytes() []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Return a copy so the caller doesn't observe mutation.
-	out := make([]byte, s.buf.Len())
-	copy(out, s.buf.Bytes())
-	return out
-}
-
 func TestSlowQueryEmitsWarn(t *testing.T) {
 	fb, p := newPoolWithFake(t, 2)
 
-	buf := &syncBuf{}
+	buf := &testutil.SyncBuffer{}
 	captureLog := slog.New(slog.NewTextHandler(buf,
 		&slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -92,7 +63,7 @@ func bytesContains(b []byte, sub string) bool {
 func TestSlowQueryDisabledByZero(t *testing.T) {
 	fb, p := newPoolWithFake(t, 2)
 
-	buf := &syncBuf{}
+	buf := &testutil.SyncBuffer{}
 	captureLog := slog.New(slog.NewTextHandler(buf, nil))
 
 	_, fe, _ := startPooled(t, p, &PooledConn{

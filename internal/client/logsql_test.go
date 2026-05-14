@@ -3,24 +3,17 @@ package client
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
 
-// captureLogger returns a *slog.Logger whose Debug+ output is written
-// to `buf` as text, suitable for substring assertions.
-func captureLogger(buf *bytes.Buffer) *slog.Logger {
-	h := slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	return slog.New(h)
-}
-
 func TestLogSQLOffEmitsNoSQLField(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "off"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "off"}, Log: testutil.CaptureLog(&buf)}
 	pc.logSQL(pc.Log, "query", "", "SELECT 'secret'")
 	out := buf.String()
 	require.NotContains(t, out, "secret")
@@ -29,7 +22,7 @@ func TestLogSQLOffEmitsNoSQLField(t *testing.T) {
 
 func TestLogSQLRedactedHidesLiterals(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: testutil.CaptureLog(&buf)}
 	pc.logSQL(pc.Log, "query", "", "SELECT 'alice@example.com', 4111111111111111")
 	out := buf.String()
 	require.NotContains(t, out, "alice@example.com")
@@ -40,7 +33,7 @@ func TestLogSQLRedactedHidesLiterals(t *testing.T) {
 
 func TestLogSQLFullEmitsRawSQL(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "full"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "full"}, Log: testutil.CaptureLog(&buf)}
 	pc.logSQL(pc.Log, "query", "", "SELECT 'secret'")
 	out := buf.String()
 	require.Contains(t, out, "secret")
@@ -48,7 +41,7 @@ func TestLogSQLFullEmitsRawSQL(t *testing.T) {
 
 func TestLogSQLEmptyDefaultsToRedacted(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{Log: captureLogger(&buf)}
+	pc := &PooledConn{Log: testutil.CaptureLog(&buf)}
 	pc.logSQL(pc.Log, "parse", "", "SELECT 'leaky-text'")
 	out := buf.String()
 	require.NotContains(t, out, "leaky-text")
@@ -56,7 +49,7 @@ func TestLogSQLEmptyDefaultsToRedacted(t *testing.T) {
 
 func TestLogSQLParseIncludesPrepName(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: testutil.CaptureLog(&buf)}
 	pc.logSQL(pc.Log, "parse", "stmt7", "SELECT $1")
 	require.Contains(t, buf.String(), "prepared_name=stmt7")
 }
@@ -65,7 +58,7 @@ func TestLogSQLParseIncludesPrepName(t *testing.T) {
 // `kind=query` log entry; a Parse produces `kind=parse`.
 func TestObserveClientMessageEmitsQueryLog(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: testutil.CaptureLog(&buf)}
 	guc := NewGUCCache()
 	prep := NewPrepareCache()
 	pinned := false
@@ -76,7 +69,7 @@ func TestObserveClientMessageEmitsQueryLog(t *testing.T) {
 
 func TestObserveClientMessageEmitsParseLog(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: testutil.CaptureLog(&buf)}
 	guc := NewGUCCache()
 	prep := NewPrepareCache()
 	pinned := false
@@ -93,7 +86,7 @@ func TestObserveClientMessageEmitsParseLog(t *testing.T) {
 // by manually applying With on the captured logger.
 func TestRequestIDPropagatesThroughLogSQL(t *testing.T) {
 	var buf bytes.Buffer
-	base := captureLogger(&buf).With("req_id", "abc012345678")
+	base := testutil.CaptureLog(&buf).With("req_id", "abc012345678")
 	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: base}
 	pc.logSQL(pc.Log, "query", "", "SELECT 1")
 	require.Contains(t, buf.String(), "req_id=abc012345678")
@@ -116,7 +109,7 @@ func TestLogSQLPanicsOnNilLog(t *testing.T) {
 // (so a future Serve loop that uses ctx-bound logging still works).
 func TestCaptureLoggerHonoursContext(t *testing.T) {
 	var buf bytes.Buffer
-	log := captureLogger(&buf)
+	log := testutil.CaptureLog(&buf)
 	log.InfoContext(context.Background(), "hello", "k", "v")
 	require.Contains(t, buf.String(), "k=v")
 }
@@ -124,7 +117,7 @@ func TestCaptureLoggerHonoursContext(t *testing.T) {
 // Long SQL gets truncated.
 func TestLogSQLTruncatesLongStatements(t *testing.T) {
 	var buf bytes.Buffer
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "full"}, Log: captureLogger(&buf)}
+	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "full"}, Log: testutil.CaptureLog(&buf)}
 	long := strings.Repeat("X", 1024)
 	pc.logSQL(pc.Log, "query", "", long)
 	out := buf.String()
