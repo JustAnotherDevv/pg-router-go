@@ -35,8 +35,7 @@ func TestDispatcherTrustAuthAndPoolRoute(t *testing.T) {
 		ResetOnRelease: false,
 	}
 
-	cli, srv := net.Pipe()
-	defer cli.Close()
+	cli, srv := testutil.PipePair(t)
 	doneC := make(chan struct{})
 	go func() {
 		defer close(doneC)
@@ -129,8 +128,7 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 	}
 
 	// Client sends a CancelRequest packet at startup.
-	cli, srv := net.Pipe()
-	defer cli.Close()
+	cli, srv := testutil.PipePair(t)
 	doneC := make(chan struct{})
 	go func() {
 		defer close(doneC)
@@ -176,8 +174,7 @@ func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 		CannedParams: map[string]string{"server_version": "16.0"},
 	}
 
-	cli, srv := net.Pipe()
-	defer cli.Close()
+	cli, srv := testutil.PipePair(t)
 	doneC := make(chan struct{})
 	go func() {
 		defer close(doneC)
@@ -227,8 +224,7 @@ func TestDispatcherWithUserlistAuth(t *testing.T) {
 		CannedParams: map[string]string{"server_version": "16.0"},
 	}
 
-	cli, srv := net.Pipe()
-	defer cli.Close()
+	cli, srv := testutil.PipePair(t)
 	doneC := make(chan struct{})
 	go func() {
 		defer close(doneC)

@@ -17,14 +17,6 @@ func testConn() *Conn {
 	return &Conn{Log: testutil.Discard}
 }
 
-// pair returns a connected pair of net.Conn for testing.
-func pair(t *testing.T) (net.Conn, net.Conn) {
-	t.Helper()
-	c1, c2 := net.Pipe()
-	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
-	return c1, c2
-}
-
 // runConn starts the client handler on server side and returns a done chan.
 func runConn(t *testing.T, server net.Conn) chan struct{} {
 	t.Helper()
@@ -49,7 +41,7 @@ func readBackendMsg(t *testing.T, c net.Conn) pgproto3.BackendMessage {
 // TestStartupResponseSequence checks the full trust-mode startup:
 // StartupMessage -> AuthOk + ParameterStatus* + BackendKeyData + ReadyForQuery.
 func TestStartupResponseSequence(t *testing.T) {
-	clt, server := pair(t)
+	clt, server := testutil.PipePair(t)
 	done := runConn(t, server)
 
 	// Send a StartupMessage.
@@ -106,7 +98,7 @@ func TestStartupResponseSequence(t *testing.T) {
 // TestQueryInIdleModeReturnsError verifies the no-upstream idle loop responds
 // to a Query with ErrorResponse + ReadyForQuery (no upstream proxy yet).
 func TestQueryInIdleModeReturnsError(t *testing.T) {
-	clt, server := pair(t)
+	clt, server := testutil.PipePair(t)
 	done := runConn(t, server)
 
 	// Startup.
@@ -158,7 +150,7 @@ func TestQueryInIdleModeReturnsError(t *testing.T) {
 // TestSSLRequestDeclinedThenStartup checks SSL decline + StartupMessage
 // continuation works.
 func TestSSLRequestDeclinedThenStartup(t *testing.T) {
-	clt, server := pair(t)
+	clt, server := testutil.PipePair(t)
 	done := runConn(t, server)
 
 	// Encode an SSLRequest: int32 length=8, int32 magic 80877103.

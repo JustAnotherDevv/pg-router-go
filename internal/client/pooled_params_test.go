@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -39,8 +38,7 @@ func TestWelcomeUsesUpstreamParamsAfterFirstDial(t *testing.T) {
 	require.NotNil(t, p.CachedParams())
 
 	// Now run a PooledConn welcome and inspect the wire it produced.
-	cli, srv := net.Pipe()
-	defer cli.Close()
+	cli, srv := testutil.PipePair(t)
 	defer srv.Close()
 	be := pgproto3.NewBackend(srv, srv)
 
@@ -103,8 +101,7 @@ func TestWelcomeFallsBackToCannedWhenPoolEmpty(t *testing.T) {
 	}
 	p := newDialPool(t, "welcome-cold", dialErr, 1, withQueryWait(50*time.Millisecond))
 
-	cli, srv := net.Pipe()
-	defer cli.Close()
+	cli, srv := testutil.PipePair(t)
 	defer srv.Close()
 	be := pgproto3.NewBackend(srv, srv)
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -13,8 +14,8 @@ import (
 // net.Pipe() is fully synchronous (each Write blocks until the matching
 // Read drains), so we have to drive every end concurrently.
 func TestForwardClientToServer(t *testing.T) {
-	cl1, cl2 := newPipe(t)
-	sv1, sv2 := newPipe(t)
+	cl1, cl2 := testutil.PipePair(t)
+	sv1, sv2 := testutil.PipePair(t)
 
 	src := NewClientSide(cl2) // pgrouter reads frontend msgs from the client at cl2
 	dst := NewServerSide(sv1) // pgrouter writes frontend msgs to the server via sv1
@@ -68,8 +69,8 @@ func TestForwardClientToServer(t *testing.T) {
 }
 
 func TestForwardServerToClient(t *testing.T) {
-	cl1, cl2 := newPipe(t)
-	sv1, sv2 := newPipe(t)
+	cl1, cl2 := testutil.PipePair(t)
+	sv1, sv2 := testutil.PipePair(t)
 
 	dst := NewClientSide(cl2) // pgrouter writes backend msgs to the client via cl2
 	src := NewServerSide(sv1) // pgrouter reads backend msgs from the server via sv1

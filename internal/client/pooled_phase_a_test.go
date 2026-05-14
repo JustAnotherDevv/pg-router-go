@@ -6,7 +6,6 @@ package client
 import (
 	"context"
 	"io"
-	"net"
 	"testing"
 	"time"
 
@@ -94,8 +93,7 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 	// Use a fake backend that absorbs writes (so pgrouter's Send doesn't
 	// block on the synchronous net.Pipe) but never sends a reply. PgRouter's
 	// Receive deadline must fire after QueryTimeout.
-	stallCli, stallSrv := net.Pipe()
-	defer stallCli.Close()
+	stallCli, stallSrv := testutil.PipePair(t)
 	defer stallSrv.Close()
 	// Drain whatever pgrouter writes (StartupMessage etc.). io.Discard
 	// just throws bytes away; the goroutine exits when stallSrv closes.

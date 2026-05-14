@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"net"
 	"strings"
 	"testing"
 	"time"
@@ -19,8 +18,7 @@ import (
 // the rows for one query (SHOW ...).
 func adminClient(t *testing.T, ac *AdminConsole, sql string) [][]string {
 	t.Helper()
-	clt, srv := net.Pipe()
-	defer clt.Close()
+	clt, srv := testutil.PipePair(t)
 	go ac.Serve(context.Background(), srv)
 
 	fe := pgproto3.NewFrontend(clt, clt)
@@ -106,8 +104,7 @@ func TestAdminShowVersion(t *testing.T) {
 
 func TestAdminUnknownCommand(t *testing.T) {
 	ac := &AdminConsole{Log: testutil.Discard, Manager: makeMgrWithOnePool(t)}
-	clt, srv := net.Pipe()
-	defer clt.Close()
+	clt, srv := testutil.PipePair(t)
 	go ac.Serve(context.Background(), srv)
 
 	fe := pgproto3.NewFrontend(clt, clt)
@@ -137,8 +134,7 @@ func TestAdminReloadFiresClosure(t *testing.T) {
 		Manager: makeMgrWithOnePool(t),
 		Reload:  func() error { called = true; return nil },
 	}
-	clt, srv := net.Pipe()
-	defer clt.Close()
+	clt, srv := testutil.PipePair(t)
 	go ac.Serve(context.Background(), srv)
 	fe := pgproto3.NewFrontend(clt, clt)
 	testutil.DrainToRFQ(t, clt, fe)

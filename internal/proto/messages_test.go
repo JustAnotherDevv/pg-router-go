@@ -1,10 +1,10 @@
 package proto
 
 import (
-	"net"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -30,20 +30,11 @@ import (
 // to cover the new behavior at THAT layer — not by re-listing every
 // pgproto3 message type.
 
-// pipePair returns two coupled net.Conn ends; reading from one returns
-// what was written to the other.
-func pipePair(t *testing.T) (a, b net.Conn) {
-	t.Helper()
-	a, b = net.Pipe()
-	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
-	return
-}
-
 // roundTripFrontend writes a FrontendMessage from a pgproto3.Frontend
 // (in a goroutine) and reads it through our ClientSide.
 func roundTripFrontend(t *testing.T, msg pgproto3.FrontendMessage) pgproto3.FrontendMessage {
 	t.Helper()
-	clt, srv := pipePair(t)
+	clt, srv := testutil.PipePair(t)
 	cs := NewClientSide(srv)
 	fe := pgproto3.NewFrontend(clt, clt)
 
@@ -64,7 +55,7 @@ func roundTripFrontend(t *testing.T, msg pgproto3.FrontendMessage) pgproto3.Fron
 // (in a goroutine) and reads it through our ServerSide.
 func roundTripBackend(t *testing.T, msg pgproto3.BackendMessage) pgproto3.BackendMessage {
 	t.Helper()
-	clt, srv := pipePair(t)
+	clt, srv := testutil.PipePair(t)
 	ss := NewServerSide(clt)
 	be := pgproto3.NewBackend(srv, srv)
 
@@ -157,7 +148,7 @@ func TestFrontendTerminate(t *testing.T) {
 // which dispatches to pgproto3.ReceiveStartupMessage — a different
 // code path than Receive().
 func TestStartupMessageRoundTrip(t *testing.T) {
-	clt, srv := pipePair(t)
+	clt, srv := testutil.PipePair(t)
 	cs := NewClientSide(srv)
 
 	startup := &pgproto3.StartupMessage{

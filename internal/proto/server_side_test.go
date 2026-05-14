@@ -4,12 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
 
 func TestServerSideSendAndFlush(t *testing.T) {
-	clt, srv := newPipe(t)
+	clt, srv := testutil.PipePair(t)
 	ss := NewServerSide(clt) // we are the pgrouter-as-frontend driving `clt`
 
 	// Drive a pgproto3.Backend on the server side and read the message.
@@ -29,7 +30,7 @@ func TestServerSideSendAndFlush(t *testing.T) {
 }
 
 func TestServerSideReceive(t *testing.T) {
-	clt, srv := newPipe(t)
+	clt, srv := testutil.PipePair(t)
 	ss := NewServerSide(clt)
 	be := pgproto3.NewBackend(srv, srv)
 

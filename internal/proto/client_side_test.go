@@ -1,23 +1,16 @@
 package proto
 
 import (
-	"net"
 	"testing"
 	"time"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
 
-func newPipe(t *testing.T) (a, b net.Conn) {
-	t.Helper()
-	a, b = net.Pipe()
-	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
-	return
-}
-
 func TestClientSideReceiveStartup(t *testing.T) {
-	clt, srv := newPipe(t)
+	clt, srv := testutil.PipePair(t)
 	cs := NewClientSide(srv)
 
 	// Client encodes + writes a StartupMessage.
@@ -41,7 +34,7 @@ func TestClientSideReceiveStartup(t *testing.T) {
 }
 
 func TestClientSideSendAndFlush(t *testing.T) {
-	clt, srv := newPipe(t)
+	clt, srv := testutil.PipePair(t)
 	cs := NewClientSide(srv)
 
 	// Drive the server side and read back via a pgproto3 Frontend.
@@ -60,7 +53,7 @@ func TestClientSideSendAndFlush(t *testing.T) {
 }
 
 func TestClientSideRoundTripQuery(t *testing.T) {
-	clt, srv := newPipe(t)
+	clt, srv := testutil.PipePair(t)
 	cs := NewClientSide(srv)
 
 	// Client (in a goroutine) sends Startup, then a Query, then Terminate.
