@@ -14,10 +14,9 @@ import (
 )
 
 func TestCachedParamsEmptyBeforeAnyDial(t *testing.T) {
-	p := New("noop", func(_ context.Context) (*backend.Conn, error) {
+	p := newPool(t, "noop", func(_ context.Context) (*backend.Conn, error) {
 		return &backend.Conn{}, nil
-	}, Config{DefaultPoolSize: 1, Log: testutil.Discard})
-	defer p.Close()
+	}, Config{DefaultPoolSize: 1})
 	require.Nil(t, p.CachedParams())
 }
 
@@ -27,15 +26,14 @@ func TestCachedParamsCapturedOnFirstDial(t *testing.T) {
 		"client_encoding": "UTF8",
 		"TimeZone":        "Etc/UTC",
 	}
-	p := New("real-params", func(_ context.Context) (*backend.Conn, error) {
+	p := newPool(t, "real-params", func(_ context.Context) (*backend.Conn, error) {
 		// Copy because callers may mutate; defensive.
 		params := make(map[string]string, len(wantParams))
 		for k, v := range wantParams {
 			params[k] = v
 		}
 		return &backend.Conn{Params: params}, nil
-	}, Config{DefaultPoolSize: 2, Log: testutil.Discard})
-	defer p.Close()
+	}, Config{DefaultPoolSize: 2})
 
 	c, err := p.Acquire(context.Background())
 	require.NoError(t, err)
@@ -47,7 +45,7 @@ func TestCachedParamsCapturedOnFirstDial(t *testing.T) {
 
 func TestCachedParamsFirstDialWins(t *testing.T) {
 	dials := atomic.Int64{}
-	p := New("first-wins", func(_ context.Context) (*backend.Conn, error) {
+	p := newPool(t, "first-wins", func(_ context.Context) (*backend.Conn, error) {
 		n := dials.Add(1)
 		// Each dial returns a DIFFERENT server_version. We want to
 		// verify only the FIRST dial's params show up in the cache.
@@ -58,8 +56,7 @@ func TestCachedParamsFirstDialWins(t *testing.T) {
 			}[n],
 		}
 		return &backend.Conn{Params: params}, nil
-	}, Config{DefaultPoolSize: 2, Log: testutil.Discard})
-	defer p.Close()
+	}, Config{DefaultPoolSize: 2})
 
 	c1, _ := p.Acquire(context.Background())
 	c2, _ := p.Acquire(context.Background())
@@ -76,10 +73,9 @@ func TestCachedParamsFirstDialWins(t *testing.T) {
 func TestCachedParamsConcurrentCapture(t *testing.T) {
 	// Race-detector test: many goroutines acquiring simultaneously.
 	// captureParams must be safe and produce SOME deterministic snapshot.
-	p := New("concurrent", func(_ context.Context) (*backend.Conn, error) {
+	p := newPool(t, "concurrent", func(_ context.Context) (*backend.Conn, error) {
 		return &backend.Conn{Params: map[string]string{"k": "v"}}, nil
-	}, Config{DefaultPoolSize: 16, Log: testutil.Discard})
-	defer p.Close()
+	}, Config{DefaultPoolSize: 16})
 
 	const N = 16
 	var wg sync.WaitGroup
@@ -97,12 +93,11 @@ func TestCachedParamsConcurrentCapture(t *testing.T) {
 }
 
 func TestCachedParamsEmptyParamsDoNotPopulate(t *testing.T) {
-	p := New("empty-conn", func(_ context.Context) (*backend.Conn, error) {
+	p := newPool(t, "empty-conn", func(_ context.Context) (*backend.Conn, error) {
 		// A dial that returns a Conn with no Params (defensive against
 		// upstreams that hand us none — e.g. our test stubs).
 		return &backend.Conn{}, nil
-	}, Config{DefaultPoolSize: 1, Log: testutil.Discard})
-	defer p.Close()
+	}, Config{DefaultPoolSize: 1})
 
 	c, err := p.Acquire(context.Background())
 	require.NoError(t, err)
