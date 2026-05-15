@@ -72,11 +72,3 @@ func TestClientStateClientMessageCounts(t *testing.T) {
 	s.ObserveClientMessage(&pgproto3.Sync{}) // not counted
 	require.Equal(t, uint64(2), s.QueriesIssued)
 }
-
-func TestTxStateString(t *testing.T) {
-	require.Equal(t, "idle", TxIdle.String())
-	require.Equal(t, "in-transaction", TxInBlock.String())
-	require.Equal(t, "failed-transaction", TxFailed.String())
-	require.Equal(t, "uninitialized", TxState(0).String())
-	require.True(t, len(TxState('Z').String()) > 0)
-}

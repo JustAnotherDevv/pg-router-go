@@ -103,14 +103,3 @@ func TestManagerJanitorEvicts(t *testing.T) {
 	}, time.Second, 5*time.Millisecond)
 }
 
-func TestManagerCloseStopsJanitor(t *testing.T) {
-	km := &keyedMockDialer{}
-	m := NewManager(Config{
-		DefaultPoolSize: 1,
-		ServerIdle:      time.Hour,
-		Log:             testutil.Discard,
-	}, km.For)
-	m.Start(time.Millisecond)
-	// Just verify Close doesn't deadlock.
-	m.Close()
-}

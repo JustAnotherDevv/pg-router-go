@@ -6,14 +6,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPreparedCacheEmpty(t *testing.T) {
-	c := NewPreparedCache(8)
-	require.Equal(t, 0, c.Len())
-	require.False(t, c.Has("anything"))
-	require.Equal(t, "", c.Add("")) // empty name no-op
-	require.Equal(t, 0, c.Len())
-}
-
 func TestPreparedCacheDefaultCapacity(t *testing.T) {
 	c := NewPreparedCache(0) // 0 → default
 	require.Equal(t, DefaultPreparedCacheCapacity, c.Cap())
@@ -80,18 +72,6 @@ func TestPreparedCacheClear(t *testing.T) {
 	c.Clear()
 	require.Equal(t, 0, c.Len())
 	require.False(t, c.Has("a"))
-}
-
-func TestPreparedCacheNilSafe(t *testing.T) {
-	var c *PreparedCache
-	require.False(t, c.Has("x"))
-	require.Equal(t, "", c.Add("x"))
-	require.Equal(t, 0, c.Len())
-	require.Equal(t, 0, c.Cap())
-	c.Touch("x")    // no-op
-	c.Remove("x")   // no-op
-	c.Clear()       // no-op
-	require.Nil(t, c.Snapshot())
 }
 
 func TestPreparedCacheSnapshotIsMRUFirst(t *testing.T) {

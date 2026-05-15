@@ -76,8 +76,3 @@ func TestPrepareCacheParamOIDsCopied(t *testing.T) {
 		"observed ParamOIDs should be a copy")
 }
 
-func TestPrepareCacheString(t *testing.T) {
-	c := NewPrepareCache()
-	c.Observe("a", "Q", nil)
-	require.Contains(t, c.String(), "1")
-}

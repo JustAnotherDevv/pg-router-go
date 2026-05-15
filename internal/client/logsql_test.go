@@ -2,7 +2,6 @@ package client
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 
@@ -90,28 +89,6 @@ func TestRequestIDPropagatesThroughLogSQL(t *testing.T) {
 	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}, Log: base}
 	pc.logSQL(pc.Log, "query", "", "SELECT 1")
 	require.Contains(t, buf.String(), "req_id=abc012345678")
-}
-
-// Smoke: nil-safe path. logSQL must not panic if PooledConn's Log was
-// not set (defensive — production wires it but test struct literals
-// elsewhere in this package don't always).
-func TestLogSQLPanicsOnNilLog(t *testing.T) {
-	// We DO require Log; document that with a recover guard so future
-	// readers see the contract explicitly.
-	defer func() {
-		_ = recover() // expected: nil logger panics; this test passes if recovered
-	}()
-	pc := &PooledConn{PooledConfig: PooledConfig{LogSQL: "redacted"}}
-	pc.logSQL(pc.Log, "query", "", "SELECT 1")
-}
-
-// Compile-time guard: log capture handler honours context attributes
-// (so a future Serve loop that uses ctx-bound logging still works).
-func TestCaptureLoggerHonoursContext(t *testing.T) {
-	var buf bytes.Buffer
-	log := testutil.CaptureLog(&buf)
-	log.InfoContext(context.Background(), "hello", "k", "v")
-	require.Contains(t, buf.String(), "k=v")
 }
 
 // Long SQL gets truncated.

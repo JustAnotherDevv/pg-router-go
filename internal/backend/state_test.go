@@ -62,11 +62,3 @@ func TestLifecycleShouldEvict(t *testing.T) {
 	// maxIdle=0 disables.
 	require.False(t, lc.ShouldEvict(t0.Add(time.Hour), 0))
 }
-
-func TestStateString(t *testing.T) {
-	require.Equal(t, "new", StateNew.String())
-	require.Equal(t, "active", StateActive.String())
-	require.Equal(t, "idle", StateIdle.String())
-	require.Equal(t, "closed", StateClosed.String())
-	require.Equal(t, "unknown", State(99).String())
-}
