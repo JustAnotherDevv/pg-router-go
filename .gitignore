@@ -24,6 +24,7 @@ Thumbs.db
 *.local.yaml
 pgrouter.yaml
 !configs/pgrouter.yaml
+!test/bench/compare/pgrouter/pgrouter.yaml
 
 # Secrets
 *.key

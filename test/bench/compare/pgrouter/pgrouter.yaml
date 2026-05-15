@@ -1,0 +1,37 @@
+# pgrouter config for side-by-side bench. Mirrors pgbouncer + pgcat
+# settings: transaction mode, default_pool_size=20, trust auth.
+
+server:
+  listen_addr: 0.0.0.0
+  listen_port: 6434
+  max_client_conn: 1000
+
+pool:
+  mode: transaction
+  default_pool_size: 20
+  min_pool_size: 0
+  query_wait_timeout: 60s
+  server_idle_timeout: 600s
+  server_lifetime: 3600s
+  server_connect_timeout: 15s
+
+auth:
+  type: trust
+
+tls:
+  client_mode: disable
+  server_mode: disable
+
+metrics:
+  listen: ":9090"
+  path: /metrics
+
+logging:
+  level: warn
+  format: text
+
+databases:
+  postgres:
+    host: postgres
+    port: 5432
+    dbname: postgres
