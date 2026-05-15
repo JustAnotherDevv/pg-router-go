@@ -1,0 +1,28 @@
+## Pgcat config for side-by-side bench. Mirrors pgbouncer + pgrouter
+## settings: transaction mode, pool_size=20, trust auth, single shard.
+
+[general]
+host = "0.0.0.0"
+port = 6433
+admin_username = "admin"
+admin_password = "admin"
+worker_threads = 4
+prepared_statements = false
+
+[pools.postgres]
+pool_mode = "transaction"
+default_role = "any"
+query_parser_enabled = false
+primary_reads_enabled = true
+
+[pools.postgres.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+min_pool_size = 0
+server_lifetime = 3600000
+server_idle_timeout = 600000
+
+[pools.postgres.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "postgres"

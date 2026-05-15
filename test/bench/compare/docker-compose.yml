@@ -1,0 +1,98 @@
+# Side-by-side bench: postgres + 3 poolers (pgbouncer, pgcat, pgrouter).
+#
+# Ports (host → container):
+#   5432  postgres   (direct, baseline)
+#   6432  pgbouncer
+#   6433  pgcat
+#   6434  pgrouter
+#
+# All poolers point at the same postgres backend, transaction-mode,
+# pool_size=20, trust auth. The bench tool runs identical workloads
+# against each endpoint and we compare TPS + latency.
+#
+# Boot:    docker compose up -d --build
+# Run:     ./run.sh
+# Teardown: docker compose down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bench-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=500"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=2GB"
+      - "-c"
+      - "max_prepared_transactions=0"
+      - "-c"
+      - "log_min_duration_statement=-1"
+      - "-c"
+      - "fsync=off"           # bench-only: faster commits, NOT production
+      - "-c"
+      - "synchronous_commit=off"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: bench-pgbouncer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+      AUTH_TYPE: trust
+      ADMIN_USERS: postgres
+    ports:
+      - "6432:5432"
+
+  pgcat:
+    image: ghcr.io/postgresml/pgcat:latest
+    container_name: bench-pgcat
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./pgcat/pgcat.toml:/etc/pgcat/pgcat.toml:ro
+    command: ["pgcat", "/etc/pgcat/pgcat.toml"]
+    ports:
+      - "6433:6433"
+
+  pgrouter:
+    build:
+      context: ../../..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: bench
+        COMMIT: bench
+    image: pgrouter:bench
+    container_name: bench-pgrouter
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./pgrouter/pgrouter.yaml:/etc/pgrouter/pgrouter.yaml:ro
+    command: ["run", "--config", "/etc/pgrouter/pgrouter.yaml"]
+    ports:
+      - "6434:6434"
