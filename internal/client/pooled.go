@@ -484,9 +484,6 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// reply already).
 			if !suppressForward {
 				bConn.Frontend.Send(forwardMsg)
-				if err := bConn.Frontend.Flush(); err != nil {
-					return fmt.Errorf("server send: %w", err)
-				}
 			}
 
 			// In extended-protocol mode the backend only emits responses
@@ -498,6 +495,14 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// Sync arrives.
 			if !triggersBackendDrain(msg) {
 				continue
+			}
+
+			// Flush all buffered client→server messages at once.
+			// For extended protocol this batches Parse/Bind/Describe/
+			// Execute/Sync into a single write syscall instead of one
+			// per message. For simple Query this is a single message.
+			if err := bConn.Frontend.Flush(); err != nil {
+				return fmt.Errorf("server send: %w", err)
 			}
 
 			// query_timeout: arm a read deadline on the backend socket
@@ -641,9 +646,6 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			continue
 		}
 		in.be.Send(bmsg.(pgproto3.BackendMessage))
-		if err := in.be.Flush(); err != nil {
-			return out, curSpan, fmt.Errorf("client send: %w", err)
-		}
 		// Tx-state transitions → per-(db, user) counters.
 		prevTx := in.state.Tx()
 		if in.state.ObserveBackendMessage(bmsg) {
@@ -663,11 +665,17 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			if h.QueryTimeout > 0 {
 				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
 			}
+			if err := in.be.Flush(); err != nil {
+				return out, curSpan, fmt.Errorf("client send: %w", err)
+			}
 			return out, curSpan, nil
 		}
 		if _, ok := proto.IsReadyForQuery(bmsg); ok {
 			if h.QueryTimeout > 0 {
 				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
+			}
+			if err := in.be.Flush(); err != nil {
+				return out, curSpan, fmt.Errorf("client send: %w", err)
 			}
 			queryDur := time.Since(in.queryStart)
 			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
