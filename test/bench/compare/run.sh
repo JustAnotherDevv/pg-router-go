@@ -155,6 +155,81 @@ for pool in "${POOLS[@]}"; do
   done
 done
 
+# ──────────────────────────────────────────────────────────────
+# Pooler-relevant benchmarks: contention, storm, memory
+# ──────────────────────────────────────────────────────────────
+
+# Contention: 200 clients, each runs 500 queries of SELECT pg_sleep(0.01).
+# With pool_size=20, only 20 run at a time → 180 wait in queue.
+# Measures how well the pooler handles queue pressure.
+echo
+echo "=== contention matrix (200 clients, 500 tx each) ==="
+CONTENTION_CONC=200
+CONTENTION_TX=500
+for pool in "${POOLS[@]}"; do
+  port=${PORTS[$pool]}
+  label="contention pool=$pool  c=$CONTENTION_CONC"
+  cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $CONTENTION_CONC -t $CONTENTION_TX -mode contention"
+  printf '  %-50s ... ' "$label"
+  out=$($cmd 2>&1 | tee -a "$LOG")
+  # Parse contention output
+  tps=$(echo "$out"  | awk '/^  tps /{print $2}')
+  p50_total=$(echo "$out"  | awk '/^  p50 total/{print $3}')
+  p95_total=$(echo "$out"  | awk '/^  p95 total/{print $3}')
+  p99_total=$(echo "$out"  | awk '/^  p99 total/{print $3}')
+  p50_wait=$(echo "$out"   | awk '/^  p50 queue wait/{print $4}')
+  p95_wait=$(echo "$out"   | awk '/^  p95 queue wait/{print $4}')
+  errors=$(echo "$out"     | awk '/^  errors/{print $2}')
+  printf 'tps=%-10s p50_wait=%-10s errors=%s\n' "${tps:-?}" "${p50_wait:-?}" "${errors:-?}"
+  emit "contention" "contention" "$pool" "$CONTENTION_CONC" "${tps:-0}" "0" "${p50_total:-0}" "${p95_total:-0}" "${p99_total:-0}" "$cmd"
+done
+
+# Storm: 50 clients, each opens→queries→closes 100 times.
+# Measures connection setup+teardown overhead.
+echo
+echo "=== storm matrix (50 clients, 100 reconnects each) ==="
+STORM_CONC=50
+STORM_TX=100
+for pool in "${POOLS[@]}"; do
+  port=${PORTS[$pool]}
+  label="storm     pool=$pool  c=$STORM_CONC"
+  cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $STORM_CONC -t $STORM_TX -mode storm"
+  printf '  %-50s ... ' "$label"
+  out=$($cmd 2>&1 | tee -a "$LOG")
+  conn_per_sec=$(echo "$out" | awk '/^  conn\/sec/{print $2}')
+  p50=$(echo "$out"          | awk '/^  p50 conn time/{print $3}')
+  errors=$(echo "$out"       | awk '/^  errors/{print $2}')
+  printf 'conn/sec=%-10s p50=%-10s errors=%s\n' "${conn_per_sec:-?}" "${p50:-?}" "${errors:-?}"
+  emit "storm" "storm" "$pool" "$STORM_CONC" "${conn_per_sec:-0}" "0" "${p50:-0}" "0" "0" "$cmd"
+done
+
+# Memory: open 500 idle connections, hold 10s, measure container RSS.
+# Uses docker stats to capture actual Postgres/pooler memory.
+echo
+echo "=== memory matrix (500 idle connections, 10s hold) ==="
+MEM_CONC=500
+MEM_HOLD=10
+# First, get baseline (no extra connections)
+echo "  baseline memory (before idle connections):"
+docker stats --no-stream --format "{{.Name}}: {{.MemUsage}}" bench-pg bench-pgbouncer bench-pgcat bench-pgrouter 2>/dev/null | tee -a "$LOG" || true
+echo
+
+for pool in "${POOLS[@]}"; do
+  port=${PORTS[$pool]}
+  label="memory    pool=$pool  c=$MEM_CONC"
+  cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $MEM_CONC -t 1 -mode idle -hold $MEM_HOLD"
+  printf '  %-50s ... ' "$label"
+  out=$($cmd 2>&1 | tee -a "$LOG")
+  peak_rss=$(echo "$out" | awk '/^  peak RSS/{print $3}')
+  per_conn=$(echo "$out" | awk '/^  per-conn cost/{print $3}')
+  printf 'peak_rss=%-10s per_conn=%s\n' "${peak_rss:-?}" "${per_conn:-?}"
+  # Capture container memory after idle connections are open
+  echo "  container memory with $MEM_CONC idle connections:"
+  docker stats --no-stream --format "{{.Name}}: {{.MemUsage}}" bench-pg bench-pgbouncer bench-pgcat bench-pgrouter 2>/dev/null | tee -a "$LOG" || true
+  echo
+  emit "memory" "idle" "$pool" "$MEM_CONC" "0" "0" "0" "0" "0" "$cmd"
+done
+
 # Aggregate JSON → markdown.
 echo
 echo "=== aggregating ==="

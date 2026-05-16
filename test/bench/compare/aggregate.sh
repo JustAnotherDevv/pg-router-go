@@ -62,6 +62,62 @@ for pool in direct pgbouncer pgcat pgrouter; do
   done
 done
 
+# ──────────────────────────────────────────────────────────────
+# Pooler-relevant benchmarks: contention, storm, memory
+# ──────────────────────────────────────────────────────────────
+
+# Contention: queue wait under load (200 clients, small pool).
+echo "## contention  (200 clients, 500 tx each)"
+echo
+echo "Queue wait time when clients outnumber backends. Lower wait = better queue handling."
+echo
+echo "| pool | TPS | p50 total ms | p95 total ms | p99 total ms | p50 wait ms | errors |"
+echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+for pool in direct pgbouncer pgcat pgrouter; do
+  row=$(jq -r --arg p "$pool" \
+    'select(.tool=="contention" and .pool==$p) | "| \($p) | \(.tps) | \(.lat_p95_ms) | \(.lat_p99_ms) | — | — | — |"' \
+    "$JSONL" | head -1)
+  # Fallback: try to extract from raw fields
+  if [ -z "$row" ]; then
+    row=$(jq -r --arg p "$pool" \
+      'select(.tool=="contention" and .pool==$p) | "| \($p) | \(.tps) | — | — | — | — | — |"' \
+      "$JSONL" | head -1)
+  fi
+  echo "${row:-| $pool | — | — | — | — | — | — |}"
+done
+echo
+
+# Storm: connection setup+teardown rate.
+echo "## storm  (50 clients, 100 reconnects each)"
+echo
+echo "Connection handling rate. Higher conn/sec = lower overhead."
+echo
+echo "| pool | conn/sec | p50 conn time ms | errors |"
+echo "| --- | ---: | ---: | ---: |"
+for pool in direct pgbouncer pgcat pgrouter; do
+  row=$(jq -r --arg p "$pool" \
+    'select(.tool=="storm" and .pool==$p) | "| \($p) | \(.tps) | \(.lat_p50_ms) | — |"' \
+    "$JSONL" | head -1)
+  echo "${row:-| $pool | — | — | — |}"
+done
+echo
+
+# Memory: idle connection footprint.
+echo "## memory  (500 idle connections)"
+echo
+echo "Memory usage with many idle connections. Lower = better."
+echo "Note: also check \`docker stats\` output in raw.log for container-level RSS."
+echo
+echo "| pool | peak RSS (bench client) | per-conn cost |"
+echo "| --- | ---: | ---: |"
+for pool in direct pgbouncer pgcat pgrouter; do
+  row=$(jq -r --arg p "$pool" \
+    'select(.tool=="memory" and .pool==$p) | "| \($p) | — | — |"' \
+    "$JSONL" | head -1)
+  echo "${row:-| $pool | — | — |}"
+done
+echo
+
 echo
 echo "---"
 echo "_Generated: $(date -u +%FT%TZ) · `uname -srm`_"
