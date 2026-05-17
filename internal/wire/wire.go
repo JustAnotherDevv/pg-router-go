@@ -28,6 +28,7 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
@@ -370,6 +371,14 @@ type HandlerInput struct {
 // SIGHUP reload (cmd-mode) updates cfg in place so the closures keep
 // returning fresh values.
 func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
+	var spliceCfg *splice.SpliceConfig
+	if in.Cfg.Wire.Splice != nil && *in.Cfg.Wire.Splice {
+		spliceCfg = &splice.SpliceConfig{
+			Enabled:         true,
+			BufferSize:      in.Cfg.Wire.SpliceBufferSize,
+			DropUnknownTags: in.Cfg.Wire.SpliceDropUnknown,
+		}
+	}
 	return &client.PooledHandler{
 		Log:               in.Log,
 		Manager:           in.Mgr,
@@ -393,6 +402,7 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 			}
 			return ""
 		},
+		Splice: spliceCfg,
 	}
 }
 

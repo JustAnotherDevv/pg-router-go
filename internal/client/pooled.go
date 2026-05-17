@@ -47,6 +47,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -124,6 +125,19 @@ type PooledConfig struct {
 	// external dispatch, push into a buffered channel and drain
 	// elsewhere.
 	Hooks []QueryHook
+
+	// Splice tunes the splice forwarder for the backend→client drain
+	// path. nil = disabled (use the pgproto3 decode/re-encode path for
+	// every message). When set with Enabled=true, the drain loop
+	// bypasses pgproto3 for "boring" messages (DataRow, RowDescription,
+	// CommandComplete, ParseComplete, BindComplete, NoData, EmptyQuery,
+	// PortalSuspended) and only switches to the decoded path for
+	// messages that need observation (ParameterStatus, BackendKeyData,
+	// errors, RFQ, Copy*, etc).
+	//
+	// Phase A optimization; see internal/wire/splice/splice.go for
+	// the classification table + drain loop.
+	Splice *splice.SpliceConfig
 }
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -202,6 +216,15 @@ type PooledConn struct {
 	// lookup. Lazy-initialised on first Serve so tests that build a
 	// PooledConn struct literal don't have to populate it.
 	counters *stats.TenantCounters
+
+	// bConnSpliceReader is the *splice.RawReader that wraps the
+	// bConn.Frontend's internal chunkReader (via reflection). Both
+	// bConn.Frontend.Receive and splice.DrainSplice read from the
+	// SAME chunkReader, so byte positions stay consistent and the
+	// chunkReader's over-read buf is shared. Set when a backend is
+	// acquired and Splice is enabled; nil when no backend is attached
+	// or Splice is disabled. See setupSplice.
+	bConnSpliceReader *splice.RawReader
 }
 
 // NewPooledConn returns a PooledConn with production defaults applied:
@@ -221,6 +244,64 @@ func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]strin
 		Pool:              p,
 		resetOnReleaseSet: true,
 	}
+}
+
+// setupSplice wires the splice forwarder onto a freshly acquired
+// backend. The key insight: the splice drain loop and the caller's
+// bConn.Frontend.Receive() must SHARE the pgproto3 chunkReader so that
+// bytes the chunkReader over-reads into its 8KB buf are visible to both
+// readers — otherwise DrainSplice blocks on bytes that Frontend has
+// already consumed.
+//
+// The wiring is:
+//   - bConn.Frontend is reconstructed with bConn.NetConn (the raw
+//     backend conn) as its reader. Internally pgproto3 builds a
+//     chunkReader that reads from bConn.NetConn.
+//   - splice.RawReader (reflection) reaches into that chunkReader so
+//     DrainSplice reads from the SAME chunkReader.
+//   - splice.PutbackReader wraps RawReader with a 5-byte putback
+//     buffer; DrainSplice uses PutbackReader.Putback to "unread" the
+//     header of a non-boring message. Subsequent reads (from either
+//     DrainSplice or Frontend.Receive) flow through the putback buffer
+//     first, then through chunkReader.
+//
+// Safe to call when Splice is nil or disabled — it's a no-op in that
+// case (and clears any stale PutbackReader). The previous bConn.Frontend
+// is left intact for callers that still reference it.
+//
+// PooledConn owners MUST call this every time a NEW bConn is acquired
+// (not on every drain call), because the new PutbackReader needs an
+// empty putback state and a matching bConn.Frontend. For transaction
+// mode this is "every query"; for session-pinned mode it's "the first
+// acquire" and we re-use the PutbackReader for the session.
+func (h *PooledConn) setupSplice(bConn *backend.Conn) {
+	if h.Splice == nil || !h.Splice.Enabled || bConn == nil {
+		h.bConnSpliceReader = nil
+		return
+	}
+	// Replace bConn.Frontend so its chunkReader reads from bConn.NetConn
+	// directly. We will then reach into that chunkReader via reflection.
+	bConn.Frontend = pgproto3.NewFrontend(bConn.NetConn, bConn.NetConn)
+	raw, err := splice.NewRawReader(bConn.Frontend)
+	if err != nil {
+		// Fall back to non-splice: log a warning and leave Frontend
+		// with the original reader. Better to log+regress than crash.
+		if h.Log != nil {
+			h.Log.Warn("splice: reflection init failed; splice disabled for this conn", "err", err)
+		}
+		h.bConnSpliceReader = nil
+		return
+	}
+	h.bConnSpliceReader = raw
+}
+
+// spliceBufSize returns the configured splice buffer size, with a sane
+// fallback to the wire package's default when the config is missing.
+func spliceBufSize(cfg *splice.SpliceConfig) int {
+	if cfg == nil || cfg.BufferSize <= 0 {
+		return splice.DefaultSpliceConfig().BufferSize
+	}
+	return cfg.BufferSize
 }
 
 // Serve runs the pooled handler against an already-authenticated client.
@@ -446,6 +527,12 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			bConnPool = acquirePool
 			log.Debug("backend acquired", "backend_pid", bConn.PostgresPID)
 
+			// Phase A: wire splice forwarder onto the freshly acquired
+			// backend. The new bConn.Frontend reads through the
+			// PutbackReader so splice's putback is consumed by
+			// Receive() next iteration.
+			h.setupSplice(bConn)
+
 			// Replay tracked GUCs on the fresh backend BEFORE the
 			// client's message hits it. Skip if cache is empty (the
 			// common case).
@@ -510,6 +597,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			out, updatedSpan, err := h.drainBackendUntilRFQ(drainInput{
 				bConn:          bConn,
 				be:             be,
+				clientConn:     conn,
 				log:            log,
 				state:          state,
 				pendingEvictCC: &pendingEvictCloseCompletes,
@@ -519,6 +607,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				lastPrepName:   lastPrepName,
 				curSpan:        curSpan,
 				sessionPinned:  sessionPinned,
+				spliceReader:   h.bConnSpliceReader,
+				spliceBufSize:  spliceBufSize(h.Splice),
 			})
 			if err != nil {
 				return err
@@ -586,6 +676,14 @@ func (h *PooledConn) selectPoolForMsg(
 type drainInput struct {
 	bConn          *backend.Conn
 	be             *pgproto3.Backend
+	// clientConn is the raw client-facing net.Conn (may be wrapped in
+	// CountingConn for byte accounting). DrainSplice writes the
+	// spliced boring bytes directly to it (bypassing pgproto3.Backend's
+	// internal buffer) so the entire payload goes out in one write.
+	// We flush be (which uses the SAME clientConn) before AND after the
+	// splice to preserve message ordering with any pending decoded
+	// data.
+	clientConn     net.Conn
 	log            *slog.Logger
 	state          *ClientState
 	pendingEvictCC *int
@@ -595,6 +693,16 @@ type drainInput struct {
 	lastPrepName   string
 	curSpan        trace.Span
 	sessionPinned  bool
+
+	// spliceReader, when non-nil, is the RawReader that wraps
+	// bConn.Frontend's internal chunkReader (via reflection). Both
+	// bConn.Frontend.Receive and the splice drain loop read from the
+	// SAME chunkReader, so the chunkReader's over-read buf is shared
+	// and the splice loop can "rewind" 5 bytes to put a header back
+	// for the next Frontend.Receive call. nil = splice disabled.
+	spliceReader *splice.RawReader
+	// spliceBufSize is the buffer size hint passed to DrainSplice.
+	spliceBufSize int
 }
 
 // drainOutcome is what the outer loop needs to act on:
@@ -612,16 +720,61 @@ type drainOutcome struct {
 //
 //   - CloseComplete frames produced by LRU evictions are filtered out
 //   - all other frames are forwarded to the client
-//   - tx-state transitions emit the appropriate counter
+//   - tx-state transitions emit the the appropriate counter
 //   - RFQ triggers onQueryComplete (which ends curSpan)
 //
 // Returns the updated curSpan (nil after RFQ-driven onQueryComplete).
 // The outer loop owns the bConn/bConnPool Release decision; this
 // helper only signals whether release is safe via outcome.shouldRelease.
+//
+// Phase A splice forwarder:
+//   - If in.spliceReader is non-nil, the loop first calls
+//     splice.DrainSplice to forward "boring" messages (DataRow,
+//     RowDescription, CommandComplete, ParseComplete, BindComplete,
+//     NoData, EmptyQuery, PortalSuspended) as raw bytes — bypassing
+//     pgproto3 decode/re-encode for the hot path.
+//   - DrainSplice stops when it hits a non-boring message and puts
+//     the 5-byte header back via the PutbackReader. The next
+//     bConn.Frontend.Receive() picks up the putback bytes and
+//     decodes the interesting message the normal way.
+//   - DrainSplice writes directly to bConn.NetConn (via in.be's
+//     writer side), so we Flush in.be before splice starts to
+//     preserve message ordering with any pending decoded data.
+//   - On any I/O error, splice returns the error verbatim; the loop
+//     exits and the caller closes the backend.
 func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Span, error) {
 	out := drainOutcome{}
 	curSpan := in.curSpan
 	for {
+		// Phase A: splice forward boring messages. On ErrSpliceStop
+		// the next bmsg is the non-boring message the splice put
+		// back into the reader — fall through to Receive() to
+		// decode it the normal way.
+		if in.spliceReader != nil {
+			if err := in.be.Flush(); err != nil {
+				return out, curSpan, fmt.Errorf("client flush pre-splice: %w", err)
+			}
+			serr := splice.DrainSplice(in.clientConn, in.spliceReader, in.spliceBufSize)
+			if serr != nil {
+				if errors.Is(serr, splice.ErrSpliceStop) {
+					// Fall through to Receive() to decode the
+					// interesting message that was put back.
+				} else if errors.Is(serr, io.EOF) {
+					// Backend closed the conn mid-drain.
+					return out, curSpan, nil
+				} else if isTimeoutErr(serr) && h.QueryTimeout > 0 {
+					out.queryTimedOut = true
+					h.counters.OnQueryTimeout()
+					in.log.Info("query_timeout fired; closing backend",
+						"timeout", h.QueryTimeout,
+					)
+					return out, curSpan, nil
+				} else {
+					return out, curSpan, fmt.Errorf("splice drain: %w", serr)
+				}
+			}
+		}
+
 		bmsg, err := in.bConn.Frontend.Receive()
 		if err != nil {
 			if isTimeoutErr(err) && h.QueryTimeout > 0 {

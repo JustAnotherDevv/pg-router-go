@@ -16,8 +16,33 @@ type Config struct {
 	TLS       TLSConfig                   `yaml:"tls,omitempty"`
 	Metrics   MetricsConfig               `yaml:"metrics,omitempty"`
 	Logging   LoggingConfig               `yaml:"logging,omitempty"`
+	Wire      WireConfig                  `yaml:"wire,omitempty"`
 	Databases map[string]DatabaseConfig   `yaml:"databases"`
 	Users     map[string]UserConfig       `yaml:"users,omitempty"`
+}
+
+// WireConfig tunes the low-level wire forwarding path. Phase A's
+// splice forwarder lives here; future hot-path knobs (e.g. buffered
+// backend writer from Phase B) will be added alongside.
+type WireConfig struct {
+	// Splice enables the splice forwarder for backend→client drain.
+	// Default true. Set false to fall back to the original
+	// pgproto3-decode hot path (useful for bisecting regressions).
+	Splice *bool `yaml:"splice,omitempty"`
+
+	// SpliceBufferSize is the size of the pooled splice working
+	// buffer, in bytes. Single boring messages with body > (size - 5)
+	// fall back to a two-write path; everything else is a single
+	// write. Must be >= 5. Default 8192 (8 KiB) — matches typical
+	// kernel socket buffer + handles any single Postgres message.
+	SpliceBufferSize int `yaml:"splice_buffer_size,omitempty"`
+
+	// SpliceDropUnknown, when true, drops backend messages whose tag
+	// byte isn't in the known tag table instead of splicing them
+	// forward. Default false (forward as boring). Use only if you're
+	// debugging a protocol mismatch and don't want unknown tags
+	// reaching the client.
+	SpliceDropUnknown bool `yaml:"splice_drop_unknown,omitempty"`
 }
 
 // ServerConfig controls the listening side.

@@ -87,6 +87,18 @@ func applyDefaults(cfg *Config) {
 		cfg.Logging.LogSQL = string(LogSQLRedacted)
 	}
 
+	// Wire.
+	if cfg.Wire.Splice == nil {
+		// Default to enabled — Phase A's hot-path win only matters
+		// if operators actually use it. Set `wire.splice: false` to
+		// bisect a regression.
+		en := true
+		cfg.Wire.Splice = &en
+	}
+	if cfg.Wire.SpliceBufferSize == 0 {
+		cfg.Wire.SpliceBufferSize = 8 * 1024
+	}
+
 	// Per-database fills.
 	for name, db := range cfg.Databases {
 		if db.Port == 0 {

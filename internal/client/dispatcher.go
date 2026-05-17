@@ -31,6 +31,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
 )
 
 // PooledHandler is the production dispatcher. Fields can be nil for
@@ -100,6 +101,13 @@ type PooledHandler struct {
 	// AdminReload, if non-nil, is the RELOAD admin-console handler. Same
 	// closure as the HTTP /api/v1/reload handler.
 	AdminReload func() error
+
+	// Splice configures the Phase A splice forwarder for the
+	// backend→client drain path. nil = splice disabled (the original
+	// pgproto3 decode/re-encode is used for every message). When set
+	// with Enabled=true, the drain loop bypasses pgproto3 for "boring"
+	// messages. See internal/wire/splice for the classification.
+	Splice *splice.SpliceConfig
 
 	// Router answers per-tenant routing questions (replica pick,
 	// sticky-read window, primary health, QPS cap). nil → routing
@@ -313,6 +321,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			LogSQL:            h.LogSQL,
 			PoolMode:          mode,
 			Audit:             h.Audit,
+			Splice:            h.Splice,
 		},
 		Log:           log,
 		Pool:          p,

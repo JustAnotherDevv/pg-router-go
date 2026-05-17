@@ -36,3 +36,8 @@ databases:
     port: 5432
     user: postgres
     dbname: postgres
+
+wire:
+  splice: true
+  splice_buffer_size: 8192
+  splice_drop_unknown: false
