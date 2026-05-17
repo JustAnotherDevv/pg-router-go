@@ -13,15 +13,21 @@ set -euo pipefail
 
 DURATION=${DURATION:-20}
 SCALE=${SCALE:-10}
+ROUNDS=${ROUNDS:-3}  # runs per (mode,conc,pool) tuple; aggregate keeps all
 WARMUP=${WARMUP:-5}
 
 # Endpoint matrix. host=127.0.0.1 from the bench-runner's perspective;
-# all four services bind to host ports.
+# all four services bind to host ports. Override via env if needed (e.g.
+# VPS with port conflicts uses 1xxxx prefix).
+: "${PORT_DIRECT:=5432}"
+: "${PORT_PGBOUNCER:=6432}"
+: "${PORT_PGCAT:=6433}"
+: "${PORT_PGROUTER:=6434}"
 declare -A PORTS=(
-  [direct]=5432
-  [pgbouncer]=6432
-  [pgcat]=6433
-  [pgrouter]=6434
+  [direct]="$PORT_DIRECT"
+  [pgbouncer]="$PORT_PGBOUNCER"
+  [pgcat]="$PORT_PGCAT"
+  [pgrouter]="$PORT_PGROUTER"
 )
 POOLS=(direct pgbouncer pgcat pgrouter)
 CONCS=(1 8 32)
@@ -63,10 +69,13 @@ for p in "${POOLS[@]}"; do
 done
 
 # pgbench -i once via direct connection (initializes pgbench_* tables in postgres).
-echo
-echo "=== pgbench -i (scale=$SCALE) via direct ==="
-PGPASSWORD=postgres pgbench -h 127.0.0.1 -p 5432 -U postgres -d postgres \
-  -i -s "$SCALE" -q 2>&1 | tee -a "$LOG"
+# Skip via SKIP_PGBENCH=1 if tables already initialized.
+if [ "${SKIP_PGBENCH:-0}" != "1" ]; then
+  echo
+  echo "=== pgbench -i (scale=$SCALE) via direct ==="
+  PGPASSWORD=postgres pgbench -h 127.0.0.1 -p "${PORTS[direct]}" -U postgres -d postgres \
+    -i -s "$SCALE" -q 2>&1 | tee -a "$LOG"
+fi
 
 # Helper: append a JSON object to JSONL (uses jq).
 emit() {
@@ -95,23 +104,32 @@ parse_pgbench() {
 }
 
 # pgbench runs (SELECT-only, two protocol modes).
+# Interleaved: for each (mode,conc), all 4 poolers run back-to-back to even
+# out VPS drift. Each (mode,conc,pool) is repeated ROUNDS times; aggregate
+# keeps all samples and reports median/mean.
 echo
-echo "=== pgbench matrix ==="
-for mode in "${MODES[@]}"; do
-  for pool in "${POOLS[@]}"; do
-    port=${PORTS[$pool]}
+echo "=== pgbench matrix (interleaved poolers, $ROUNDS rounds) ==="
+if [ "${SKIP_PGBENCH:-0}" != "1" ]; then
+  for mode in "${MODES[@]}"; do
     for c in "${CONCS[@]}"; do
       j=$c   # threads = clients (1:1)
-      label="pgbench  pool=$pool  mode=$mode  c=$c"
-      cmd="pgbench -h 127.0.0.1 -p $port -U postgres -d postgres -S -M $mode -c $c -j $j -T $DURATION -P 5 --no-vacuum"
-      printf '  %-50s ... ' "$label"
-      out=$(PGPASSWORD=postgres $cmd 2>&1 | tee -a "$LOG")
-      read tps lat <<<"$(parse_pgbench "$out")"
-      printf 'tps=%-10s lat_avg=%-6sms\n' "$tps" "$lat"
-      emit "pgbench" "select-$mode" "$pool" "$c" "$tps" "$lat" "0" "0" "0" "$cmd"
+      for round in $(seq 1 "$ROUNDS"); do
+        for pool in "${POOLS[@]}"; do
+          port=${PORTS[$pool]}
+          label="pgbench  pool=$pool  mode=$mode  c=$c  r=$round"
+          cmd="pgbench -h 127.0.0.1 -p $port -U postgres -d postgres -S -M $mode -c $c -j $j -T $DURATION -P 5 --no-vacuum"
+          printf '  %-50s ... ' "$label"
+          out=$(PGPASSWORD=postgres $cmd 2>&1)
+          # Log only the final summary lines (skip per-5s progress to keep raw.log small).
+          echo "$out" | awk '/^tps =|^latency average|^SQL|^number of transactions/' >> "$LOG"
+          read tps lat <<<"$(parse_pgbench "$out")"
+          printf 'tps=%-10s lat_avg=%-6sms\n' "$tps" "$lat"
+          emit "pgbench" "select-$mode" "$pool" "$c" "$tps" "$lat" "0" "0" "0" "$cmd"
+        done
+      done
     done
   done
-done
+fi
 
 # Build pgx-bench (Go tool, already in repo).
 echo
@@ -140,20 +158,26 @@ parse_pgxbench() {
 }
 
 echo
-echo "=== pgx-bench matrix (extended) ==="
+echo "=== pgx-bench matrix (extended, interleaved poolers, $ROUNDS rounds) ==="
 TX_PER_CLIENT=2000
-for pool in "${POOLS[@]}"; do
-  port=${PORTS[$pool]}
+if [ "${SKIP_PGXBENCH:-0}" != "1" ]; then
   for c in "${CONCS[@]}"; do
-    label="pgxbench pool=$pool  c=$c"
-    cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $c -t $TX_PER_CLIENT -mode extended -warmup 50"
-    printf '  %-50s ... ' "$label"
-    out=$($cmd 2>&1 | tee -a "$LOG")
-    read tps p50 p95 p99 <<<"$(parse_pgxbench "$out")"
-    printf 'tps=%-10s p95=%-8sms\n' "$tps" "$p95"
-    emit "pgxbench" "extended" "$pool" "$c" "$tps" "0" "$p50" "$p95" "$p99" "$cmd"
+    for round in $(seq 1 "$ROUNDS"); do
+      for pool in "${POOLS[@]}"; do
+        port=${PORTS[$pool]}
+        label="pgxbench pool=$pool  c=$c  r=$round"
+        cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $c -t $TX_PER_CLIENT -mode extended -warmup 50"
+        printf '  %-50s ... ' "$label"
+        # PGPASSWORD=postgres required by pgcat (others use trust); harmless otherwise.
+        out=$(PGPASSWORD=postgres $cmd 2>&1)
+        echo "$out" >> "$LOG"
+        read tps p50 p95 p99 <<<"$(parse_pgxbench "$out")"
+        printf 'tps=%-10s p95=%-8sms\n' "$tps" "$p95"
+        emit "pgxbench" "extended" "$pool" "$c" "$tps" "0" "$p50" "$p95" "$p99" "$cmd"
+      done
+    done
   done
-done
+fi
 
 # ──────────────────────────────────────────────────────────────
 # Pooler-relevant benchmarks: contention, storm, memory
@@ -163,44 +187,52 @@ done
 # With pool_size=20, only 20 run at a time → 180 wait in queue.
 # Measures how well the pooler handles queue pressure.
 echo
-echo "=== contention matrix (200 clients, 500 tx each) ==="
+echo "=== contention matrix (200 clients, 500 tx each, $ROUNDS rounds) ==="
 CONTENTION_CONC=200
 CONTENTION_TX=500
-for pool in "${POOLS[@]}"; do
-  port=${PORTS[$pool]}
-  label="contention pool=$pool  c=$CONTENTION_CONC"
-  cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $CONTENTION_CONC -t $CONTENTION_TX -mode contention"
-  printf '  %-50s ... ' "$label"
-  out=$($cmd 2>&1 | tee -a "$LOG")
-  # Parse contention output
-  tps=$(echo "$out"  | awk '/^  tps /{print $2}')
-  p50_total=$(echo "$out"  | awk '/^  p50 total/{print $3}')
-  p95_total=$(echo "$out"  | awk '/^  p95 total/{print $3}')
-  p99_total=$(echo "$out"  | awk '/^  p99 total/{print $3}')
-  p50_wait=$(echo "$out"   | awk '/^  p50 queue wait/{print $4}')
-  p95_wait=$(echo "$out"   | awk '/^  p95 queue wait/{print $4}')
-  errors=$(echo "$out"     | awk '/^  errors/{print $2}')
-  printf 'tps=%-10s p50_wait=%-10s errors=%s\n' "${tps:-?}" "${p50_wait:-?}" "${errors:-?}"
-  emit "contention" "contention" "$pool" "$CONTENTION_CONC" "${tps:-0}" "0" "${p50_total:-0}" "${p95_total:-0}" "${p99_total:-0}" "$cmd"
+for round in $(seq 1 "$ROUNDS"); do
+  for pool in "${POOLS[@]}"; do
+    port=${PORTS[$pool]}
+    label="contention pool=$pool  c=$CONTENTION_CONC  r=$round"
+    cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $CONTENTION_CONC -t $CONTENTION_TX -mode contention"
+    printf '  %-50s ... ' "$label"
+    # PGPASSWORD=postgres required by pgcat; harmless for trust-auth poolers.
+    out=$(PGPASSWORD=postgres $cmd 2>&1)
+    echo "$out" >> "$LOG"
+    # Parse contention output (strip "ms" suffix so values are valid JSON numbers).
+    tps=$(echo "$out"  | awk '/^  tps /{print $2}')
+    p50_total=$(echo "$out"  | awk '/^  p50 total/{print $3}'     | sed 's/ms$//')
+    p95_total=$(echo "$out"  | awk '/^  p95 total/{print $3}'     | sed 's/ms$//')
+    p99_total=$(echo "$out"  | awk '/^  p99 total/{print $3}'     | sed 's/ms$//')
+    p50_wait=$(echo "$out"   | awk '/^  p50 queue wait/{print $4}' | sed 's/ms$//')
+    p95_wait=$(echo "$out"   | awk '/^  p95 queue wait/{print $4}' | sed 's/ms$//')
+    errors=$(echo "$out"     | awk '/^  errors/{print $2}')
+    printf 'tps=%-10s p50_wait=%-10s errors=%s\n' "${tps:-?}" "${p50_wait:-?}" "${errors:-?}"
+    emit "contention" "contention" "$pool" "$CONTENTION_CONC" "${tps:-0}" "0" "${p50_total:-0}" "${p95_total:-0}" "${p99_total:-0}" "$cmd"
+  done
 done
 
 # Storm: 50 clients, each opens→queries→closes 100 times.
 # Measures connection setup+teardown overhead.
 echo
-echo "=== storm matrix (50 clients, 100 reconnects each) ==="
+echo "=== storm matrix (50 clients, 100 reconnects each, $ROUNDS rounds) ==="
 STORM_CONC=50
 STORM_TX=100
-for pool in "${POOLS[@]}"; do
-  port=${PORTS[$pool]}
-  label="storm     pool=$pool  c=$STORM_CONC"
-  cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $STORM_CONC -t $STORM_TX -mode storm"
+for round in $(seq 1 "$ROUNDS"); do
+  for pool in "${POOLS[@]}"; do
+    port=${PORTS[$pool]}
+    label="storm     pool=$pool  c=$STORM_CONC  r=$round"
+    cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $STORM_CONC -t $STORM_TX -mode storm"
   printf '  %-50s ... ' "$label"
-  out=$($cmd 2>&1 | tee -a "$LOG")
+  # PGPASSWORD=postgres required by pgcat; harmless for trust-auth poolers.
+  out=$(PGPASSWORD=postgres $cmd 2>&1)
+  echo "$out" >> "$LOG"
   conn_per_sec=$(echo "$out" | awk '/^  conn\/sec/{print $2}')
-  p50=$(echo "$out"          | awk '/^  p50 conn time/{print $3}')
-  errors=$(echo "$out"       | awk '/^  errors/{print $2}')
-  printf 'conn/sec=%-10s p50=%-10s errors=%s\n' "${conn_per_sec:-?}" "${p50:-?}" "${errors:-?}"
-  emit "storm" "storm" "$pool" "$STORM_CONC" "${conn_per_sec:-0}" "0" "${p50:-0}" "0" "0" "$cmd"
+    p50=$(echo "$out"          | awk '/^  p50 conn time/{print $4}' | sed 's/ms$//')
+    errors=$(echo "$out"       | awk '/^  errors/{print $2}')
+    printf 'conn/sec=%-10s p50=%-10s errors=%s\n' "${conn_per_sec:-?}" "${p50:-?}" "${errors:-?}"
+    emit "storm" "storm" "$pool" "$STORM_CONC" "${conn_per_sec:-0}" "0" "${p50:-0}" "0" "0" "$cmd"
+  done
 done
 
 # Memory: open 500 idle connections, hold 10s, measure container RSS.
@@ -214,12 +246,15 @@ echo "  baseline memory (before idle connections):"
 docker stats --no-stream --format "{{.Name}}: {{.MemUsage}}" bench-pg bench-pgbouncer bench-pgcat bench-pgrouter 2>/dev/null | tee -a "$LOG" || true
 echo
 
+# Memory benchmark is deterministic (500 conns held 10s); one round is enough.
 for pool in "${POOLS[@]}"; do
   port=${PORTS[$pool]}
   label="memory    pool=$pool  c=$MEM_CONC"
   cmd="./pgx-bench -dsn postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable -c $MEM_CONC -t 1 -mode idle -hold $MEM_HOLD"
   printf '  %-50s ... ' "$label"
-  out=$($cmd 2>&1 | tee -a "$LOG")
+  # PGPASSWORD=postgres required by pgcat; harmless for trust-auth poolers.
+  out=$(PGPASSWORD=postgres $cmd 2>&1)
+  echo "$out" >> "$LOG"
   peak_rss=$(echo "$out" | awk '/^  peak RSS/{print $3}')
   per_conn=$(echo "$out" | awk '/^  per-conn cost/{print $3}')
   printf 'peak_rss=%-10s per_conn=%s\n' "${peak_rss:-?}" "${per_conn:-?}"
