@@ -4,6 +4,12 @@
 #   make deps-down  -> tears down + removes volumes
 #
 # Production deploy lives in deploy/Dockerfile (added in M.15).
+#
+# SECURITY: ports bound to 127.0.0.1 only. Trust auth is safe here
+# because the port is loopback-only. Do NOT change "127.0.0.1:PORT:5432"
+# to "PORT:5432" — that would publish to 0.0.0.0 and combine with
+# trust auth to give any internet scanner full superuser RCE.
+# See scripts/check-compose-security.sh.
 
 services:
   pg15:

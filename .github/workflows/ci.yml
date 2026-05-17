@@ -95,3 +95,13 @@ jobs:
         with:
           version: v2.6.0
         continue-on-error: true
+
+  lint-compose:
+    # Block any PR that publishes a database port to 0.0.0.0.
+    # Postgres trust auth on a public port = RCE in seconds
+    # (see VPS_INCIDENT_POSTMORTEM.md, gitignored).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check no docker-compose file publishes DB ports publicly
+        run: bash scripts/check-compose-security.sh

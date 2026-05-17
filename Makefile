@@ -1,5 +1,5 @@
 .PHONY: build build-all test test-unit test-integration test-pg15 test-pg16 \
-        lint clean cover run help fmt deps-up deps-down
+        lint lint-compose clean cover run help fmt deps-up deps-down
 
 BINARY  := pgrouter
 PKG     := ./...
@@ -19,6 +19,7 @@ help:
 	@echo "  deps-up            start PG 15 + PG 16 test containers"
 	@echo "  deps-down          stop + remove PG test containers"
 	@echo "  lint               run golangci-lint"
+	@echo "  lint-compose       run docker-compose security lint (no public DB ports)"
 	@echo "  fmt                run gofmt + goimports"
 	@echo "  cover              generate coverage report (coverage.html)"
 	@echo "  run                build and run with default config"
@@ -64,6 +65,10 @@ lint:
 	  echo "golangci-lint not installed. See: https://golangci-lint.run/welcome/install/"; \
 	  exit 1; }
 	golangci-lint run
+
+lint-compose:
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
+	bash scripts/check-compose-security.sh
 
 fmt:
 	gofmt -w -s .

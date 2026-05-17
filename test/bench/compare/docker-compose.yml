@@ -1,14 +1,29 @@
 # Side-by-side bench: postgres + 3 poolers (pgbouncer, pgcat, pgrouter).
 #
-# Ports (host → container):
+# Ports (host → container) — ALL bound to 127.0.0.1 only:
 #   5432  postgres   (direct, baseline)
 #   6432  pgbouncer
 #   6433  pgcat
 #   6434  pgrouter
 #
 # All poolers point at the same postgres backend, transaction-mode,
-# pool_size=20, trust auth. The bench tool runs identical workloads
-# against each endpoint and we compare TPS + latency.
+# pool_size=20, trust auth. Trust auth is safe here because the port
+# is bound to localhost — only processes on this host can reach it.
+# The bench runner (run.sh) connects via 127.0.0.1, so this works
+# on a dev laptop, in CI (which uses its own services: block), and
+# on a VPS where the host runs the bench directly.
+#
+# SECURITY NOTE: do NOT change the port bindings to "PORT:PORT"
+# (which Docker interprets as 0.0.0.0:PORT). Postgres trust auth
+# on a public port = full superuser RCE within seconds (mass
+# scanner → COPY ... FROM PROGRAM → botnet).  See
+# VPS_INCIDENT_POSTMORTEM.md (gitignored) for the full story.
+#
+# If you need a different bind (e.g., bench from another host on
+# a private network), override the port mapping at the CLI:
+#   docker compose -f test/bench/compare/docker-compose.yml run \
+#     -p 5432:5432 postgres
+# or edit the port mappings explicitly to a private CIDR.
 #
 # Boot:    docker compose up -d --build
 # Run:     ./run.sh
@@ -22,9 +37,9 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_HOST_AUTH_METHOD: trust   # safe: port bound to 127.0.0.1
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"            # localhost only, NOT 0.0.0.0
     command:
       - "postgres"
       - "-c"
@@ -65,7 +80,7 @@ services:
       AUTH_TYPE: trust
       ADMIN_USERS: postgres
     ports:
-      - "6432:5432"
+      - "127.0.0.1:6432:5432"             # localhost only
 
   pgcat:
     image: ghcr.io/postgresml/pgcat:latest
@@ -77,7 +92,7 @@ services:
       - ./pgcat/pgcat.toml:/etc/pgcat/pgcat.toml:ro
     command: ["pgcat", "/etc/pgcat/pgcat.toml"]
     ports:
-      - "6433:6433"
+      - "127.0.0.1:6433:6433"             # localhost only
 
   pgrouter:
     build:
@@ -95,4 +110,4 @@ services:
       - ./pgrouter/pgrouter.yaml:/etc/pgrouter/pgrouter.yaml:ro
     command: ["run", "--config", "/etc/pgrouter/pgrouter.yaml"]
     ports:
-      - "6434:6434"
+      - "127.0.0.1:6434:6434"             # localhost only
