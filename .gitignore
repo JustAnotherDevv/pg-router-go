@@ -36,6 +36,9 @@ pgrouter.yaml
 # Security incident post-mortem (contains VPS creds, attacker IPs, exploit details)
 VPS_INCIDENT_POSTMORTEM.md
 
+# Internal design notes (not tracked in git)
+DESIGN_NOTES.md
+
 # Local VPS transfer tars (VPS payloads used for one-off file sync)
 splice-payload*.tar
 splice-payload*.tar.b64

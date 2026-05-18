@@ -56,6 +56,8 @@ type WireConfig struct {
 	// the cache-hit rate is low and the per-Parse hash + map lookup
 	// overhead shows up as a net regression.
 	PreparedCache *bool `yaml:"prepared_cache,omitempty"`
+
+
 }
 
 // ServerConfig controls the listening side.

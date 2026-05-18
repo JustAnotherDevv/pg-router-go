@@ -33,6 +33,8 @@ type TenantCounters struct {
 	PreparedMiss      prometheus.Counter
 	PreparedEviction  prometheus.Counter
 	QueryDuration     prometheus.Observer
+	BytesIn           prometheus.Counter
+	BytesOut          prometheus.Counter
 }
 
 // NewTenantCounters resolves every per-tenant handle in one batch.
@@ -55,6 +57,8 @@ func NewTenantCounters(db, user, app string) *TenantCounters {
 		PreparedMiss:      Active.PreparedMisses.WithLabelValues(db, user, app),
 		PreparedEviction:  Active.PreparedEvictions.WithLabelValues(db, user, app),
 		QueryDuration:     Active.QueryDurationSec.WithLabelValues(db, user, app),
+		BytesIn:           Active.BytesInPerTenant.WithLabelValues(db, user),
+		BytesOut:          Active.BytesOutPerTenant.WithLabelValues(db, user),
 	}
 }
 
@@ -132,5 +136,21 @@ func (t *TenantCounters) OnPreparedEviction() {
 func (t *TenantCounters) OnQueryDuration(seconds float64) {
 	if t != nil && t.QueryDuration != nil {
 		t.QueryDuration.Observe(seconds)
+	}
+}
+
+// OnBytesIn is the cached-handle equivalent of stats.OnBytesIn.
+// Called on every client Read — must be allocation-free.
+func (t *TenantCounters) OnBytesIn(n int) {
+	if t != nil && n > 0 && t.BytesIn != nil {
+		t.BytesIn.Add(float64(n))
+	}
+}
+
+// OnBytesOut is the cached-handle equivalent of stats.OnBytesOut.
+// Called on every client Write — must be allocation-free.
+func (t *TenantCounters) OnBytesOut(n int) {
+	if t != nil && n > 0 && t.BytesOut != nil {
+		t.BytesOut.Add(float64(n))
 	}
 }

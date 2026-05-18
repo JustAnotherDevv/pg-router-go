@@ -237,6 +237,8 @@ type PooledConn struct {
 	// acquired and Splice is enabled; nil when no backend is attached
 	// or Splice is disabled. See setupSplice.
 	bConnSpliceReader *splice.RawReader
+
+
 }
 
 // NewPooledConn returns a PooledConn with production defaults applied:
@@ -601,12 +603,13 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			}
 
 			// Forward client → server (unless intercept synthesized the
-			// reply already).
+			// reply already). Send() buffers; we only Flush() when
+			// triggersBackendDrain is true (Sync/Query/CopyDone/CopyFail)
+			// so Parse/Bind/Execute/Describe/Close are batched into a
+			// single write — reducing syscalls from 4 to 1 per extended
+			// query.
 			if !suppressForward {
 				bConn.Frontend.Send(forwardMsg)
-				if err := bConn.Frontend.Flush(); err != nil {
-					return fmt.Errorf("server send: %w", err)
-				}
 			}
 
 			// In extended-protocol mode the backend only emits responses
@@ -618,6 +621,12 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// Sync arrives.
 			if !triggersBackendDrain(msg) {
 				continue
+			}
+
+			// Flush all buffered client→backend messages (Parse/Bind/Execute
+			// may have been buffered above) before draining backend responses.
+			if err := bConn.Frontend.Flush(); err != nil {
+				return fmt.Errorf("server send: %w", err)
 			}
 
 			// query_timeout: arm a read deadline on the backend socket

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
@@ -308,9 +309,16 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 
 	// Per-tenant bandwidth metering: wrap the conn so every Read/Write
 	// adds to pgrouter_tenant_bytes_{in,out}_total{db, user}.
+	// Pre-resolve the prometheus counter handles once here instead of
+	// calling WithLabelValues on every byte (eliminates mutex contention).
+	var bytesIn, bytesOut prometheus.Counter
+	if stats.Active != nil {
+		bytesIn = stats.Active.BytesInPerTenant.WithLabelValues(db, user)
+		bytesOut = stats.Active.BytesOutPerTenant.WithLabelValues(db, user)
+	}
 	conn = util.NewCountingConn(conn,
-		func(n int) { stats.OnBytesIn(db, user, n) },
-		func(n int) { stats.OnBytesOut(db, user, n) },
+		func(n int) { if n > 0 && bytesIn != nil { bytesIn.Add(float64(n)) } },
+		func(n int) { if n > 0 && bytesOut != nil { bytesOut.Add(float64(n)) } },
 	)
 
 	mode := h.PoolMode

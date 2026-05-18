@@ -9,14 +9,20 @@
 //	                        slot before the reserve becomes spendable.
 //
 // Acquire path:
-//   1. If an idle backend exists, pop + mark active + return.
-//   2. Else if active < N, dial a fresh backend (counted against N).
-//   3. Else park in the FIFO wait queue. If we've waited longer than T
-//      and active < N+R, dial a reserve backend (counted against R).
-//   4. Else keep waiting until a Release fires or ctx/timeout fires.
+//  1. If an idle backend exists, pop + mark active + return.
+//  2. Else if active < N, dial a fresh backend (counted against N).
+//  3. Else park in the FIFO wait queue. If we've waited longer than T
+//     and active < N+R, dial a reserve backend (counted against R).
+//  4. Else keep waiting until a Release fires or ctx/timeout fires.
 //
-// Release path: optional reset (DISCARD ALL) → push to idle stack OR
+// Release path: optional reset (DISCARD ALL) → push to idle channel OR
 // hand off to next waiter, preserving FIFO and the active-slot invariant.
+//
+// Concurrency model:
+//   - Hot path (Acquire idle-pop, Release-to-idle): lock-free via
+//     buffered channel + atomic counters.
+//   - Slow path (dial, waiter park, eviction, resize, close):
+//     serialized by wmu (waiter mutex).
 //
 // Eviction (janitor):
 //   - Drop idle backends past ServerIdle threshold, BUT never below
@@ -96,28 +102,31 @@ type Config struct {
 
 // Pool manages backends for one (db, user) tuple.
 //
-// Concurrency: a single mutex guards `idle`, `active`, `waiters` and
-// counters. The mutex is unheld during dial + reset I/O.
+// Concurrency: the hot path (idle-pop on Acquire, push-to-idle on
+// Release) is lock-free using a buffered channel + atomic counters.
+// The slow path (dial, waiter queue, eviction, resize, close) is
+// serialized by wmu.
 type Pool struct {
 	cfg  Config
 	dial Dialer
 	name string
 
-	mu      sync.Mutex
-	idle    []*pooledConn // LIFO stack of idle backends
-	active  int           // count currently checked out
-	waiters []*waiter     // FIFO queue
-	closed  bool
+	// Hot-path fields — accessed atomically, no lock needed.
+	idle   chan *pooledConn // buffered chan, cap = DefaultPoolSize
+	active atomic.Int64     // currently checked-out backends
+	closed atomic.Bool      // set by Close, checked on Acquire/Release
 
-	// Conditional variable used by drainAndClose to learn when the
-	// active count has fallen to zero.
-	cond *sync.Cond
+	// Slow-path fields — guarded by wmu.
+	wmu     sync.Mutex  // protects waiters, eviction, resize, close
+	waiters []*waiter   // FIFO queue
+	cond    *sync.Cond  // for drain coordination in CloseWithDeadline
 
-	// Metrics-friendly counters.
-	totalAcquired uint64
-	totalReleased uint64
-	totalSpawned  uint64
-	totalEvicted  uint64
+	// Metrics-friendly counters — accessed atomically.
+	totalAcquired atomic.Uint64
+	totalReleased atomic.Uint64
+	totalSpawned  atomic.Uint64
+	totalEvicted  atomic.Uint64
+	waitersCount  atomic.Int64 // approximate waiter count for Stats
 
 	// cachedParams: the ParameterStatus map captured from the first
 	// successful upstream dial. PooledConn welcomes new clients with
@@ -166,8 +175,13 @@ func New(name string, dial Dialer, cfg Config) *Pool {
 	if cfg.ReservePoolTimeout <= 0 {
 		cfg.ReservePoolTimeout = 5 * time.Second
 	}
-	p := &Pool{cfg: cfg, dial: dial, name: name}
-	p.cond = sync.NewCond(&p.mu)
+	p := &Pool{
+		cfg:  cfg,
+		dial: dial,
+		name: name,
+		idle: make(chan *pooledConn, cfg.DefaultPoolSize),
+	}
+	p.cond = sync.NewCond(&p.wmu)
 	return p
 }
 
@@ -184,25 +198,36 @@ func (p *Pool) Resize(newSize int) int {
 	if newSize < 1 {
 		newSize = 1
 	}
-	p.mu.Lock()
+	p.wmu.Lock()
 	prev := p.cfg.DefaultPoolSize
 	p.cfg.DefaultPoolSize = newSize
-	// MinPoolSize must stay <= DefaultPoolSize.
 	if p.cfg.MinPoolSize > newSize {
 		p.cfg.MinPoolSize = newSize
 	}
-	// On shrink, immediately evict excess idle backends so they don't
-	// hang around forever (the janitor would also do this).
-	excess := (p.active + len(p.idle)) - newSize
-	for excess > 0 && len(p.idle) > 0 {
-		pc := p.idle[0]
-		p.idle = p.idle[1:]
-		go pc.Conn.Close()
-		excess--
-		p.totalEvicted++
+	// Drain idle channel, close excess, rebuild channel with new cap.
+	var kept []*pooledConn
+loop:
+	for {
+		select {
+		case pc := <-p.idle:
+			kept = append(kept, pc)
+		default:
+			break loop
+		}
 	}
-	p.mu.Unlock()
-	// Wake parked waiters; growth may have created free slots.
+	curActive := int(p.active.Load())
+	excess := (curActive + len(kept)) - newSize
+	for excess > 0 && len(kept) > 0 {
+		go kept[0].Conn.Close()
+		kept = kept[1:]
+		excess--
+		p.totalEvicted.Add(1)
+	}
+	p.idle = make(chan *pooledConn, newSize)
+	for _, pc := range kept {
+		p.idle <- pc
+	}
+	p.wmu.Unlock()
 	p.cond.Broadcast()
 	return prev
 }
@@ -210,8 +235,8 @@ func (p *Pool) Resize(newSize int) int {
 // Size returns the current DefaultPoolSize cap. Useful for the admin
 // API + config-reload diff display.
 func (p *Pool) Size() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
 	return p.cfg.DefaultPoolSize
 }
 
@@ -238,58 +263,74 @@ func (p *Pool) Acquire(ctx context.Context) (*backend.Conn, error) {
 	return c, err
 }
 
-// acquireInternal is the original Acquire body. PreAcquire / PostRelease
+// acquireInternal is the Acquire body. PreAcquire / PostRelease
 // orchestration is handled by the public Acquire wrapper above.
 //
 // Three paths, in order of fast→slow:
-//  1. Idle stack pop (no dial, no wait).
+//  1. Idle channel pop (no dial, no wait) — lock-free.
 //  2. Dial under DefaultPoolSize cap (dial, no wait).
 //  3. Park in wait queue with QueryWait timeout + reserve-pool kick.
 func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
 	start := time.Now()
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, ErrPoolClosed
+
+	for {
+		// Fast path: pop from idle channel (lock-free).
+		if p.closed.Load() {
+			return nil, ErrPoolClosed
+		}
+		select {
+		case pc := <-p.idle:
+			p.active.Add(1)
+			p.totalAcquired.Add(1)
+			pc.Lifecycle.MarkActive(time.Now())
+			p.emitWait(start)
+			return pc.Conn, nil
+		default:
+		}
+
+		// Slow path: need to dial or wait.
+		// CAS loop: only one goroutine wins the "dial" race.
+		cur := int(p.active.Load())
+		if cur < p.cfg.DefaultPoolSize {
+			if p.active.CompareAndSwap(int64(cur), int64(cur+1)) {
+				p.totalAcquired.Add(1)
+				p.totalSpawned.Add(1)
+				if cb := p.cfg.Callbacks.OnDial; cb != nil {
+					cb(p.name)
+				}
+				c, err := p.dial(ctx)
+				if err != nil {
+					if cb := p.cfg.Callbacks.OnDialError; cb != nil {
+						cb(p.name, err)
+					}
+					p.active.Add(-1)
+					p.cond.Broadcast()
+					return nil, fmt.Errorf("pool %s: dial: %w", p.name, err)
+				}
+				p.captureParams(c)
+				p.emitWait(start)
+				return c, nil
+			}
+			// Lost the CAS race — loop back and try idle again.
+			continue
+		}
+
+		w := p.parkWaiter()
+		return p.waitForBackend(ctx, w, start)
 	}
-	if c, ok := p.popIdleLocked(start); ok {
-		p.mu.Unlock()
-		p.emitWait(start)
-		return c, nil
-	}
-	if p.active < p.cfg.DefaultPoolSize {
-		return p.dialWithLockHeld(ctx, start)
-	}
-	w := p.parkWaiterLocked()
-	p.mu.Unlock()
-	return p.waitForBackend(ctx, w, start)
 }
 
-// popIdleLocked pops the most recently released backend off the LIFO
-// idle stack. Caller holds p.mu. Returns ok=false when idle is empty.
-func (p *Pool) popIdleLocked(now time.Time) (*backend.Conn, bool) {
-	n := len(p.idle)
-	if n == 0 {
-		return nil, false
-	}
-	pc := p.idle[n-1]
-	p.idle = p.idle[:n-1]
-	p.active++
-	p.totalAcquired++
-	pc.Lifecycle.MarkActive(time.Now())
-	_ = now
-	return pc.Conn, true
-}
-
-// parkWaiterLocked creates + enqueues a waiter on p.waiters. Caller
-// holds p.mu. Returns the waiter for the select loop.
-func (p *Pool) parkWaiterLocked() *waiter {
+// parkWaiter creates a waiter, enqueues it under wmu, and returns it.
+func (p *Pool) parkWaiter() *waiter {
 	w := &waiter{
 		ch:       make(chan *pooledConn, 1),
 		canceled: make(chan struct{}),
 		parkedAt: time.Now(),
 	}
+	p.wmu.Lock()
 	p.waiters = append(p.waiters, w)
+	p.wmu.Unlock()
+	p.waitersCount.Add(1)
 	return w
 }
 
@@ -312,21 +353,22 @@ func (p *Pool) waitForBackend(ctx context.Context, w *waiter, start time.Time) (
 	for {
 		select {
 		case pc := <-w.ch:
+			p.waitersCount.Add(-1)
 			if pc == nil {
 				return nil, ErrPoolClosed
 			}
-			p.mu.Lock()
-			p.totalAcquired++
-			p.mu.Unlock()
+			p.totalAcquired.Add(1)
 			pc.Lifecycle.MarkActive(time.Now())
 			p.emitWait(start)
 			return pc.Conn, nil
 
 		case <-ctx.Done():
+			p.waitersCount.Add(-1)
 			p.cancelWaiter(w)
 			return nil, ctx.Err()
 
 		case <-totalCh:
+			p.waitersCount.Add(-1)
 			p.cancelWaiter(w)
 			return nil, ErrAcquireTimeout
 
@@ -336,9 +378,11 @@ func (p *Pool) waitForBackend(ctx context.Context, w *waiter, start time.Time) (
 			reserveCh = nil // fire once
 			c, ok, err := p.tryDialReserve(ctx, w, start)
 			if err != nil {
+				p.waitersCount.Add(-1)
 				return nil, err
 			}
 			if ok {
+				p.waitersCount.Add(-1)
 				return c, nil
 			}
 			// Else continue blocking — the reserve was already maxed out;
@@ -357,13 +401,32 @@ func (p *Pool) timerCh(d time.Duration) (<-chan time.Time, func()) {
 	return t.C, func() { t.Stop() }
 }
 
-// dialWithLockHeld is called with p.mu held; it counts a regular-pool
-// slot, releases the lock, dials, and returns the new backend.
-func (p *Pool) dialWithLockHeld(ctx context.Context, start time.Time) (*backend.Conn, error) {
-	p.active++
-	p.totalAcquired++
-	p.totalSpawned++
-	p.mu.Unlock()
+// tryDialReserve attempts to allocate a reserve slot for the given
+// waiter. Returns (conn, true, nil) if a reserve backend was opened.
+// Returns (nil, false, nil) if no reserve headroom remains.
+// Returns (nil, false, err) on dial error.
+func (p *Pool) tryDialReserve(ctx context.Context, w *waiter, start time.Time) (*backend.Conn, bool, error) {
+	p.wmu.Lock()
+	if p.closed.Load() {
+		p.wmu.Unlock()
+		return nil, false, ErrPoolClosed
+	}
+	cap := p.cfg.DefaultPoolSize + p.cfg.ReservePoolSize
+	if int(p.active.Load()) >= cap {
+		p.wmu.Unlock()
+		return nil, false, nil
+	}
+	// Remove ourselves from the waiter queue — we're satisfying ourselves.
+	for i, ww := range p.waiters {
+		if ww == w {
+			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
+			break
+		}
+	}
+	p.wmu.Unlock()
+	p.active.Add(1)
+	p.totalAcquired.Add(1)
+	p.totalSpawned.Add(1)
 	if cb := p.cfg.Callbacks.OnDial; cb != nil {
 		cb(p.name)
 	}
@@ -372,15 +435,346 @@ func (p *Pool) dialWithLockHeld(ctx context.Context, start time.Time) (*backend.
 		if cb := p.cfg.Callbacks.OnDialError; cb != nil {
 			cb(p.name, err)
 		}
-		p.mu.Lock()
-		p.active--
+		p.active.Add(-1)
 		p.cond.Broadcast()
-		p.mu.Unlock()
-		return nil, fmt.Errorf("pool %s: dial: %w", p.name, err)
+		return nil, false, fmt.Errorf("pool %s: reserve dial: %w", p.name, err)
 	}
 	p.captureParams(c)
 	p.emitWait(start)
-	return c, nil
+	return c, true, nil
+}
+
+func (p *Pool) emitWait(start time.Time) {
+	if cb := p.cfg.Callbacks.OnAcquireWait; cb != nil {
+		cb(p.name, time.Since(start))
+	}
+}
+
+// Release returns a backend to the pool. If resetSession is true, the
+// pool's configured ResetQuery is run before pooling (defaults to
+// DISCARD ALL). Failed reset → backend is closed instead of pooled.
+//
+// PostRelease is fired (if set) at end of Release regardless of whether
+// the backend was successfully returned to idle, closed due to drain, or
+// discarded due to a failed reset — the invariant is exactly one
+// PostRelease per successful PreAcquire.
+func (p *Pool) Release(c *backend.Conn, resetSession bool) {
+	if c == nil {
+		return
+	}
+	defer func() {
+		if cb := p.cfg.Callbacks.PostRelease; cb != nil {
+			cb()
+		}
+	}()
+
+	// Optional reset BEFORE returning to pool — it does I/O.
+	if resetSession {
+		if err := c.ResetStateWith(p.cfg.ResetQuery); err != nil {
+			p.cfg.Log.Warn("backend reset failed; discarding", "err", err)
+			_ = c.Close()
+			p.active.Add(-1)
+			p.cond.Broadcast()
+			return
+		}
+	}
+
+	now := time.Now()
+	lifecycle := backend.NewLifecycle(now) // fresh per-pooled-entry lifecycle
+	lifecycle.MarkIdle(now)
+
+	pc := &pooledConn{Conn: c, Lifecycle: lifecycle}
+
+	// If pool was closed while this conn was active, drop it.
+	if p.closed.Load() {
+		p.active.Add(-1)
+		p.cond.Broadcast()
+		_ = c.Close()
+		return
+	}
+
+	// Hand off to next waiter under wmu to preserve FIFO.
+	// The active count is invariant across a handoff: the slot we just
+	// released is being claimed by the waiter atomically. We do NOT
+	// decrement active here. If we did, another goroutine could see
+	// active<limit between Release and the waiter's resume and dial a
+	// new backend, leaking a slot.
+	p.wmu.Lock()
+	for len(p.waiters) > 0 {
+		w := p.waiters[0]
+		p.waiters = p.waiters[1:]
+		p.wmu.Unlock()
+		select {
+		case w.ch <- pc:
+			p.totalReleased.Add(1)
+			return
+		case <-w.canceled:
+			// already gone; try next waiter
+			p.wmu.Lock()
+		}
+	}
+	p.wmu.Unlock()
+
+	// No waiters: return to idle channel (lock-free).
+	// IMPORTANT: push to idle BEFORE decrementing active to avoid a
+	// race where another goroutine sees active < poolSize and dials.
+	p.totalReleased.Add(1)
+	sent := false
+	select {
+	case p.idle <- pc:
+		sent = true
+	default:
+	}
+	p.active.Add(-1)
+	p.cond.Broadcast()
+	if !sent {
+		_ = c.Close()
+	}
+}
+
+// cancelWaiter removes `w` from the queue. Called from ctx.Done /
+// timeout paths. We mark `canceled` so a racing Release can skip past.
+func (p *Pool) cancelWaiter(w *waiter) {
+	close(w.canceled)
+	p.wmu.Lock()
+	for i, ww := range p.waiters {
+		if ww == w {
+			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
+			break
+		}
+	}
+	// If a backend was racing to hand us a conn between cancel + dequeue,
+	// we drain it and put it back into idle so it's not leaked.
+	p.wmu.Unlock()
+	select {
+	case pc := <-w.ch:
+		// Return to idle channel (or close if full/closed).
+		if p.closed.Load() {
+			_ = pc.Conn.Close()
+		} else {
+			select {
+			case p.idle <- pc:
+			default:
+				_ = pc.Conn.Close()
+			}
+		}
+	default:
+	}
+}
+
+// Stats is a point-in-time snapshot of the pool's counters. Cheap.
+type Stats struct {
+	Name          string
+	Active        int
+	Idle          int
+	Waiters       int
+	TotalAcquired uint64
+	TotalReleased uint64
+	TotalSpawned  uint64
+	TotalEvicted  uint64
+}
+
+// Stats returns a snapshot. All fields are read atomically — no lock
+// needed for the common case.
+func (p *Pool) Stats() Stats {
+	return Stats{
+		Name:          p.name,
+		Active:        int(p.active.Load()),
+		Idle:          len(p.idle),
+		Waiters:       int(p.waitersCount.Load()),
+		TotalAcquired: p.totalAcquired.Load(),
+		TotalReleased: p.totalReleased.Load(),
+		TotalSpawned:  p.totalSpawned.Load(),
+		TotalEvicted:  p.totalEvicted.Load(),
+	}
+}
+
+// Close drains the pool. Idle backends are closed immediately. Active
+// checkouts are allowed to release naturally; their Release just closes
+// the conn instead of pooling.
+//
+// Idempotent. To wait for drain to complete with a deadline, use
+// CloseWithDeadline.
+func (p *Pool) Close() {
+	_ = p.CloseWithDeadline(time.Time{})
+}
+
+// CloseWithDeadline marks the pool closed, wakes waiters with
+// ErrPoolClosed, closes idle backends, and blocks until `deadline` (or
+// `time.Time{}` for "no wait, return immediately"). Returns
+// ErrDrainTimeout if active checkouts haven't released by deadline.
+//
+// Typical shutdown:
+//
+//	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+//	defer cancel()
+//	p.CloseWithDeadline(time.Now().Add(30*time.Second))
+func (p *Pool) CloseWithDeadline(deadline time.Time) error {
+	if p.closed.Swap(true) {
+		return nil // already closed
+	}
+
+	// Drain idle channel.
+	var idle []*pooledConn
+loop:
+	for {
+		select {
+		case pc := <-p.idle:
+			idle = append(idle, pc)
+		default:
+			break loop
+		}
+	}
+
+	// Wake all waiters with ErrPoolClosed.
+	p.wmu.Lock()
+	waiters := p.waiters
+	p.waiters = nil
+	p.wmu.Unlock()
+
+	for _, pc := range idle {
+		_ = pc.Conn.Close()
+	}
+	for _, w := range waiters {
+		close(w.ch) // signals Acquire to error with ErrPoolClosed
+	}
+
+	if deadline.IsZero() {
+		return nil
+	}
+
+	// Wait for active to drain.
+	done := make(chan struct{})
+	go func() {
+		p.wmu.Lock()
+		for p.active.Load() > 0 {
+			p.cond.Wait()
+		}
+		p.wmu.Unlock()
+		close(done)
+	}()
+	// Clamp negative wait to 0 — time.After(negative) fires
+	// immediately, which would return ErrDrainTimeout even on a
+	// healthy pool. Callers passing deadline_seconds=0 (or a typo'd
+	// past timestamp) get "immediate drain attempt" semantics rather
+	// than instant failure.
+	wait := time.Until(deadline)
+	if wait < 0 {
+		wait = 0
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(wait):
+		return ErrDrainTimeout
+	}
+}
+
+// EvictIdleOnce sweeps idle backends and closes any that are past the
+// configured ServerIdle / ServerLifetime threshold, BUT never reduces
+// the total backend count below MinPoolSize.
+//
+// Returns the count of evicted backends.
+func (p *Pool) EvictIdleOnce(now time.Time) int {
+	maxIdle := p.cfg.ServerIdle
+	maxLife := p.cfg.ServerLifetime
+	if maxIdle <= 0 && maxLife <= 0 {
+		return 0
+	}
+
+	p.wmu.Lock()
+	floor := p.cfg.MinPoolSize
+	curActive := int(p.active.Load())
+	// Backends we could keep without going below the floor.
+	keepCount := floor - curActive
+	if keepCount < 0 {
+		keepCount = 0
+	}
+
+	// Drain idle channel into a temp slice.
+	var all []*pooledConn
+loop:
+	for {
+		select {
+		case pc := <-p.idle:
+			all = append(all, pc)
+		default:
+			break loop
+		}
+	}
+
+	var kept, evicted []*pooledConn
+	for _, pc := range all {
+		expiredLifetime := maxLife > 0 && pc.Lifecycle.ShouldRecycle(now, maxLife)
+		expiredIdle := maxIdle > 0 && pc.Lifecycle.ShouldEvict(now, maxIdle)
+		if !expiredLifetime && !expiredIdle {
+			kept = append(kept, pc)
+			continue
+		}
+		if expiredIdle && !expiredLifetime && len(kept) < keepCount {
+			kept = append(kept, pc)
+			continue
+		}
+		evicted = append(evicted, pc)
+	}
+
+	// Rebuild idle channel with kept connections.
+	p.idle = make(chan *pooledConn, p.cfg.DefaultPoolSize)
+	for _, pc := range kept {
+		p.idle <- pc
+	}
+	p.totalEvicted.Add(uint64(len(evicted)))
+	p.wmu.Unlock()
+
+	for _, pc := range evicted {
+		_ = pc.Conn.Close()
+	}
+	if n := len(evicted); n > 0 {
+		if cb := p.cfg.Callbacks.OnEvict; cb != nil {
+			cb(p.name, n)
+		}
+	}
+	return len(evicted)
+}
+
+// EnsureWarm spawns backends until idle+active >= MinPoolSize. Returns
+// the number of backends dialed. Call once per janitor sweep (alongside
+// EvictIdleOnce) to keep the warm floor populated.
+//
+// Dial failures stop the warming but are not returned as errors —
+// they'd be repeated on every sweep otherwise. They're emitted via the
+// OnDialError callback.
+func (p *Pool) EnsureWarm(ctx context.Context) int {
+	floor := p.cfg.MinPoolSize
+	if floor <= 0 {
+		return 0
+	}
+	spawned := 0
+	for {
+		total := int(p.active.Load()) + len(p.idle)
+		if total >= floor || p.closed.Load() {
+			return spawned
+		}
+		p.active.Add(1)
+		p.totalSpawned.Add(1)
+
+		if cb := p.cfg.Callbacks.OnDial; cb != nil {
+			cb(p.name)
+		}
+		c, err := p.dial(ctx)
+		if err != nil {
+			if cb := p.cfg.Callbacks.OnDialError; cb != nil {
+				cb(p.name, err)
+			}
+			p.active.Add(-1)
+			p.cond.Broadcast()
+			return spawned
+		}
+		p.captureParams(c)
+		// Treat as Released-from-active so it lands in idle for callers.
+		p.Release(c, false)
+		spawned++
+	}
 }
 
 // captureParams stores the upstream's ParameterStatus map on the first
@@ -388,9 +782,6 @@ func (p *Pool) dialWithLockHeld(ctx context.Context, start time.Time) (*backend.
 // values "win" (matches PgBouncer's behaviour). Safe to call from any
 // dial path.
 func (p *Pool) captureParams(c *backend.Conn) {
-	// Record that a dial completed, even if c.Params is empty — that
-	// lets DialAttempted() report true and short-circuit further
-	// eager-warm attempts that would never populate the cache.
 	p.dialAttempted.Store(true)
 	if c == nil || len(c.Params) == 0 {
 		return
@@ -425,348 +816,4 @@ func (p *Pool) CachedParams() map[string]string {
 // already proved the upstream doesn't emit ParameterStatus.
 func (p *Pool) DialAttempted() bool {
 	return p.dialAttempted.Load()
-}
-
-// tryDialReserve attempts to allocate a reserve slot for the given
-// waiter. Returns (conn, true, nil) if a reserve backend was opened.
-// Returns (nil, false, nil) if no reserve headroom remains.
-// Returns (nil, false, err) on dial error.
-func (p *Pool) tryDialReserve(ctx context.Context, w *waiter, start time.Time) (*backend.Conn, bool, error) {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, false, ErrPoolClosed
-	}
-	cap := p.cfg.DefaultPoolSize + p.cfg.ReservePoolSize
-	if p.active >= cap {
-		p.mu.Unlock()
-		return nil, false, nil
-	}
-	// Remove ourselves from the waiter queue — we're satisfying ourselves.
-	for i, ww := range p.waiters {
-		if ww == w {
-			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
-			break
-		}
-	}
-	p.active++
-	p.totalAcquired++
-	p.totalSpawned++
-	p.mu.Unlock()
-	if cb := p.cfg.Callbacks.OnDial; cb != nil {
-		cb(p.name)
-	}
-	c, err := p.dial(ctx)
-	if err != nil {
-		if cb := p.cfg.Callbacks.OnDialError; cb != nil {
-			cb(p.name, err)
-		}
-		p.mu.Lock()
-		p.active--
-		p.cond.Broadcast()
-		p.mu.Unlock()
-		return nil, false, fmt.Errorf("pool %s: reserve dial: %w", p.name, err)
-	}
-	p.captureParams(c)
-	p.emitWait(start)
-	return c, true, nil
-}
-
-func (p *Pool) emitWait(start time.Time) {
-	if cb := p.cfg.Callbacks.OnAcquireWait; cb != nil {
-		cb(p.name, time.Since(start))
-	}
-}
-
-// Release returns a backend to the pool. If resetSession is true, the
-// pool's configured ResetQuery is run before pooling (defaults to
-// DISCARD ALL). Failed reset → backend is closed instead of pooled.
-//
-// PostRelease is fired (if set) at end of Release regardless of whether
-// the backend was successfully returned to idle, closed due to drain, or
-// discarded due to a failed reset — the invariant is exactly one
-// PostRelease per successful PreAcquire.
-func (p *Pool) Release(c *backend.Conn, resetSession bool) {
-	if c == nil {
-		return
-	}
-	defer func() {
-		if cb := p.cfg.Callbacks.PostRelease; cb != nil {
-			cb()
-		}
-	}()
-
-	// Optional reset BEFORE the lock — it does I/O.
-	if resetSession {
-		if err := c.ResetStateWith(p.cfg.ResetQuery); err != nil {
-			p.cfg.Log.Warn("backend reset failed; discarding", "err", err)
-			_ = c.Close()
-			p.mu.Lock()
-			p.active--
-			p.cond.Broadcast()
-			p.mu.Unlock()
-			return
-		}
-	}
-
-	now := time.Now()
-	lifecycle := backend.NewLifecycle(now) // fresh per-pooled-entry lifecycle
-	lifecycle.MarkIdle(now)
-
-	pc := &pooledConn{Conn: c, Lifecycle: lifecycle}
-
-	p.mu.Lock()
-	p.totalReleased++
-
-	// If pool was closed while this conn was active, drop it.
-	if p.closed {
-		p.active--
-		p.cond.Broadcast()
-		p.mu.Unlock()
-		_ = c.Close()
-		return
-	}
-
-	// Hand off to next waiter under lock to preserve FIFO.
-	// The active count is invariant across a handoff: the slot we just
-	// released is being claimed by the waiter atomically. We do NOT
-	// decrement active here. If we did, another goroutine could see
-	// active<limit between Release and the waiter's resume and dial a
-	// new backend, leaking a slot.
-	for len(p.waiters) > 0 {
-		w := p.waiters[0]
-		p.waiters = p.waiters[1:]
-		select {
-		case w.ch <- pc:
-			p.mu.Unlock()
-			return
-		case <-w.canceled:
-			// already gone; try next waiter
-		}
-	}
-	p.idle = append(p.idle, pc)
-	p.active--
-	p.cond.Broadcast()
-	p.mu.Unlock()
-}
-
-// cancelWaiter removes `w` from the queue. Called from ctx.Done /
-// timeout paths. We mark `canceled` so a racing Release can skip past.
-func (p *Pool) cancelWaiter(w *waiter) {
-	close(w.canceled)
-	p.mu.Lock()
-	for i, ww := range p.waiters {
-		if ww == w {
-			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
-			break
-		}
-	}
-	// If a backend was racing to hand us a conn between cancel + dequeue,
-	// we drain it and put it back into idle so it's not leaked. Active
-	// is already pinned for it.
-	select {
-	case pc := <-w.ch:
-		p.idle = append(p.idle, pc)
-		// active was bumped by no one for this case; restore parity by
-		// leaving active alone (the slot is parked in idle now).
-	default:
-	}
-	p.mu.Unlock()
-}
-
-// Stats is a point-in-time snapshot of the pool's counters. Cheap.
-type Stats struct {
-	Name          string
-	Active        int
-	Idle          int
-	Waiters       int
-	TotalAcquired uint64
-	TotalReleased uint64
-	TotalSpawned  uint64
-	TotalEvicted  uint64
-}
-
-// Stats returns a snapshot.
-func (p *Pool) Stats() Stats {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return Stats{
-		Name:          p.name,
-		Active:        p.active,
-		Idle:          len(p.idle),
-		Waiters:       len(p.waiters),
-		TotalAcquired: p.totalAcquired,
-		TotalReleased: p.totalReleased,
-		TotalSpawned:  p.totalSpawned,
-		TotalEvicted:  p.totalEvicted,
-	}
-}
-
-// Close drains the pool. Idle backends are closed immediately. Active
-// checkouts are allowed to release naturally; their Release just closes
-// the conn instead of pooling.
-//
-// Idempotent. To wait for drain to complete with a deadline, use
-// CloseWithDeadline.
-func (p *Pool) Close() {
-	_ = p.CloseWithDeadline(time.Time{})
-}
-
-// CloseWithDeadline marks the pool closed, wakes waiters with
-// ErrPoolClosed, closes idle backends, and blocks until `deadline` (or
-// `time.Time{}` for "no wait, return immediately"). Returns
-// ErrDrainTimeout if active checkouts haven't released by deadline.
-//
-// Typical shutdown:
-//
-//	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-//	defer cancel()
-//	p.CloseWithDeadline(time.Now().Add(30*time.Second))
-func (p *Pool) CloseWithDeadline(deadline time.Time) error {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil
-	}
-	p.closed = true
-	idle := p.idle
-	p.idle = nil
-	waiters := p.waiters
-	p.waiters = nil
-	p.mu.Unlock()
-
-	for _, pc := range idle {
-		_ = pc.Conn.Close()
-	}
-	for _, w := range waiters {
-		close(w.ch) // signals Acquire to error with ErrPoolClosed
-	}
-
-	if deadline.IsZero() {
-		return nil
-	}
-
-	// Wait for active to drain.
-	done := make(chan struct{})
-	go func() {
-		p.mu.Lock()
-		for p.active > 0 {
-			p.cond.Wait()
-		}
-		p.mu.Unlock()
-		close(done)
-	}()
-	// Clamp negative wait to 0 — time.After(negative) fires
-	// immediately, which would return ErrDrainTimeout even on a
-	// healthy pool. Callers passing deadline_seconds=0 (or a typo'd
-	// past timestamp) get "immediate drain attempt" semantics rather
-	// than instant failure.
-	wait := time.Until(deadline)
-	if wait < 0 {
-		wait = 0
-	}
-	select {
-	case <-done:
-		return nil
-	case <-time.After(wait):
-		return ErrDrainTimeout
-	}
-}
-
-// EvictIdleOnce sweeps idle backends and closes any that are past the
-// configured ServerIdle / ServerLifetime threshold, BUT never reduces
-// the total backend count below MinPoolSize.
-//
-// Returns the count of evicted backends.
-func (p *Pool) EvictIdleOnce(now time.Time) int {
-	maxIdle := p.cfg.ServerIdle
-	maxLife := p.cfg.ServerLifetime
-	if maxIdle <= 0 && maxLife <= 0 {
-		return 0
-	}
-
-	p.mu.Lock()
-	floor := p.cfg.MinPoolSize
-	// Backends we could keep without going below the floor.
-	keepCount := floor - p.active
-	if keepCount < 0 {
-		keepCount = 0
-	}
-
-	kept := p.idle[:0]
-	var evicted []*pooledConn
-	for _, pc := range p.idle {
-		// Lifetime eviction is unconditional (hard recycle cap), but
-		// only if maxLife is set.
-		expiredLifetime := maxLife > 0 && pc.Lifecycle.ShouldRecycle(now, maxLife)
-		expiredIdle := maxIdle > 0 && pc.Lifecycle.ShouldEvict(now, maxIdle)
-		if !expiredLifetime && !expiredIdle {
-			kept = append(kept, pc)
-			continue
-		}
-		if expiredIdle && !expiredLifetime && len(kept) < keepCount {
-			// Keep this one to satisfy MinPoolSize.
-			kept = append(kept, pc)
-			continue
-		}
-		evicted = append(evicted, pc)
-	}
-	p.idle = kept
-	p.totalEvicted += uint64(len(evicted))
-	p.mu.Unlock()
-
-	for _, pc := range evicted {
-		_ = pc.Conn.Close()
-	}
-	if n := len(evicted); n > 0 {
-		if cb := p.cfg.Callbacks.OnEvict; cb != nil {
-			cb(p.name, n)
-		}
-	}
-	return len(evicted)
-}
-
-// EnsureWarm spawns backends until idle+active >= MinPoolSize. Returns
-// the number of backends dialed. Call once per janitor sweep (alongside
-// EvictIdleOnce) to keep the warm floor populated.
-//
-// Dial failures stop the warming but are not returned as errors —
-// they'd be repeated on every sweep otherwise. They're emitted via the
-// OnDialError callback.
-func (p *Pool) EnsureWarm(ctx context.Context) int {
-	floor := p.cfg.MinPoolSize
-	if floor <= 0 {
-		return 0
-	}
-	spawned := 0
-	for {
-		p.mu.Lock()
-		total := p.active + len(p.idle)
-		if total >= floor || p.closed {
-			p.mu.Unlock()
-			return spawned
-		}
-		p.active++ // count it provisionally
-		p.totalSpawned++
-		p.mu.Unlock()
-
-		if cb := p.cfg.Callbacks.OnDial; cb != nil {
-			cb(p.name)
-		}
-		c, err := p.dial(ctx)
-		if err != nil {
-			if cb := p.cfg.Callbacks.OnDialError; cb != nil {
-				cb(p.name, err)
-			}
-			p.mu.Lock()
-			p.active--
-			p.cond.Broadcast()
-			p.mu.Unlock()
-			return spawned
-		}
-		p.captureParams(c)
-		// Treat as Released-from-active so it lands in idle for callers.
-		p.Release(c, false)
-		spawned++
-	}
 }
