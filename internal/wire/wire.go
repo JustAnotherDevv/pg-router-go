@@ -379,6 +379,10 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 			DropUnknownTags: in.Cfg.Wire.SpliceDropUnknown,
 		}
 	}
+	preparedCache := true
+	if in.Cfg.Wire.PreparedCache != nil {
+		preparedCache = *in.Cfg.Wire.PreparedCache
+	}
 	return &client.PooledHandler{
 		Log:               in.Log,
 		Manager:           in.Mgr,
@@ -402,7 +406,8 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 			}
 			return ""
 		},
-		Splice: spliceCfg,
+		Splice:        spliceCfg,
+		PreparedCache: preparedCache,
 	}
 }
 

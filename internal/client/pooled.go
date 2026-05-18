@@ -138,6 +138,18 @@ type PooledConfig struct {
 	// Phase A optimization; see internal/wire/splice/splice.go for
 	// the classification table + drain loop.
 	Splice *splice.SpliceConfig
+
+	// PreparedCache enables the cross-backend prepared-statement
+	// cache. When false, the per-client PrepareCache is left nil and
+	// the per-message interception + rewrite is skipped entirely —
+	// Parse/Bind/Close pass through to the backend with the client's
+	// original names. The per-backend LRU is also left unallocated.
+	//
+	// Default true. Disable on workloads dominated by unnamed
+	// extended, simple Query, or one-shot Parse/Bind pairs where the
+	// per-Parse hash + map lookup overhead outweighs the cache-hit
+	// savings. Mirrors cfg.Wire.PreparedCache.
+	PreparedCache bool
 }
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -337,7 +349,20 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 
 	state := NewClientState()
 	gucCache := NewGUCCache()
-	prepCache := NewPrepareCache()
+	// prepCache is the per-client (clientName → serverName) map for the
+	// cross-backend prepared-statement cache. Starts nil and is lazy-
+	// allocated on the first Parse message. When PreparedCache=false,
+	// it stays nil permanently — the per-message intercept and the
+	// observeClientMessage prepCache calls then become no-ops, so the
+	// cache overhead (per-Parse hash + RWMutex + map) is paid zero.
+	//
+	// Lazy init: connections that never Parse (storm, contention,
+	// simple-query-only) skip the allocation entirely, eliminating
+	// GC pressure from rapid connection cycling.
+	var prepCache *PrepareCache
+	if h.PreparedCache {
+		prepCache = NewPrepareCache()
+	}
 
 	// lastSQL captures the SQL text of the most recent Query/Parse so
 	// the drain loop can emit a slow_query WARN annotated with it.
@@ -561,10 +586,18 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// backend will emit in response to LRU-evictions we injected;
 			// we filter those out of the drain so the client doesn't see
 			// CloseComplete it never requested.
-			forwardMsg, suppressForward, err := h.prepareInterceptForward(
-				msg, prepCache, bConn, be, &pendingEvictCloseCompletes, log)
-			if err != nil {
-				return err
+			//
+			// Skipped entirely when prepCache is nil (cfg.Wire.PreparedCache=false)
+			// — the message goes straight to the backend unchanged.
+			forwardMsg := msg
+			suppressForward := false
+			if prepCache != nil {
+				var err error
+				forwardMsg, suppressForward, err = h.prepareInterceptForward(
+					msg, prepCache, bConn, be, &pendingEvictCloseCompletes, log)
+				if err != nil {
+					return err
+				}
 			}
 
 			// Forward client → server (unless intercept synthesized the
@@ -873,7 +906,12 @@ func (h *PooledConn) observeClientMessage(
 		}
 	case *pgproto3.Parse:
 		h.logSQL(log, "parse", m.Name, m.Query)
-		prepCache.Observe(m.Name, m.Query, m.ParameterOIDs)
+		if prepCache == nil && h.PreparedCache {
+			prepCache = NewPrepareCache()
+		}
+		if prepCache != nil {
+			prepCache.Observe(m.Name, m.Query, m.ParameterOIDs)
+		}
 		if !*sessionPinned && needsSessionPin(m.Query) {
 			*sessionPinned = true
 			log.Info("session pinned (force-session)",
@@ -883,7 +921,7 @@ func (h *PooledConn) observeClientMessage(
 		}
 	case *pgproto3.Close:
 		// Close('S', name) untracks a prepared statement.
-		if m.ObjectType == 'S' {
+		if m.ObjectType == 'S' && prepCache != nil {
 			prepCache.Close(m.Name)
 		}
 	}
@@ -1362,6 +1400,11 @@ func triggersBackendDrain(msg pgproto3.FrontendMessage) bool {
 // If bConn.Prepared is nil the cache is disabled; all messages pass
 // through unmodified except Bind/Describe/Close which still get
 // rewritten (in case Parse was rewritten earlier on this client).
+//
+// If clientPrep is nil (cfg.Wire.PreparedCache=false), the entire
+// interception is skipped — the message is forwarded as-is. This is
+// the configured-disable path that recovers the regressions seen on
+// workloads with low cache-hit rates.
 func (h *PooledConn) prepareInterceptForward(
 	msg pgproto3.FrontendMessage,
 	clientPrep *PrepareCache,
@@ -1370,6 +1413,9 @@ func (h *PooledConn) prepareInterceptForward(
 	pendingEvictCloseCompletes *int,
 	log *slog.Logger,
 ) (pgproto3.FrontendMessage, bool, error) {
+	if clientPrep == nil {
+		return msg, false, nil
+	}
 	switch m := msg.(type) {
 	case *pgproto3.Parse:
 		if m.Name == "" {

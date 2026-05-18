@@ -313,3 +313,63 @@ func TestBackendResetClearsPreparedCache(t *testing.T) {
 	require.Equal(t, 0, bConn.Prepared.Len(),
 		"DISCARD ALL must clear the per-backend prepared cache to match real PG semantics")
 }
+
+// --- Config gate: cfg.PreparedCache=false skips all intercept ---
+
+// TestPooledPreparedCacheDisabledPassesThrough is the regression guard
+// for the wire.prepared_cache=false config knob. When the gate is
+// off, Parse must reach the backend with the client's original name
+// (no rewrite), Bind must not be touched, and the per-backend cache
+// must not be populated.
+func TestPooledPreparedCacheDisabledPassesThrough(t *testing.T) {
+	fb := newFakeBackend(t)
+	bConn := connWithCache(fb, 8)
+	dial := func(_ context.Context) (*backend.Conn, error) { return bConn, nil }
+	p := newDialPool(t, "t", dial, 1)
+
+	// Construct directly (bypass startPooledDefault which forces
+	// PreparedCache=true) so the test exercises the gate-off path.
+	clt, fe, _ := startPooled(t, p, &PooledConn{
+		PooledConfig: PooledConfig{
+			CannedParams:  map[string]string{"server_version": "16.0"},
+			PreparedCache: false, // the gate
+		},
+		Database: "appdb",
+		User:     "alice",
+	})
+
+	originalName := "client_stmt_42"
+	originalQuery := "SELECT 1"
+
+	// Expect the backend to receive the Parse with the ORIGINAL name
+	// (not a pgr_<hash> rewrite). This proves the intercept was skipped.
+	fb.expect(func(_ *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+		m, ok := msg.(*pgproto3.Parse)
+		require.True(t, ok, "must receive Parse, got %T", msg)
+		require.Equal(t, originalName, m.Name,
+			"with PreparedCache=false, client name must NOT be rewritten")
+		require.Equal(t, originalQuery, m.Query)
+	})
+	fb.expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
+		be.Send(&pgproto3.ParseComplete{})
+		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+		_ = be.Flush()
+	})
+
+	fe.Send(&pgproto3.Parse{Name: originalName, Query: originalQuery})
+	fe.Send(&pgproto3.Sync{})
+	require.NoError(t, fe.Flush())
+
+	// Drain client side.
+	_, err := fe.Receive()
+	require.NoError(t, err)
+	got, err := fe.Receive()
+	require.NoError(t, err)
+	_, ok := got.(*pgproto3.ReadyForQuery)
+	require.True(t, ok)
+
+	// Backend cache must NOT have been touched.
+	require.Equal(t, 0, bConn.Prepared.Len(),
+		"with PreparedCache=false, backend cache must stay empty")
+	_ = clt
+}

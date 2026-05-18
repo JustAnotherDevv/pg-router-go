@@ -43,6 +43,19 @@ type WireConfig struct {
 	// debugging a protocol mismatch and don't want unknown tags
 	// reaching the client.
 	SpliceDropUnknown bool `yaml:"splice_drop_unknown,omitempty"`
+
+	// PreparedCache enables the cross-backend prepared-statement
+	// cache (per-client name→server-name rewrite + per-backend LRU
+	// of pgr_<hash> statements). Default true. Set false to disable
+	// the cache entirely — Parse/Bind/Close pass through with the
+	// client's original statement names, the per-client PrepareCache
+	// is never built, and the per-backend cache is left nil.
+	//
+	// Disable when the workload is dominated by unnamed extended
+	// statements, simple Query, or one-shot Parse/Bind pairs where
+	// the cache-hit rate is low and the per-Parse hash + map lookup
+	// overhead shows up as a net regression.
+	PreparedCache *bool `yaml:"prepared_cache,omitempty"`
 }
 
 // ServerConfig controls the listening side.

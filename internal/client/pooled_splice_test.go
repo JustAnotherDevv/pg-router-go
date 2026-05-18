@@ -32,6 +32,7 @@ func startPooledWithSplice(t *testing.T, p *pool.Pool, cfg PooledConfig) (net.Co
 	if cfg.Splice == nil {
 		cfg.Splice = &splice.SpliceConfig{Enabled: true, BufferSize: 8 * 1024}
 	}
+	cfg.PreparedCache = true
 	return startPooled(t, p, &PooledConn{
 		PooledConfig: cfg,
 		Database:     "appdb",

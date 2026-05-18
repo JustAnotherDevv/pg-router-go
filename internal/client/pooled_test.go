@@ -126,6 +126,12 @@ func startPooledDefault(t *testing.T, p *pool.Pool, cfg PooledConfig) (net.Conn,
 	if cfg.CannedParams == nil {
 		cfg.CannedParams = map[string]string{"server_version": "16.0"}
 	}
+	// Default the cross-backend prepared-statement cache to enabled —
+	// most of the dispatch tests (Phase B suite especially) exercise
+	// the intercept path. Tests that need to assert pass-through
+	// behavior must NOT use this helper; they should construct the
+	// PooledConn directly via startPooled.
+	cfg.PreparedCache = true
 	return startPooled(t, p, &PooledConn{
 		PooledConfig: cfg,
 		Database:     "appdb",

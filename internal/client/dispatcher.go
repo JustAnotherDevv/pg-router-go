@@ -109,6 +109,15 @@ type PooledHandler struct {
 	// messages. See internal/wire/splice for the classification.
 	Splice *splice.SpliceConfig
 
+	// PreparedCache enables the cross-backend prepared-statement
+	// cache for connections served by this handler. When false, the
+	// per-client PrepareCache is left nil and the per-message
+	// interception + rewrite is skipped — Parse/Bind/Close pass
+	// through to the backend with the client's original names.
+	//
+	// Default true. Mirrors cfg.Wire.PreparedCache.
+	PreparedCache bool
+
 	// Router answers per-tenant routing questions (replica pick,
 	// sticky-read window, primary health, QPS cap). nil → routing
 	// disabled (always primary; healthy; no rate limit). Replaces
@@ -322,6 +331,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			PoolMode:          mode,
 			Audit:             h.Audit,
 			Splice:            h.Splice,
+			PreparedCache:     h.PreparedCache,
 		},
 		Log:           log,
 		Pool:          p,
