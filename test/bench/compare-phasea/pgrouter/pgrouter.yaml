@@ -1,0 +1,47 @@
+# pgrouter config for Phase A splice bench.
+# Phase A: backend->client drain via splice-style copy (in-process zero-copy).
+# Feature flag wire.splice: true (default is true; explicit here for clarity).
+# Buffer size 8 KiB — matches kernel pipe default and typical Postgres
+# DataRow body. Larger buffers reduce syscall count but waste memory when
+# traffic is bursty.
+
+server:
+  listen_addr: 0.0.0.0
+  listen_port: 6434
+  max_client_conn: 1000
+
+pool:
+  mode: transaction
+  default_pool_size: 20
+  min_pool_size: 0
+  query_wait_timeout: 60s
+  server_idle_timeout: 600s
+  server_lifetime: 3600s
+  server_connect_timeout: 15s
+
+auth:
+  type: trust
+
+tls:
+  client_mode: disable
+  server_mode: disable
+
+metrics:
+  listen: ":9090"
+  path: /metrics
+
+logging:
+  level: warn
+  format: text
+
+databases:
+  postgres:
+    host: postgres
+    port: 5432
+    user: postgres
+    dbname: postgres
+
+wire:
+  splice: true              # Phase A splice forwarder (backend->client drain)
+  splice_buffer_size: 8192
+  splice_drop_unknown: false

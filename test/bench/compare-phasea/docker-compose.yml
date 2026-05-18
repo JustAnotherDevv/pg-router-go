@@ -1,0 +1,108 @@
+# Phase A bench: postgres + 3 poolers (pgbouncer, pgcat, pgrouter).
+#
+# ISOLATED from the main bench-pg project (which is contaminated with the
+# botnet drop volume + `wog` superuser). This project uses a different
+# COMPOSE_PROJECT_NAME so containers, networks, and volumes don't collide.
+#
+# Ports (host → container) — ALL bound to 127.0.0.1 only:
+#   25432  postgres   (direct, baseline)        # 5432 taken by host systemd postgres
+#   26432  pgbouncer                            # 6432 free; using 26xxx for clarity
+#   26433  pgcat
+#   26434  pgrouter
+#
+# Trust auth is safe here because the ports are loopback-only.
+#
+# SECURITY NOTE: do NOT change "127.0.0.1:PORT:PORT" to "PORT:PORT"
+# (which Docker interprets as 0.0.0.0:PORT). See
+# VPS_INCIDENT_POSTMORTEM.md (gitignored) for why.
+#
+# Boot:    COMPOSE_PROJECT_NAME=phasea docker compose -f docker-compose.yml up -d --build
+# Run:     COMPOSE_PROJECT_NAME=phasea ./run.sh
+# Teardown: COMPOSE_PROJECT_NAME=phasea docker compose -f docker-compose.yml down -v
+#
+# No container_name directives — Compose auto-generates names from the
+# project name (e.g. "phasea-postgres-1"). run.sh uses BENCH_* env vars
+# to find the right containers for docker stats.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust   # safe: port bound to 127.0.0.1
+    ports:
+      - "127.0.0.1:25432:5432"           # localhost only, NOT 0.0.0.0
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=500"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=2GB"
+      - "-c"
+      - "max_prepared_transactions=0"
+      - "-c"
+      - "log_min_duration_statement=-1"
+      - "-c"
+      - "log_connections=on"
+      - "-c"
+      - "log_disconnections=on"
+      - "-c"
+      - "fsync=off"           # bench-only: faster commits, NOT production
+      - "-c"
+      - "synchronous_commit=off"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+      AUTH_TYPE: trust
+      ADMIN_USERS: postgres
+    ports:
+      - "127.0.0.1:26432:5432"            # localhost only
+
+  pgcat:
+    image: ghcr.io/postgresml/pgcat:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./pgcat/pgcat.toml:/etc/pgcat/pgcat.toml:ro
+    command: ["pgcat", "/etc/pgcat/pgcat.toml"]
+    ports:
+      - "127.0.0.1:26433:6433"            # localhost only
+
+  pgrouter:
+    build:
+      context: ../../..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: phasea
+        COMMIT: phasea
+    image: pgrouter:phasea
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./pgrouter/pgrouter.yaml:/etc/pgrouter/pgrouter.yaml:ro
+    command: ["run", "--config", "/etc/pgrouter/pgrouter.yaml"]
+    ports:
+      - "127.0.0.1:26434:6434"            # localhost only
