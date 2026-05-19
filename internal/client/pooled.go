@@ -47,6 +47,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire/rawconn"
 	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -150,6 +151,21 @@ type PooledConfig struct {
 	// per-Parse hash + map lookup overhead outweighs the cache-hit
 	// savings. Mirrors cfg.Wire.PreparedCache.
 	PreparedCache bool
+
+	// RawPassthrough, when true, bypasses pgproto3 for client→backend
+	// message reading. Instead of decoding each frontend message into a
+	// Go struct and re-encoding it for the backend, raw bytes are read
+	// directly from the client socket and forwarded to the backend. Only
+	// Query and Parse messages have their SQL extracted for GUC/pin/
+	// classification — everything else is pure passthrough.
+	//
+	// This eliminates per-message struct allocations and encode/decode
+	// overhead on the client→backend hot path. Backend→client splice
+	// (Phase A) continues to work independently.
+	//
+	// Trade-off: prepared-cache interception is disabled when raw
+	// passthrough is active (messages can't be rewritten without decode).
+	RawPassthrough bool
 }
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -340,6 +356,11 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// StartupMessage values (HB2).
 		h.counters = stats.NewTenantCounters(h.Database, h.User,
 			stats.SanitizeAppName(h.App))
+	}
+
+	// Raw passthrough: bypass pgproto3 for client→backend hot path.
+	if h.RawPassthrough {
+		return h.serveRaw(ctx, conn)
 	}
 	// Cache whether idle timeouts are active so the per-message
 	// applyIdleDeadline can skip 2 SetReadDeadline syscalls when not
@@ -1572,4 +1593,295 @@ func randomBackendKey() (uint32, []byte, error) {
 	sec := make([]byte, 4)
 	copy(sec, buf[4:8])
 	return pid, sec, nil
+}
+
+// serveRaw is the raw-passthrough variant of Serve. When
+// PooledConfig.RawPassthrough is true, this method handles the client
+// connection by reading raw bytes (bypassing pgproto3 decode/re-encode)
+// and forwarding them directly to the backend. Only Query and Parse
+// messages have their SQL extracted for GUC/pin/classification.
+//
+// Backend→client splice (Phase A) continues to work independently.
+// Prepared-cache interception is NOT supported in raw mode (messages
+// can't be rewritten without decode).
+func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
+	log := h.Log.With("remote", conn.RemoteAddr().String(), "mode", "raw")
+
+	h.hasIdleDeadline = h.ClientIdleTimeout > 0 || h.IdleTxTimeout > 0
+
+	be := pgproto3.NewBackend(conn, conn)
+	rawClient := rawconn.New(conn)
+
+	// 1. Send the synthetic welcome.
+	if err := h.sendWelcome(ctx, be); err != nil {
+		return fmt.Errorf("welcome: %w", err)
+	}
+	log.Info("pooled client ready (raw passthrough)")
+
+	state := NewClientState()
+	gucCache := NewGUCCache()
+
+	var lastSQL, lastKind string
+	var curSpan trace.Span
+	var lastWriteAt time.Time
+
+	// First synthetic RFQ → mark client idle.
+	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+
+	var bConn *backend.Conn
+	var bConnPool *pool.Pool
+	sessionPinned := false
+
+	// Write buffer for batching client→backend messages. Messages are
+	// accumulated here and flushed to bConn.NetConn when a drain
+	// trigger (Sync/Query) arrives, coalescing multiple small writes
+	// into a single write syscall.
+	var writeBuf []byte
+
+	defer func() {
+		if bConn != nil {
+			releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+			bConnPool = nil
+		}
+		if curSpan != nil {
+			h.markSpanFailed(curSpan, "PGROUTER_ABORTED",
+				"serve loop aborted before query completion")
+			curSpan = nil
+		}
+	}()
+
+	for {
+		// Honour cancellation between messages.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		h.applyIdleDeadline(conn, state)
+
+		tag, raw, err := rawClient.ReadMessage()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				log.Debug("client EOF")
+				return nil
+			}
+			if isTimeoutErr(err) {
+				inTx := !state.Tx().IsIdle()
+				which := "client_idle_timeout"
+				code := "57P05"
+				if inTx {
+					which = "idle_transaction_timeout"
+					code = "25P03"
+					h.counters.OnIdleTxTimeout()
+				} else {
+					h.counters.OnClientIdleTimeout()
+				}
+				log.Info("client closed by timeout", "kind", which)
+				h.sendFatalErrorWithWriteDeadline(be, conn, code,
+					"pgrouter: "+which, 200*time.Millisecond)
+				return nil
+			}
+			return fmt.Errorf("client recv: %w", err)
+		}
+
+		// Clear the read deadline.
+		if h.hasIdleDeadline {
+			_ = conn.SetReadDeadline(time.Time{})
+		}
+
+		// Terminate.
+		if rawconn.IsTerminate(tag) {
+			log.Info("client sent Terminate")
+			return nil
+		}
+
+		// Track QueriesIssued for Query/Parse (mirrors ObserveClientMessage).
+		if tag == rawconn.TagQuery || tag == rawconn.TagParse {
+			state.QueriesIssued++
+		}
+
+		// Extract SQL + compute SQLInfo for Query/Parse.
+		var sql string
+		var sqlInfo *SQLInfo
+		switch tag {
+		case rawconn.TagQuery:
+			sql = rawconn.ExtractQuerySQL(raw)
+			info := AnalyzeSQL(sql)
+			sqlInfo = &info
+			h.logSQL(log, "query", "", sql)
+		case rawconn.TagParse:
+			_, sql = rawconn.ExtractParseFields(raw)
+			info := AnalyzeSQL(sql)
+			sqlInfo = &info
+			h.logSQL(log, "parse", "", sql)
+		}
+
+		// GUC + session-pin observation.
+		if sqlInfo != nil {
+			gucCache.ObserveQueryWithInfo(sql, sqlInfo)
+			if !sessionPinned && sqlInfo.NeedsPin {
+				sessionPinned = true
+				log.Info("session pinned (force-session)",
+					"reason", "incompatible feature",
+					"sql_prefix", truncate(sql, 64))
+			}
+		}
+
+		// Unrecognized SET → force session-pin.
+		if !sessionPinned && gucCache.HasUnrecognizedSet() {
+			sessionPinned = true
+			log.Info("session pinned (force-session)",
+				"reason", "SET of GUC outside replayable whitelist")
+		}
+
+		// Statement-mode: reject explicit BEGIN.
+		if h.isStatementMode() {
+			if tag == rawconn.TagQuery {
+				if IsExplicitBeginSQL(sql) {
+					log.Info("statement_mode: rejecting explicit BEGIN",
+						"sql_prefix", truncate(sql, 64))
+					h.sendErrorWithRFQ(be, "25001",
+						"pgrouter: explicit transactions are not allowed in statement-mode pool")
+					continue
+				}
+			}
+		}
+
+		// Per-query counters + slow-query stash + SQL classification.
+		var curSQLOp SQLOp
+		var curROBegin bool
+		if tag == rawconn.TagQuery || tag == rawconn.TagParse {
+			if !h.takeQPS() {
+				log.Info("qps_limit: rejected", "kind", "raw")
+				h.sendErrorWithRFQ(be, "53300",
+					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
+						h.Database, h.User))
+				continue
+			}
+			h.counters.OnQuery()
+			lastSQL = sql
+			if tag == rawconn.TagQuery {
+				lastKind = "query"
+			} else {
+				lastKind = "parse"
+			}
+			if curSpan != nil {
+				h.markSpanFailed(curSpan, "PGROUTER_SUPERSEDED",
+					"replaced by next Query/Parse before drain")
+			}
+			curSpan = h.startQuerySpan(ctx, lastKind, sql, "")
+			if sqlInfo != nil {
+				curSQLOp = sqlInfo.Op
+				curROBegin = sqlInfo.IsROBegin
+			} else {
+				curSQLOp, curROBegin = ClassifyDetail(sql)
+			}
+			if curSQLOp == SQLOpWrite && !curROBegin {
+				lastWriteAt = time.Now()
+			}
+		}
+
+		// Acquire a backend lazily on the first traffic-generating message.
+		needsBackend := rawconn.NeedsBackend(tag)
+		if needsBackend && bConn == nil {
+			acquirePool := h.selectPoolForMsg(sessionPinned,
+				curSQLOp, curROBegin, lastWriteAt)
+			if acquirePool == h.Pool && h.PrimaryHealthy != nil && !h.PrimaryHealthy() {
+				log.Info("failover: rejecting write — primary unhealthy",
+					"db", h.Database)
+				h.sendErrorWithRFQ(be, "08006",
+					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
+				if curSpan != nil {
+					h.markSpanFailed(curSpan, "08006", "primary unhealthy (failover)")
+					curSpan = nil
+				}
+				continue
+			}
+			bConn, err = acquirePool.Acquire(ctx)
+			if err != nil {
+				h.sendFatalError(be, "08006",
+					fmt.Sprintf("pgrouter: cannot acquire backend: %v", err))
+				return err
+			}
+			bConnPool = acquirePool
+			log.Debug("backend acquired", "backend_pid", bConn.PostgresPID)
+
+			// Phase A splice on the fresh backend.
+			h.setupSplice(bConn)
+
+			// Replay GUCs.
+			if replay := gucCache.ReplayQuery(); replay != "" {
+				if err := h.fireReplay(bConn, replay); err != nil {
+					log.Warn("guc replay failed; treating backend as bad", "err", err)
+					_ = bConn.Close()
+					bConn = nil
+					h.sendFatalError(be, "57P03",
+						fmt.Sprintf("pgrouter: backend replay failed: %v", err))
+					return err
+				}
+			}
+		}
+
+		if bConn != nil {
+			// Forward raw bytes to backend. Boring messages
+			// (Execute/Sync/Flush) go directly; Query/Parse go
+			// with their original raw bytes (no rewrite in raw mode).
+			writeBuf = append(writeBuf, raw...)
+
+			// Flush when a drain trigger arrives.
+			if rawconn.IsDrainTrigger(tag) {
+				if _, err := bConn.NetConn.Write(writeBuf); err != nil {
+					return fmt.Errorf("server send: %w", err)
+				}
+				writeBuf = writeBuf[:0]
+
+				queryStart := time.Now()
+				if h.QueryTimeout > 0 {
+					_ = bConn.NetConn.SetReadDeadline(time.Now().Add(h.QueryTimeout))
+				}
+
+				out, updatedSpan, err := h.drainBackendUntilRFQ(drainInput{
+					bConn:          bConn,
+					be:             be,
+					clientConn:     conn,
+					log:            log,
+					state:          state,
+					pendingEvictCC: new(int),
+					queryStart:     queryStart,
+					lastSQL:        lastSQL,
+					lastKind:       lastKind,
+					lastPrepName:   "",
+					curSpan:        curSpan,
+					sessionPinned:  sessionPinned,
+					spliceReader:   h.bConnSpliceReader,
+					spliceBufSize:  spliceBufSize(h.Splice),
+				})
+				if err != nil {
+					return err
+				}
+				curSpan = updatedSpan
+				if out.shouldRelease {
+					releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+					bConnPool = nil
+					bConn = nil
+				}
+				if out.queryTimedOut {
+					_ = bConn.Close()
+					bConn = nil
+					h.counters.OnQueryDuration(time.Since(queryStart).Seconds())
+					h.sendFatalErrorWithWriteDeadline(be, conn, "57014",
+						fmt.Sprintf("pgrouter: query_timeout (%s) exceeded", h.QueryTimeout),
+						200*time.Millisecond)
+				}
+			}
+			continue
+		}
+
+		// Backend not needed — synthesize no-op response.
+		if tag == rawconn.TagSync {
+			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+			_ = be.Flush()
+		}
+	}
 }

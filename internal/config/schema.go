@@ -57,6 +57,16 @@ type WireConfig struct {
 	// overhead shows up as a net regression.
 	PreparedCache *bool `yaml:"prepared_cache,omitempty"`
 
+	// RawPassthrough bypasses pgproto3 for client→backend message
+	// reading. Raw bytes are read from the client socket and forwarded
+	// directly to the backend — no struct allocation, no decode/re-encode.
+	// Only Query/Parse have their SQL extracted for GUC/pin/classification.
+	// Backend→client splice continues to work independently.
+	//
+	// Trade-off: prepared-cache interception is disabled in raw mode.
+	// Default false. Set true for maximum throughput on simple workloads.
+	RawPassthrough *bool `yaml:"raw_passthrough,omitempty"`
+
 
 }
 

@@ -383,6 +383,10 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 	if in.Cfg.Wire.PreparedCache != nil {
 		preparedCache = *in.Cfg.Wire.PreparedCache
 	}
+	rawPassthrough := false
+	if in.Cfg.Wire.RawPassthrough != nil {
+		rawPassthrough = *in.Cfg.Wire.RawPassthrough
+	}
 	return &client.PooledHandler{
 		Log:               in.Log,
 		Manager:           in.Mgr,
@@ -406,8 +410,9 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 			}
 			return ""
 		},
-		Splice:        spliceCfg,
-		PreparedCache: preparedCache,
+		Splice:         spliceCfg,
+		PreparedCache:  preparedCache,
+		RawPassthrough: rawPassthrough,
 	}
 }
 

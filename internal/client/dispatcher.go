@@ -119,6 +119,11 @@ type PooledHandler struct {
 	// Default true. Mirrors cfg.Wire.PreparedCache.
 	PreparedCache bool
 
+	// RawPassthrough bypasses pgproto3 for client→backend message
+	// reading. Raw bytes are read from the client socket and forwarded
+	// directly to the backend. Default false. Mirrors cfg.Wire.RawPassthrough.
+	RawPassthrough bool
+
 	// Router answers per-tenant routing questions (replica pick,
 	// sticky-read window, primary health, QPS cap). nil → routing
 	// disabled (always primary; healthy; no rate limit). Replaces
@@ -340,6 +345,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			Audit:             h.Audit,
 			Splice:            h.Splice,
 			PreparedCache:     h.PreparedCache,
+			RawPassthrough:    h.RawPassthrough,
 		},
 		Log:           log,
 		Pool:          p,
