@@ -126,6 +126,12 @@ func (c *GUCCache) HasUnrecognizedSet() bool {
 // Returns true if the cache was modified (caller may want to invalidate
 // any pending replay).
 func (c *GUCCache) ObserveQuery(sql string) bool {
+	// Fast-path: GUC patterns are DISCARD, RESET, SET — all start with
+	// a distinct keyword. If the first keyword is not one of these,
+	// skip all 3 regex evaluations (the vast majority of queries).
+	if !maybeNeedsGUC(sql) {
+		return false
+	}
 	if discardRe.MatchString(sql) {
 		c.mu.Lock()
 		modified := len(c.vars) > 0 || c.unrecognized
@@ -206,4 +212,66 @@ func (c *GUCCache) ReplayQuery() string {
 		fmt.Fprintf(&b, "SET %s=%s; ", name, val)
 	}
 	return strings.TrimSuffix(b.String(), " ")
+}
+
+// maybeNeedsGUC returns false if the SQL's first keyword provably
+// cannot match any GUC pattern (DISCARD, RESET, SET). This skips
+// 3 regex evaluations for the vast majority of queries.
+func maybeNeedsGUC(sql string) bool {
+	i := 0
+	for i < len(sql) {
+		c := sql[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			i++
+			continue
+		}
+		if i+1 < len(sql) && c == '-' && sql[i+1] == '-' {
+			i += 2
+			for i < len(sql) && sql[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if i+1 < len(sql) && c == '/' && sql[i+1] == '*' {
+			i += 2
+			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(sql) {
+				i += 2
+			} else {
+				i = len(sql)
+			}
+			continue
+		}
+		break
+	}
+	if i >= len(sql) {
+		return true
+	}
+	j := i
+	for j < len(sql) && sql[j] != ' ' && sql[j] != '\t' && sql[j] != '\n' && sql[j] != '\r' && sql[j] != '(' && sql[j] != ';' {
+		j++
+	}
+	if j == i {
+		return true
+	}
+	var buf [16]byte
+	kwLen := j - i
+	if kwLen > len(buf) {
+		return true
+	}
+	for k := 0; k < kwLen; k++ {
+		c := sql[i+k]
+		if c >= 'a' && c <= 'z' {
+			c -= 32
+		}
+		buf[k] = c
+	}
+	kw := string(buf[:kwLen])
+	switch kw {
+	case "DISCARD", "RESET", "SET":
+		return true
+	}
+	return false
 }

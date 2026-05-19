@@ -238,7 +238,10 @@ type PooledConn struct {
 	// or Splice is disabled. See setupSplice.
 	bConnSpliceReader *splice.RawReader
 
-
+	// hasIdleDeadline is true when either ClientIdleTimeout or
+	// IdleTxTimeout is configured. When false, the two per-message
+	// SetReadDeadline syscalls are eliminated entirely.
+	hasIdleDeadline bool
 }
 
 // NewPooledConn returns a PooledConn with production defaults applied:
@@ -338,6 +341,10 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		h.counters = stats.NewTenantCounters(h.Database, h.User,
 			stats.SanitizeAppName(h.App))
 	}
+	// Cache whether idle timeouts are active so the per-message
+	// applyIdleDeadline can skip 2 SetReadDeadline syscalls when not
+	// configured.
+	h.hasIdleDeadline = h.ClientIdleTimeout > 0 || h.IdleTxTimeout > 0
 
 	be := pgproto3.NewBackend(conn, conn)
 	clientSide := proto.WrapClientBackend(be)
@@ -456,7 +463,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 
 		// Clear the read deadline so subsequent in-loop reads aren't
 		// constrained by the idle limits.
-		_ = conn.SetReadDeadline(time.Time{})
+		if h.hasIdleDeadline {
+			_ = conn.SetReadDeadline(time.Time{})
+		}
 
 		// Terminate: tear down without a final round trip.
 		if proto.IsTerminate(msg) {
@@ -1330,8 +1339,7 @@ func messageNeedsBackend(msg pgproto3.FrontendMessage) bool {
 // every Serve-loop iteration so a fresh client message keeps the
 // connection alive.
 func (h *PooledConn) applyIdleDeadline(conn net.Conn, state *ClientState) {
-	if h.ClientIdleTimeout <= 0 && h.IdleTxTimeout <= 0 {
-		_ = conn.SetReadDeadline(time.Time{})
+	if !h.hasIdleDeadline {
 		return
 	}
 	var d time.Duration
