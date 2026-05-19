@@ -12,7 +12,7 @@ server:
 
 pool:
   mode: transaction
-  default_pool_size: 20
+  default_pool_size: 32
   min_pool_size: 0
   query_wait_timeout: 60s
   server_idle_timeout: 600s
