@@ -62,7 +62,7 @@ func TestObserveClientMessageEmitsQueryLog(t *testing.T) {
 	prep := NewPrepareCache()
 	pinned := false
 	pc.observeClientMessage(&pgproto3.Query{String: "SELECT 1"},
-		guc, prep, &pinned, pc.Log)
+		guc, prep, &pinned, pc.Log, nil)
 	require.Contains(t, buf.String(), "kind=query")
 }
 
@@ -73,7 +73,7 @@ func TestObserveClientMessageEmitsParseLog(t *testing.T) {
 	prep := NewPrepareCache()
 	pinned := false
 	pc.observeClientMessage(&pgproto3.Parse{Name: "s1", Query: "SELECT $1"},
-		guc, prep, &pinned, pc.Log)
+		guc, prep, &pinned, pc.Log, nil)
 	out := buf.String()
 	require.Contains(t, out, "kind=parse")
 	require.Contains(t, out, "prepared_name=s1")

@@ -132,6 +132,20 @@ func (c *GUCCache) ObserveQuery(sql string) bool {
 	if !maybeNeedsGUC(sql) {
 		return false
 	}
+	return c.applyGUC(sql)
+}
+
+// ObserveQueryWithInfo is like ObserveQuery but uses pre-computed
+// SQLInfo.NeedsGUC to skip the keyword extraction entirely.
+func (c *GUCCache) ObserveQueryWithInfo(sql string, info *SQLInfo) bool {
+	if !info.NeedsGUC {
+		return false
+	}
+	return c.applyGUC(sql)
+}
+
+// applyGUC runs the actual DISCARD/RESET/SET regex matching.
+func (c *GUCCache) applyGUC(sql string) bool {
 	if discardRe.MatchString(sql) {
 		c.mu.Lock()
 		modified := len(c.vars) > 0 || c.unrecognized

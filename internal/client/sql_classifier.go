@@ -34,6 +34,94 @@ const (
 	SQLOpWrite
 )
 
+// SQLInfo holds all per-message SQL analysis results computed in a
+// single pass. Avoids redundant keyword extraction, comment stripping,
+// and regex evaluation across GUC cache, session pin, classifier, and
+// statement-mode checks.
+type SQLInfo struct {
+	Keyword    string // first keyword uppercased (e.g. "SELECT")
+	Op         SQLOp  // Read / Write / Unknown
+	IsROBegin  bool   // read-only BEGIN variant
+	NeedsPin   bool   // session-pin trigger detected
+	NeedsGUC   bool   // DISCARD / RESET / SET detected
+	HasPgAdv   bool   // pg_advisory* function call present
+	Stripped   string // SQL with leading whitespace+comments stripped
+	HasSQL     bool   // true if sql was non-empty
+}
+
+// AnalyzeSQL computes all per-message SQL results in one pass:
+//   - strips leading whitespace + comments once
+//   - extracts first keyword once (uppercased)
+//   - classifies Read/Write
+//   - checks readOnlyBegin regex (only for BEGIN variants)
+//   - checks GUC patterns (DISCARD/RESET/SET keyword)
+//   - checks session-pin patterns (keyword + pg_advisory substring)
+//
+// This replaces 3 independent keyword extractions + 6 regex evals
+// with a single scan.
+func AnalyzeSQL(sql string) SQLInfo {
+	if len(sql) == 0 {
+		return SQLInfo{Op: SQLOpUnknown}
+	}
+	s := stripLeadingNoise(sql)
+	kw := firstKeyword(s)
+	if len(kw) == 0 {
+		return SQLInfo{Stripped: s, HasSQL: true, Op: SQLOpUnknown}
+	}
+
+	// Classification (1 pass, matches classifyStripped logic).
+	var op SQLOp
+	switch kw {
+	case "SELECT", "VALUES", "TABLE", "SHOW":
+		op = SQLOpRead
+	case "EXPLAIN":
+		op = classifyExplain(s)
+	case "WITH":
+		op = classifyCTE(s)
+	default:
+		op = SQLOpWrite
+	}
+
+	// readOnly BEGIN check — only run for BEGIN-like keywords.
+	isROBegin := false
+	if kw == "BEGIN" || kw == "START" {
+		isROBegin = readOnlyBeginRE.MatchString(s)
+	}
+
+	// GUC check — keyword is DISCARD, RESET, or SET.
+	needsGUC := kw == "DISCARD" || kw == "RESET" || kw == "SET"
+
+	// Session-pin check — keyword-based fast-path + pg_advisory scan.
+	needsPin := false
+	hasPgAdv := false
+	for i := 0; i+10 <= len(sql); i++ {
+		if sql[i] == 'p' && sql[i+1] == 'g' && sql[i+2] == '_' &&
+			(sql[i+3] == 'a' || sql[i+3] == 'A') &&
+			(sql[i+4] == 'd' || sql[i+4] == 'D') {
+			hasPgAdv = true
+			needsPin = true
+			break
+		}
+	}
+	if !needsPin {
+		switch kw {
+		case "LISTEN", "CREATE", "DECLARE":
+			needsPin = true
+		}
+	}
+
+	return SQLInfo{
+		Keyword:  kw,
+		Op:       op,
+		IsROBegin: isROBegin,
+		NeedsPin: needsPin,
+		NeedsGUC: needsGUC,
+		HasPgAdv: hasPgAdv,
+		Stripped: s,
+		HasSQL:   true,
+	}
+}
+
 // ClassifySQL returns Read / Write / Unknown for sql.
 // Empty / whitespace-only input → Unknown.
 func ClassifySQL(sql string) SQLOp {

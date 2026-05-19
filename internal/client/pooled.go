@@ -474,7 +474,17 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		}
 
 		state.ObserveClientMessage(msg)
-		h.observeClientMessage(msg, gucCache, prepCache, &sessionPinned, log)
+		// Compute SQL analysis once per message. Used by observeClientMessage
+		// (GUC + pin check) and by classification below.
+		var sqlInfo *SQLInfo
+		if q, ok := msg.(*pgproto3.Query); ok {
+			info := AnalyzeSQL(q.String)
+			sqlInfo = &info
+		} else if p, ok := msg.(*pgproto3.Parse); ok {
+			info := AnalyzeSQL(p.Query)
+			sqlInfo = &info
+		}
+		h.observeClientMessage(msg, gucCache, prepCache, &sessionPinned, log, sqlInfo)
 		// Unrecognized SET (outside the GUC replay whitelist) forces
 		// session-pin: replaying an unknown variable across backends
 		// would be incorrect, so we hold the current backend instead.
@@ -523,10 +533,14 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					"replaced by next Query/Parse before drain")
 			}
 			curSpan = h.startQuerySpan(ctx, kind, sql, prepName)
-			// ClassifyDetail does both classifications in a single
-			// stripLeadingNoise pass; the prior code paid that scan
-			// twice per Query/Parse.
-			curSQLOp, curROBegin = ClassifyDetail(sql)
+			// Use pre-computed SQLInfo when available (eliminates
+			// redundant keyword extraction + regex from ClassifyDetail).
+			if sqlInfo != nil {
+				curSQLOp = sqlInfo.Op
+				curROBegin = sqlInfo.IsROBegin
+			} else {
+				curSQLOp, curROBegin = ClassifyDetail(sql)
+			}
 			if curSQLOp == SQLOpWrite && !curROBegin {
 				lastWriteAt = time.Now()
 			}
@@ -903,24 +917,38 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 }
 
 // observeClientMessage runs the per-message hooks that drive the GUC +
-// prepare caches and the session-pin trigger.
+// prepare caches and the session-pin trigger. info, if non-nil, holds
+// pre-computed SQL analysis (from AnalyzeSQL) that replaces redundant
+// keyword extraction + regex evals.
 func (h *PooledConn) observeClientMessage(
 	msg pgproto3.FrontendMessage,
 	gucCache *GUCCache,
 	prepCache *PrepareCache,
 	sessionPinned *bool,
 	log *slog.Logger,
+	info *SQLInfo,
 ) {
 	switch m := msg.(type) {
 	case *pgproto3.Query:
 		h.logSQL(log, "query", "", m.String)
-		gucCache.ObserveQuery(m.String)
-		if !*sessionPinned && needsSessionPin(m.String) {
-			*sessionPinned = true
-			log.Info("session pinned (force-session)",
-				"reason", "incompatible feature in Query",
-				"sql_prefix", truncate(m.String, 64),
-			)
+		if info != nil {
+			gucCache.ObserveQueryWithInfo(m.String, info)
+			if !*sessionPinned && info.NeedsPin {
+				*sessionPinned = true
+				log.Info("session pinned (force-session)",
+					"reason", "incompatible feature in Query",
+					"sql_prefix", truncate(m.String, 64),
+				)
+			}
+		} else {
+			gucCache.ObserveQuery(m.String)
+			if !*sessionPinned && needsSessionPin(m.String) {
+				*sessionPinned = true
+				log.Info("session pinned (force-session)",
+					"reason", "incompatible feature in Query",
+					"sql_prefix", truncate(m.String, 64),
+				)
+			}
 		}
 	case *pgproto3.Parse:
 		h.logSQL(log, "parse", m.Name, m.Query)
@@ -930,12 +958,22 @@ func (h *PooledConn) observeClientMessage(
 		if prepCache != nil {
 			prepCache.Observe(m.Name, m.Query, m.ParameterOIDs)
 		}
-		if !*sessionPinned && needsSessionPin(m.Query) {
-			*sessionPinned = true
-			log.Info("session pinned (force-session)",
-				"reason", "incompatible feature in Parse",
-				"sql_prefix", truncate(m.Query, 64),
-			)
+		if info != nil {
+			if !*sessionPinned && info.NeedsPin {
+				*sessionPinned = true
+				log.Info("session pinned (force-session)",
+					"reason", "incompatible feature in Parse",
+					"sql_prefix", truncate(m.Query, 64),
+				)
+			}
+		} else {
+			if !*sessionPinned && needsSessionPin(m.Query) {
+				*sessionPinned = true
+				log.Info("session pinned (force-session)",
+					"reason", "incompatible feature in Parse",
+					"sql_prefix", truncate(m.Query, 64),
+				)
+			}
 		}
 	case *pgproto3.Close:
 		// Close('S', name) untracks a prepared statement.
