@@ -67,6 +67,13 @@ type WireConfig struct {
 	// Default false. Set true for maximum throughput on simple workloads.
 	RawPassthrough *bool `yaml:"raw_passthrough,omitempty"`
 
+	// SkipResetQuery, when true, skips the DISCARD ALL (or custom
+	// server_reset_query) on backend release. Saves 1 write + 2 read
+	// syscalls + 4 heap allocs per transaction. Safe when clients
+	// don't use session-level state (SET, LISTEN, temp tables, etc.)
+	// and the workload is purely transactional. Default false.
+	SkipResetQuery *bool `yaml:"skip_reset_query,omitempty"`
+
 
 }
 
@@ -76,6 +83,35 @@ type ServerConfig struct {
 	ListenPort     int           `yaml:"listen_port"`      // default 6432
 	UnixSocketDir  string        `yaml:"unix_socket_dir,omitempty"`
 	UnixSocketMode string        `yaml:"unix_socket_mode,omitempty"` // "0777"
+
+	// SingleThread pins Go to a single OS thread (runtime.GOMAXPROCS=1)
+	// for low-latency proxy workloads. Eliminates goroutine scheduling
+	// overhead and CPU cache thrashing from thread migration. Safe for
+	// connection poolers where the hot path is I/O-bound (Read/Write
+	// syscalls yield the goroutine). Disable if the workload includes
+	// CPU-heavy query processing (e.g. complex SQL parsing, TLS-heavy
+	// auth). Default false.
+	SingleThread *bool `yaml:"single_thread,omitempty"`
+
+	// GOGC overrides the Go garbage collector's GOGC value at startup.
+	// GOGC controls heap growth ratio before GC triggers: GOGC=100
+	// (default) means GC runs when heap doubles. Higher values reduce
+	// GC frequency at the cost of more memory. For poolers with low
+	// live heap (~1-2MB), GOGC=200 or higher is safe and reduces GC
+	// CPU overhead significantly. Set to "off" to disable GC entirely
+	// (dangerous for long-running processes with unbounded alloc).
+	// Default: Go runtime default (100).
+	GOGC string `yaml:"gogc,omitempty"`
+
+	// SocketRecvBuf overrides SO_RCVBUF on accepted client connections.
+	// Larger buffers reduce read syscall frequency under high throughput.
+	// Default 0 = kernel default (typically 128-256KB).
+	SocketRecvBuf int `yaml:"socket_recv_buf,omitempty"`
+
+	// SocketSendBuf overrides SO_SNDBUF on accepted client connections.
+	// Larger buffers reduce write syscall frequency under high throughput.
+	// Default 0 = kernel default (typically 128-256KB).
+	SocketSendBuf int `yaml:"socket_send_buf,omitempty"`
 
 	// ProxyProtocol enables HAProxy PROXY v1/v2 preamble parsing on
 	// every accepted TCP conn. Required when pgrouter sits behind an

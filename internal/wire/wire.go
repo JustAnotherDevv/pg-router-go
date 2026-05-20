@@ -387,6 +387,7 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 	if in.Cfg.Wire.RawPassthrough != nil {
 		rawPassthrough = *in.Cfg.Wire.RawPassthrough
 	}
+	skipReset := in.Cfg.Wire.SkipResetQuery != nil && *in.Cfg.Wire.SkipResetQuery
 	return &client.PooledHandler{
 		Log:               in.Log,
 		Manager:           in.Mgr,
@@ -394,7 +395,7 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 		Auth:              in.AuthOpts,
 		CancelTracker:     in.CancelTracker,
 		CannedParams:      in.CannedParams,
-		ResetOnRelease:    true,
+		ResetOnRelease:    !skipReset,
 		QueryTimeout:      in.Cfg.Pool.QueryTimeout,
 		ClientIdleTimeout: in.Cfg.Server.ClientIdle,
 		IdleTxTimeout:     in.Cfg.Server.IdleTx,

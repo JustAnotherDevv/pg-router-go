@@ -23,6 +23,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
@@ -150,6 +152,24 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	// --- GOMAXPROCS ---
+	singleThread := cfg.Server.SingleThread != nil && *cfg.Server.SingleThread
+	if singleThread {
+		runtime.GOMAXPROCS(1)
+	}
+
+	// --- GOGC ---
+	if cfg.Server.GOGC != "" {
+		switch cfg.Server.GOGC {
+		case "off", "OFF":
+			debug.SetGCPercent(-1)
+		default:
+			if v, err := strconv.Atoi(cfg.Server.GOGC); err == nil && v > 0 {
+				debug.SetGCPercent(v)
+			}
+		}
+	}
+
 	log := newLogger(cfg.Logging.Format, cfg.Logging.Level)
 	listenAddr := net.JoinHostPort(cfg.Server.ListenAddr, strconv.Itoa(cfg.Server.ListenPort))
 	log.Info("pgrouter starting",
@@ -158,6 +178,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		"listen", listenAddr,
 		"pool_mode", string(cfg.Pool.Mode),
 		"databases", len(cfg.Databases),
+		"single_thread", singleThread,
 	)
 
 	// --- OTel tracing (no-op when OTEL_EXPORTER_OTLP_ENDPOINT unset) ---
