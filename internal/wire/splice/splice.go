@@ -501,47 +501,66 @@ func DrainSplice(dst io.Writer, src SpliceReader, bufsize int) (rerr error) {
 	bp := GetSpliceBuf(bufsize)
 	defer PutSpliceBuf(bp)
 	buf := *bp
-	hdr := buf[:HeaderSize]
+
+	// We read headers into a dedicated region at the tail of buf.
+	// This avoids overwriting coalesced data at buf[0:woff] when
+	// reading the next header. hdrOff is the write position in the
+	// tail region; we reset it each time we flush.
+	hdrRegion := buf[bufsize-HeaderSize:] // 5 bytes at the end
+	hdr := hdrRegion
+
+	woff := 0 // bytes accumulated in buf[0:woff]
 
 	for {
 		// Read the 5-byte header via the shared chunkReader.
 		if _, err := io.ReadFull(src, hdr); err != nil {
 			if err == io.EOF {
+				if woff > 0 {
+					_, _ = dst.Write(buf[:woff])
+				}
 				return io.EOF
 			}
 			return err
 		}
 		tag := hdr[0]
-		// length is the message length including the 4 length bytes
-		// (per Postgres FE/BE protocol). bodyLen is the rest.
 		bodyLen := int(binary.BigEndian.Uint32(hdr[1:5])) - 4
 		if bodyLen < 0 {
-			// Malformed message; bail out. Rewind the header
-			// bytes so Frontend.Receive can decode them.
 			src.Rewind(hdr)
 			return errors.New("wire: negative body length in splice header")
 		}
 
 		if Classify(tag) == ClassBoring {
-			if bodyLen == 0 {
-				if _, err := dst.Write(hdr); err != nil {
-					return err
+			msgTotal := HeaderSize + bodyLen
+			if woff+msgTotal <= bufsize-HeaderSize {
+				// Fits: copy header from tail region into the
+				// accumulation area, then read body after it.
+				copy(buf[woff:], hdr)
+				if bodyLen > 0 {
+					if _, err := io.ReadFull(src, buf[woff+HeaderSize:woff+msgTotal]); err != nil {
+						return err
+					}
 				}
+				woff += msgTotal
 				continue
 			}
-			// Single-write fast path: header + body fit in our buf.
-			if bodyLen <= bufsize-HeaderSize {
-				// Body lives at buf[5:5+bodyLen].
-				if _, err := io.ReadFull(src, buf[HeaderSize:HeaderSize+bodyLen]); err != nil {
+			// Flush, then handle this message.
+			if woff > 0 {
+				if _, err := dst.Write(buf[:woff]); err != nil {
 					return err
 				}
-				if _, err := dst.Write(buf[:HeaderSize+bodyLen]); err != nil {
-					return err
+				woff = 0
+			}
+			if msgTotal <= bufsize-HeaderSize {
+				copy(buf, hdr)
+				if bodyLen > 0 {
+					if _, err := io.ReadFull(src, buf[HeaderSize:msgTotal]); err != nil {
+						return err
+					}
 				}
+				woff = msgTotal
 				continue
 			}
-			// Two-write path: header then src body. Avoids
-			// allocating a huge buffer for one giant message.
+			// Giant message: two-write path.
 			if _, err := dst.Write(hdr); err != nil {
 				return err
 			}
@@ -551,8 +570,12 @@ func DrainSplice(dst io.Writer, src SpliceReader, bufsize int) (rerr error) {
 			continue
 		}
 
-		// Non-boring: stop. Rewind the 5 header bytes so
-		// pgproto3.Frontend.Receive() picks them up next.
+		// Non-boring: flush accumulated data, then stop.
+		if woff > 0 {
+			if _, err := dst.Write(buf[:woff]); err != nil {
+				return err
+			}
+		}
 		src.Rewind(hdr)
 		return ErrSpliceStop
 	}

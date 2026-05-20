@@ -81,6 +81,7 @@ func Init(ctx context.Context, version, commit string) (func(context.Context) er
 		sdktrace.WithSampler(samplerFromEnv()),
 	)
 	otel.SetTracerProvider(tp)
+	enabled = true
 
 	return tp.Shutdown, nil
 }
@@ -120,6 +121,15 @@ func samplerFromEnv() sdktrace.Sampler {
 func Tracer() trace.Tracer {
 	return otel.Tracer(TracerName)
 }
+
+// Enabled reports whether OTel tracing is configured (i.e. an exporter
+// endpoint is set). When false, callers can skip span creation entirely
+// to avoid the attribute-build + Start() overhead on the hot path.
+var enabled bool
+
+// Enabled returns true when OTel tracing was successfully initialised
+// with a real exporter. Returns false in the no-op default case.
+func Enabled() bool { return enabled }
 
 // stripScheme removes leading "http://" / "https://" because
 // otlptracehttp wants just "host:port".

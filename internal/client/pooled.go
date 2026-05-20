@@ -258,6 +258,12 @@ type PooledConn struct {
 	// IdleTxTimeout is configured. When false, the two per-message
 	// SetReadDeadline syscalls are eliminated entirely.
 	hasIdleDeadline bool
+
+	// pendingEvictCC is a reusable counter for filtering
+	// CloseComplete frames during drain. Previously allocated via
+	// new(int) per drain cycle; now a field on PooledConn to avoid
+	// per-query heap allocation.
+	pendingEvictCC int
 }
 
 // NewPooledConn returns a PooledConn with production defaults applied:
@@ -789,6 +795,9 @@ type drainInput struct {
 	spliceReader *splice.RawReader
 	// spliceBufSize is the buffer size hint passed to DrainSplice.
 	spliceBufSize int
+	// spliceCoalesceSize is the max bytes to accumulate in the splice
+	// buffer before flushing (batch writes for fewer syscalls).
+	spliceCoalesceSize int
 }
 
 // drainOutcome is what the outer loop needs to act on:
@@ -1297,6 +1306,13 @@ func isReadMessage(msg pgproto3.FrontendMessage) bool {
 // On error paths (timeout, backend close) the deferred SetStatus +
 // End in the surrounding goroutine handle it.
 func (h *PooledConn) startQuerySpan(ctx context.Context, kind, sql, prepName string) trace.Span {
+	// Fast path: skip span creation entirely when tracing is not
+	// configured. Saves attribute-build + Start() overhead on the
+	// hot per-Query/Parse path (no-op tracer still has measurable
+	// cost at high QPS).
+	if !tracing.Enabled() {
+		return nil
+	}
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system", "postgresql"),
 		attribute.String("db.name", h.Database),
@@ -1847,7 +1863,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					clientConn:     conn,
 					log:            log,
 					state:          state,
-					pendingEvictCC: new(int),
+					pendingEvictCC: &h.pendingEvictCC,
 					queryStart:     queryStart,
 					lastSQL:        lastSQL,
 					lastKind:       lastKind,

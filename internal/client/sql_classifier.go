@@ -161,13 +161,171 @@ func ClassifyDetail(sql string) (op SQLOp, isROBegin bool) {
 	return
 }
 
+// eqFold returns true if a equals b case-insensitively.
+// a and b must be ASCII identifier bytes.
+func eqFold(a, b byte) bool {
+	return a == b || (a|0x20) == (b|0x20)
+}
+
 // firstKeyword returns the first SQL token uppercased.
+// Uses byte-level comparison to avoid strings.ToUpper allocation.
+// Returns canonical uppercase string for known keywords, or does a
+// single lowercase-byte scan for the fallback path (still cheaper than
+// strings.ToUpper which allocates + scans twice).
 func firstKeyword(s string) string {
 	i := 0
 	for i < len(s) && isIdentByte(s[i]) {
 		i++
 	}
-	return strings.ToUpper(s[:i])
+	if i == 0 {
+		return ""
+	}
+	// Direct byte comparisons — no allocation, no ToUpper.
+	// Only check keywords used by AnalyzeSQL + classifier switches.
+	switch i {
+	case 2:
+		if eqFold(s[0], 'd') && eqFold(s[1], 'o') {
+			return "DO"
+		}
+	case 3:
+		if eqFold(s[0], 's') && eqFold(s[1], 'e') && eqFold(s[2], 't') {
+			return "SET"
+		}
+	case 4:
+		if eqFold(s[0], 's') && eqFold(s[1], 'h') && eqFold(s[2], 'o') && eqFold(s[3], 'w') {
+			return "SHOW"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'a') && eqFold(s[2], 'l') && eqFold(s[3], 'l') {
+			return "CALL"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'o') && eqFold(s[2], 'p') && eqFold(s[3], 'y') {
+			return "COPY"
+		}
+		if eqFold(s[0], 'l') && eqFold(s[1], 'o') && eqFold(s[2], 'c') && eqFold(s[3], 'k') {
+			return "LOCK"
+		}
+	case 5:
+		if eqFold(s[0], 'b') && eqFold(s[1], 'e') && eqFold(s[2], 'g') && eqFold(s[3], 'i') && eqFold(s[4], 'n') {
+			return "BEGIN"
+		}
+		if eqFold(s[0], 'f') && eqFold(s[1], 'e') && eqFold(s[2], 't') && eqFold(s[3], 'c') && eqFold(s[4], 'h') {
+			return "FETCH"
+		}
+		if eqFold(s[0], 'm') && eqFold(s[1], 'e') && eqFold(s[2], 'r') && eqFold(s[3], 'g') && eqFold(s[4], 'e') {
+			return "MERGE"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'l') && eqFold(s[2], 'o') && eqFold(s[3], 's') && eqFold(s[4], 'e') {
+			return "CLOSE"
+		}
+		if eqFold(s[0], 's') && eqFold(s[1], 't') && eqFold(s[2], 'a') && eqFold(s[3], 'r') && eqFold(s[4], 't') {
+			return "START"
+		}
+		if eqFold(s[0], 't') && eqFold(s[1], 'a') && eqFold(s[2], 'b') && eqFold(s[3], 'l') && eqFold(s[4], 'e') {
+			return "TABLE"
+		}
+		if eqFold(s[0], 'r') && eqFold(s[1], 'e') && eqFold(s[2], 's') && eqFold(s[3], 'e') && eqFold(s[4], 't') {
+			return "RESET"
+		}
+	case 6:
+		if eqFold(s[0], 's') && eqFold(s[1], 'e') && eqFold(s[2], 'l') && eqFold(s[3], 'e') && eqFold(s[4], 'c') && eqFold(s[5], 't') {
+			return "SELECT"
+		}
+		if eqFold(s[0], 'u') && eqFold(s[1], 'p') && eqFold(s[2], 'd') && eqFold(s[3], 'a') && eqFold(s[4], 't') && eqFold(s[5], 'e') {
+			return "UPDATE"
+		}
+		if eqFold(s[0], 'd') && eqFold(s[1], 'e') && eqFold(s[2], 'l') && eqFold(s[3], 'e') && eqFold(s[4], 't') && eqFold(s[5], 'e') {
+			return "DELETE"
+		}
+		if eqFold(s[0], 'v') && eqFold(s[1], 'a') && eqFold(s[2], 'l') && eqFold(s[3], 'u') && eqFold(s[4], 'e') && eqFold(s[5], 's') {
+			return "VALUES"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'r') && eqFold(s[2], 'e') && eqFold(s[3], 'a') && eqFold(s[4], 't') && eqFold(s[5], 'e') {
+			return "CREATE"
+		}
+		if eqFold(s[0], 'r') && eqFold(s[1], 'e') && eqFold(s[2], 'v') && eqFold(s[3], 'o') && eqFold(s[4], 'k') && eqFold(s[5], 'e') {
+			return "REVOKE"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'o') && eqFold(s[2], 'm') && eqFold(s[3], 'm') && eqFold(s[4], 'i') && eqFold(s[5], 't') {
+			return "COMMIT"
+		}
+		if eqFold(s[0], 'l') && eqFold(s[1], 'i') && eqFold(s[2], 's') && eqFold(s[3], 't') && eqFold(s[4], 'e') && eqFold(s[5], 'n') {
+			return "LISTEN"
+		}
+	case 7:
+		if eqFold(s[0], 'i') && eqFold(s[1], 'n') && eqFold(s[2], 's') && eqFold(s[3], 'e') && eqFold(s[4], 'r') && eqFold(s[5], 't') {
+			return "INSERT"
+		}
+		if eqFold(s[0], 'e') && eqFold(s[1], 'x') && eqFold(s[2], 'p') && eqFold(s[3], 'l') && eqFold(s[4], 'a') && eqFold(s[5], 'i') && eqFold(s[6], 'n') {
+			return "EXPLAIN"
+		}
+		if eqFold(s[0], 'd') && eqFold(s[1], 'e') && eqFold(s[2], 'c') && eqFold(s[3], 'l') && eqFold(s[4], 'a') && eqFold(s[5], 'r') && eqFold(s[6], 'e') {
+			return "DECLARE"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'l') && eqFold(s[2], 'u') && eqFold(s[3], 's') && eqFold(s[4], 't') && eqFold(s[5], 'e') && eqFold(s[6], 'r') {
+			return "CLUSTER"
+		}
+		if eqFold(s[0], 'p') && eqFold(s[1], 'r') && eqFold(s[2], 'e') && eqFold(s[3], 'p') && eqFold(s[4], 'a') && eqFold(s[5], 'r') && eqFold(s[6], 'e') {
+			return "PREPARE"
+		}
+		if eqFold(s[0], 'r') && eqFold(s[1], 'e') && eqFold(s[2], 'i') && eqFold(s[3], 'n') && eqFold(s[4], 'd') && eqFold(s[5], 'e') && eqFold(s[6], 'x') {
+			return "REINDEX"
+		}
+		if eqFold(s[0], 'c') && eqFold(s[1], 'o') && eqFold(s[2], 'm') && eqFold(s[3], 'm') && eqFold(s[4], 'e') && eqFold(s[5], 'n') && eqFold(s[6], 't') {
+			return "COMMENT"
+		}
+		if eqFold(s[0], 'r') && eqFold(s[1], 'e') && eqFold(s[2], 'f') && eqFold(s[3], 'r') && eqFold(s[4], 'e') && eqFold(s[5], 's') && eqFold(s[6], 'h') {
+			return "REFRESH"
+		}
+		if eqFold(s[0], 'd') && eqFold(s[1], 'i') && eqFold(s[2], 's') && eqFold(s[3], 'c') && eqFold(s[4], 'a') && eqFold(s[5], 'r') && eqFold(s[6], 'd') {
+			return "DISCARD"
+		}
+		if eqFold(s[0], 'a') && eqFold(s[1], 'n') && eqFold(s[2], 'a') && eqFold(s[3], 'l') && eqFold(s[4], 'y') && eqFold(s[5], 'z') && eqFold(s[6], 'e') {
+			return "ANALYZE"
+		}
+		if eqFold(s[0], 'r') && eqFold(s[1], 'e') && eqFold(s[2], 'l') && eqFold(s[3], 'e') && eqFold(s[4], 'a') && eqFold(s[5], 's') && eqFold(s[6], 'e') {
+			return "RELEASE"
+		}
+	case 8:
+		if eqFold(s[0], 'r') && eqFold(s[1], 'o') && eqFold(s[2], 'l') && eqFold(s[3], 'l') && eqFold(s[4], 'b') && eqFold(s[5], 'a') && eqFold(s[6], 'c') && eqFold(s[7], 'k') {
+			return "ROLLBACK"
+		}
+		if eqFold(s[0], 't') && eqFold(s[1], 'r') && eqFold(s[2], 'u') && eqFold(s[3], 'n') && eqFold(s[4], 'c') && eqFold(s[5], 'a') && eqFold(s[6], 't') && eqFold(s[7], 'e') {
+			return "TRUNCATE"
+		}
+		if eqFold(s[0], 'u') && eqFold(s[1], 'n') && eqFold(s[2], 'l') && eqFold(s[3], 'i') && eqFold(s[4], 's') && eqFold(s[5], 't') && eqFold(s[6], 'e') && eqFold(s[7], 'n') {
+			return "UNLISTEN"
+		}
+		if eqFold(s[0], 's') && eqFold(s[1], 'e') && eqFold(s[2], 'c') && eqFold(s[3], 'u') && eqFold(s[4], 'r') && eqFold(s[5], 'i') && eqFold(s[6], 't') && eqFold(s[7], 'y') {
+			return "SECURITY"
+		}
+	case 9:
+		if eqFold(s[0], 's') && eqFold(s[1], 'a') && eqFold(s[2], 'v') && eqFold(s[3], 'e') && eqFold(s[4], 'p') && eqFold(s[5], 'o') && eqFold(s[6], 'i') && eqFold(s[7], 'n') && eqFold(s[8], 't') {
+			return "SAVEPOINT"
+		}
+		if eqFold(s[0], 'd') && eqFold(s[1], 'e') && eqFold(s[2], 'a') && eqFold(s[3], 'l') && eqFold(s[4], 'l') && eqFold(s[5], 'o') && eqFold(s[6], 'c') && eqFold(s[7], 'a') && eqFold(s[8], 't') {
+			return "DEALLOCATE"
+		}
+	case 10:
+		if eqFold(s[0], 'c') && eqFold(s[1], 'h') && eqFold(s[2], 'e') && eqFold(s[3], 'c') && eqFold(s[4], 'k') && eqFold(s[5], 'p') && eqFold(s[6], 'o') && eqFold(s[7], 'i') && eqFold(s[8], 'n') && eqFold(s[9], 't') {
+			return "CHECKPOINT"
+		}
+	}
+	// Fallback: single-pass uppercase into a stack-sized buffer.
+	var buf [32]byte
+	n := 0
+	for _, c := range s[:i] {
+		if c >= 'a' && c <= 'z' {
+			if n < len(buf) {
+				buf[n] = byte(c - 32)
+			}
+		} else {
+			if n < len(buf) {
+				buf[n] = byte(c)
+			}
+		}
+		n++
+	}
+	return string(buf[:n])
 }
 
 // classifyExplain inspects the part after EXPLAIN [ANALYZE [VERBOSE...]].
