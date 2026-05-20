@@ -840,36 +840,70 @@ type drainOutcome struct {
 func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Span, error) {
 	out := drainOutcome{}
 	curSpan := in.curSpan
-	for {
-		// Phase A: splice forward boring messages. On ErrSpliceStop
-		// the next bmsg is the non-boring message the splice put
-		// back into the reader — fall through to Receive() to
-		// decode it the normal way.
-		if in.spliceReader != nil {
-			if err := in.be.Flush(); err != nil {
-				return out, curSpan, fmt.Errorf("client flush pre-splice: %w", err)
+
+	// Raw passthrough path: forward ALL backend messages as raw bytes,
+	// bypassing pgproto3 decode/re-encode entirely. Eliminates heap
+	// allocations for every backend message.
+	if in.spliceReader != nil {
+		if err := in.be.Flush(); err != nil {
+			return out, curSpan, fmt.Errorf("client flush pre-splice: %w", err)
+		}
+		bp := splice.GetSpliceBuf(in.spliceBufSize)
+		defer splice.PutSpliceBuf(bp)
+		res, serr := splice.RawForwardAll(in.clientConn, in.spliceReader, *bp)
+		if serr != nil {
+			if res.EOF {
+				return out, curSpan, nil
 			}
-			serr := splice.DrainSplice(in.clientConn, in.spliceReader, in.spliceBufSize)
-			if serr != nil {
-				if errors.Is(serr, splice.ErrSpliceStop) {
-					// Fall through to Receive() to decode the
-					// interesting message that was put back.
-				} else if errors.Is(serr, io.EOF) {
-					// Backend closed the conn mid-drain.
-					return out, curSpan, nil
-				} else if isTimeoutErr(serr) && h.QueryTimeout > 0 {
-					out.queryTimedOut = true
-					h.counters.OnQueryTimeout()
-					in.log.Info("query_timeout fired; closing backend",
-						"timeout", h.QueryTimeout,
-					)
-					return out, curSpan, nil
-				} else {
-					return out, curSpan, fmt.Errorf("splice drain: %w", serr)
+			if isTimeoutErr(serr) && h.QueryTimeout > 0 {
+				out.queryTimedOut = true
+				h.counters.OnQueryTimeout()
+				in.log.Info("query_timeout fired; closing backend",
+					"timeout", h.QueryTimeout,
+				)
+				return out, curSpan, nil
+			}
+			return out, curSpan, fmt.Errorf("raw forward: %w", serr)
+		}
+		// Handle CopyInResponse — backend waiting for client CopyData.
+		if res.CopyIn {
+			if h.QueryTimeout > 0 {
+				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
+			}
+			return out, curSpan, nil
+		}
+		// ReadyForQuery — update state machine directly from tx_status.
+		if res.Tag == 'Z' {
+			if h.QueryTimeout > 0 {
+				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
+			}
+			prevTx := in.state.Tx()
+			boundary := in.state.ObserveTxStatus(res.TxStatus)
+			newTx := in.state.Tx()
+			if boundary {
+				switch {
+				case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
+					h.counters.OnTxStart()
+				case prevTx == TxFailed && newTx == TxIdle:
+					h.counters.OnTxRollback()
+				case prevTx == TxInBlock && newTx == TxIdle:
+					h.counters.OnTxCommit()
 				}
 			}
+			queryDur := time.Since(in.queryStart)
+			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
+				in.lastPrepName, queryDur, curSpan)
+			curSpan = nil
+			out.shouldRelease = !in.sessionPinned &&
+				(h.isStatementMode() || in.state.Tx().IsIdle())
+			return out, curSpan, nil
 		}
+		// Unknown tag — shouldn't happen, but be safe.
+		return out, curSpan, nil
+	}
 
+	// Fallback: pgproto3 decode path (when splice is disabled).
+	for {
 		bmsg, err := in.bConn.Frontend.Receive()
 		if err != nil {
 			if isTimeoutErr(err) && h.QueryTimeout > 0 {
@@ -921,24 +955,6 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
 				in.lastPrepName, queryDur, curSpan)
 			curSpan = nil
-			// Release whenever the backend reports idle —
-			// covers explicit COMMIT/ROLLBACK boundaries AND
-			// implicit-transaction queries (e.g. bare SELECT
-			// outside BEGIN). PgBouncer's transaction mode
-			// behaves identically.
-			//
-			// EXCEPT when the client has triggered session-pin
-			// (LISTEN, advisory_lock, temp table, cursor) —
-			// then we hold the backend for the remainder of the
-			// session.
-			//
-			// In statement-mode we release on EVERY RFQ —
-			// including ones with TxStatus 'T' — because
-			// statement mode by definition forbids
-			// cross-statement state on the backend. Explicit
-			// BEGIN is already rejected upstream so we'd never
-			// observe 'T' in practice, but the guard makes the
-			// invariant explicit.
 			out.shouldRelease = !in.sessionPinned &&
 				(h.isStatementMode() || in.state.Tx().IsIdle())
 			return out, curSpan, nil

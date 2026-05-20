@@ -116,3 +116,25 @@ func (s *ClientState) ObserveClientMessage(msg pgproto3.FrontendMessage) {
 		s.QueriesIssued++
 	}
 }
+
+// ObserveTxStatus updates the transaction state from a raw tx_status
+// byte (from ReadyForQuery's single-byte body). Returns true if a
+// transaction boundary was observed (start, commit, or rollback).
+func (s *ClientState) ObserveTxStatus(txStatus byte) bool {
+	prev := s.tx
+	next := TxState(txStatus)
+	s.tx = next
+	switch {
+	case prev != TxInBlock && prev != TxFailed && (next == TxInBlock):
+		s.TxStarts++
+		return true
+	case (prev == TxInBlock || prev == TxFailed) && next == TxIdle:
+		if prev == TxFailed {
+			s.TxRollbacks++
+		} else {
+			s.TxCommits++
+		}
+		return true
+	}
+	return false
+}

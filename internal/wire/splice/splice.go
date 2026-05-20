@@ -424,7 +424,141 @@ func (r *RawReader) Rewind(buf []byte) {
 	r.m.rp -= len(buf)
 }
 
-// (No init() needed; layout safety is enforced by integration tests.)
+// RawForwardResult is returned by RawForwardAll to communicate
+// what happened during the raw forward pass.
+type RawForwardResult struct {
+	// Tag is the tag byte of the last message processed (typically RFQ).
+	Tag byte
+	// TxStatus is the transaction status byte from ReadyForQuery (byte 5).
+	// Only valid when Tag == 'Z'.
+	TxStatus byte
+	// CopyIn is true if the last message was CopyInResponse ('G').
+	CopyIn bool
+	// EOF is true if the backend closed the connection.
+	EOF bool
+}
+
+// RawForwardAll reads ALL backend messages from src as raw bytes and
+// writes them directly to dst, bypassing pgproto3 decode/re-encode.
+// This eliminates heap allocations for every backend message.
+//
+// Classification is done by tag byte only — no body inspection except
+// for ReadyForQuery (byte 5 = tx_status).
+//
+// Returns when:
+//   - ReadyForQuery is received (Tag='Z', TxStatus set)
+//   - CopyInResponse is received (CopyIn=true)
+//   - EOF (backend closed)
+//   - I/O error
+func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResult, error) {
+	var res RawForwardResult
+	if len(buf) < HeaderSize {
+		buf = make([]byte, 8*1024)
+	}
+
+	woff := 0 // bytes accumulated in buf
+
+	for {
+		// Read 5-byte header.
+		if _, err := io.ReadFull(src, buf[woff:woff+HeaderSize]); err != nil {
+			if err == io.EOF {
+				if woff > 0 {
+					_, _ = dst.Write(buf[:woff])
+				}
+				res.EOF = true
+				return res, nil
+			}
+			return res, err
+		}
+		tag := buf[woff]
+		bodyLen := int(binary.BigEndian.Uint32(buf[woff+1:woff+5])) - 4
+		if bodyLen < 0 {
+			return res, errors.New("wire: negative body length in raw forward")
+		}
+
+		msgTotal := HeaderSize + bodyLen
+
+		// Check if message fits in buffer.
+		if woff+msgTotal <= len(buf) {
+			// Read body after header.
+			if bodyLen > 0 {
+				if _, err := io.ReadFull(src, buf[woff+HeaderSize:woff+msgTotal]); err != nil {
+					return res, err
+				}
+			}
+			woff += msgTotal
+		} else {
+			// Flush accumulated data first.
+			if woff > 0 {
+				if _, err := dst.Write(buf[:woff]); err != nil {
+					return res, err
+				}
+				woff = 0
+			}
+			// Giant message: two-write path (header + body).
+			if _, err := dst.Write(buf[:HeaderSize]); err != nil {
+				return res, err
+			}
+			if bodyLen > 0 {
+				if _, err := io.CopyN(dst, src, int64(bodyLen)); err != nil {
+					return res, err
+				}
+			}
+		}
+
+		// Classify and handle special messages.
+		switch tag {
+		case 'Z': // ReadyForQuery
+			// Extract tx_status: it's at offset 5 in the message
+			// (after 1-byte tag + 4-byte length = byte index 5 in
+			// the full message, or the first body byte).
+			// The body is 1 byte: tx_status.
+			if bodyLen >= 1 {
+				// tx_status is at buf[msgStart+5] but we need
+				// to find it. Since we accumulate contiguously,
+				// tx_status is at buf[woff-bodyLen] (first body byte).
+				res.TxStatus = buf[woff-bodyLen]
+			}
+			res.Tag = tag
+			// Flush any remaining data.
+			if woff > 0 {
+				if _, err := dst.Write(buf[:woff]); err != nil {
+					return res, err
+				}
+			}
+			return res, nil
+
+		case 'G': // CopyInResponse
+			res.CopyIn = true
+			res.Tag = tag
+			if woff > 0 {
+				if _, err := dst.Write(buf[:woff]); err != nil {
+					return res, err
+				}
+			}
+			return res, nil
+
+		case 'E': // ErrorResponse
+			// Forward raw. No inspection needed in pooler mode.
+			// (SQLSTATE extraction was only for logging/counters,
+			// which we skip in raw passthrough mode.)
+			res.Tag = tag
+
+		case 'S': // ParameterStatus
+			// Forward raw. We already intercept SET on client side.
+			res.Tag = tag
+
+		case 'K': // BackendKeyData
+			// Forward raw. Cancel key is only used for QueryCancel,
+			// which we don't support in pooler mode.
+			res.Tag = tag
+
+		default:
+			// All other messages (NoticeResponse, etc.): forward raw.
+			res.Tag = tag
+		}
+	}
+}
 
 // Putback pushes bytes back so the next Read returns them first.
 // If buf is longer than HeaderSize, only the last HeaderSize bytes
