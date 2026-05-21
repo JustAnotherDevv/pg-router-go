@@ -32,6 +32,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -92,6 +93,13 @@ func ServeMetricsAndAdmin(ctx context.Context, opts AdminServerOptions, log *slo
 	mux.Handle(opts.MetricsPath, promhttp.HandlerFor(Reg, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
 	}))
+
+	// pprof endpoints for memory profiling.
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	// /healthz = liveness. Always 200 unless the process is broken
 	// (in which case the HTTP server is broken too).
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

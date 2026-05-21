@@ -318,8 +318,24 @@ func (h *PooledConn) setupSplice(bConn *backend.Conn) {
 		h.bConnSpliceReader = nil
 		return
 	}
-	// Replace bConn.Frontend so its chunkReader reads from bConn.NetConn
-	// directly. We will then reach into that chunkReader via reflection.
+	// In raw passthrough mode, reuse the existing bConn.Frontend's
+	// chunkReader — do NOT create a new Frontend (that orphans the
+	// old chunkReader's iobufpool buffer, leaking 8KB per query).
+	if h.RawPassthrough {
+		raw, err := splice.NewRawReader(bConn.Frontend)
+		if err != nil {
+			if h.Log != nil {
+				h.Log.Warn("splice: reflection init failed; splice disabled for this conn", "err", err)
+			}
+			h.bConnSpliceReader = nil
+			return
+		}
+		h.bConnSpliceReader = raw
+		return
+	}
+	// Non-raw path: replace bConn.Frontend so its chunkReader reads
+	// from bConn.NetConn directly. We will then reach into that
+	// chunkReader via reflection.
 	bConn.Frontend = pgproto3.NewFrontend(bConn.NetConn, bConn.NetConn)
 	raw, err := splice.NewRawReader(bConn.Frontend)
 	if err != nil {
