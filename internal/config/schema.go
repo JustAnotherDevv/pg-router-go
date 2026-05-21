@@ -99,9 +99,17 @@ type ServerConfig struct {
 	// GC frequency at the cost of more memory. For poolers with low
 	// live heap (~1-2MB), GOGC=200 or higher is safe and reduces GC
 	// CPU overhead significantly. Set to "off" to disable GC entirely
-	// (dangerous for long-running processes with unbounded alloc).
+	// (use with GOMEMLIMIT to prevent unbounded growth).
 	// Default: Go runtime default (100).
 	GOGC string `yaml:"gogc,omitempty"`
+
+	// GOMEMLIMIT sets a soft memory limit in bytes. When GOGC=off,
+	// this is the ONLY mechanism preventing unbounded heap growth.
+	// GC only runs when memory approaches this limit, keeping pauses
+	// minimal while bounding total RSS. Accepts SI suffixes:
+	// "512MB", "1GB", etc. Default: 0 (no limit — dangerous with
+	// GOGC=off).
+	GOMEMLIMIT string `yaml:"gomemlimit,omitempty"`
 
 	// SocketRecvBuf overrides SO_RCVBUF on accepted client connections.
 	// Larger buffers reduce read syscall frequency under high throughput.

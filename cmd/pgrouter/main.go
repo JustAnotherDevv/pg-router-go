@@ -172,6 +172,17 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 
 	log := newLogger(cfg.Logging.Format, cfg.Logging.Level)
 	listenAddr := net.JoinHostPort(cfg.Server.ListenAddr, strconv.Itoa(cfg.Server.ListenPort))
+
+	// --- GOMEMLIMIT ---
+	if cfg.Server.GOMEMLIMIT != "" {
+		if limit, err := parseBytes(cfg.Server.GOMEMLIMIT); err == nil && limit > 0 {
+			debug.SetMemoryLimit(limit)
+			log.Info("memory limit set", "bytes", limit)
+		} else {
+			log.Warn("invalid gomemlimit, ignoring", "value", cfg.Server.GOMEMLIMIT, "err", err)
+		}
+	}
+
 	log.Info("pgrouter starting",
 		"version", version,
 		"config", configPath,
@@ -489,4 +500,39 @@ func newLogger(format, level string) *slog.Logger {
 		h = slog.NewTextHandler(os.Stderr, opts)
 	}
 	return slog.New(h)
+}
+
+// parseBytes parses a byte size string like "512MB", "1GB", "1073741824".
+func parseBytes(s string) (int64, error) {
+	if len(s) == 0 {
+		return 0, fmt.Errorf("empty string")
+	}
+	// Try pure numeric first.
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return v, nil
+	}
+	// Strip trailing non-numeric suffix (B, bytes, etc).
+	numeric := s
+	for len(numeric) > 0 && (numeric[len(numeric)-1] < '0' || numeric[len(numeric)-1] > '9') && numeric[len(numeric)-1] != '.' {
+		numeric = numeric[:len(numeric)-1]
+	}
+	if len(numeric) == 0 {
+		return 0, fmt.Errorf("no numeric part in %q", s)
+	}
+	// Determine multiplier from remaining suffix.
+	multiplier := int64(1)
+	suffix := s[len(numeric):]
+	switch suffix {
+	case "K", "k", "KB", "kb", "KiB", "kib":
+		multiplier = 1024
+	case "M", "m", "MB", "mb", "MiB", "mib":
+		multiplier = 1024 * 1024
+	case "G", "g", "GB", "gb", "GiB", "gib":
+		multiplier = 1024 * 1024 * 1024
+	}
+	v, err := strconv.ParseFloat(numeric, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(v * float64(multiplier)), nil
 }

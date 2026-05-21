@@ -15,7 +15,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"unsafe"
 )
 
 // HeaderSize is the Postgres wire protocol message header size
@@ -209,10 +208,6 @@ func (rc *RawConn) ReadMessage() (tag byte, raw []byte, err error) {
 // ExtractQuerySQL extracts the SQL string from a raw Query message.
 // Query format: 'Q' + 4-byte length + null-terminated SQL string.
 // Returns the SQL without the trailing null.
-//
-// WARNING: The returned string borrows from raw's backing array.
-// Callers MUST NOT store it beyond raw's lifetime. In the hot path
-// (serveRaw), raw is valid until the next ReadMessage call.
 func ExtractQuerySQL(raw []byte) string {
 	if len(raw) < HeaderSize+1 {
 		return ""
@@ -222,11 +217,11 @@ func ExtractQuerySQL(raw []byte) string {
 	// Find the null terminator.
 	for i, b := range body {
 		if b == 0 {
-			return unsafe.String(&body[0], i)
+			return string(body[:i])
 		}
 	}
 	// No null found — whole body is SQL (malformed, but be lenient).
-	return unsafe.String(&body[0], len(body))
+	return string(body)
 }
 
 // ExtractParseFields extracts the statement name and query string
@@ -237,9 +232,6 @@ func ExtractQuerySQL(raw []byte) string {
 //
 // Returns (name, query). Either may be empty if the message is
 // too short.
-//
-// WARNING: Returned strings borrow from raw's backing array.
-// Callers MUST NOT store them beyond raw's lifetime.
 func ExtractParseFields(raw []byte) (name, query string) {
 	if len(raw) < HeaderSize+2 {
 		return "", ""
@@ -255,9 +247,9 @@ func ExtractParseFields(raw []byte) (name, query string) {
 		}
 	}
 	if nameEnd < 0 {
-		return unsafe.String(&body[0], len(body)), ""
+		return string(body), ""
 	}
-	name = unsafe.String(&body[0], nameEnd)
+	name = string(body[:nameEnd])
 
 	// Find second null (end of query).
 	queryStart := nameEnd + 1
@@ -270,11 +262,11 @@ func ExtractParseFields(raw []byte) (name, query string) {
 	}
 	if queryEnd < 0 {
 		if queryStart < len(body) {
-			query = unsafe.String(&body[queryStart], len(body)-queryStart)
+			query = string(body[queryStart:])
 		}
 		return name, query
 	}
-	query = unsafe.String(&body[queryStart], queryEnd-queryStart)
+	query = string(body[queryStart:queryEnd])
 	return name, query
 }
 
