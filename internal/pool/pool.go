@@ -145,7 +145,7 @@ type Pool struct {
 // pooledConn wraps a backend + its lifecycle marker.
 type pooledConn struct {
 	Conn      *backend.Conn
-	Lifecycle *backend.Lifecycle
+	Lifecycle backend.Lifecycle
 }
 
 // waiter is parked in Acquire waiting for a backend.
@@ -480,10 +480,9 @@ func (p *Pool) Release(c *backend.Conn, resetSession bool) {
 	}
 
 	now := time.Now()
-	lifecycle := backend.NewLifecycle(now) // fresh per-pooled-entry lifecycle
-	lifecycle.MarkIdle(now)
-
-	pc := &pooledConn{Conn: c, Lifecycle: lifecycle}
+	pc := &pooledConn{Conn: c}
+	pc.Lifecycle.Init(now)
+	pc.Lifecycle.MarkIdle(now)
 
 	// If pool was closed while this conn was active, drop it.
 	if p.closed.Load() {

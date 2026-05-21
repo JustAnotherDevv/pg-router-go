@@ -1052,6 +1052,10 @@ func (h *PooledConn) observeClientMessage(
 // LogSQL=="off" still emits the line — so operators always see request
 // flow — but with no `sql` field.
 func (h *PooledConn) logSQL(log *slog.Logger, kind, prepName, sql string) {
+	// Skip all allocs when Debug logging is disabled.
+	if !log.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
 	mode := h.LogSQL
 	if mode == "" {
 		mode = "redacted"

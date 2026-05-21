@@ -56,6 +56,13 @@ func NewLifecycle(now time.Time) *Lifecycle {
 	return lc
 }
 
+// Init initializes a zero-value Lifecycle in place (avoids heap alloc).
+func (l *Lifecycle) Init(now time.Time) {
+	l.createdAt = now
+	l.lastActive.Store(now.UnixNano())
+	l.state.Store(uint32(StateNew))
+}
+
 // State returns the current state.
 func (l *Lifecycle) State() State { return State(l.state.Load()) }
 
