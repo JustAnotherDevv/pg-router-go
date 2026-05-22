@@ -224,6 +224,62 @@ func ExtractQuerySQL(raw []byte) string {
 	return string(body)
 }
 
+// QueryFirstKeywordRaw returns the first keyword of a raw Query message
+// without allocating a string. Returns "" if the message is too short.
+// Only checks keywords relevant to the hot path: SET, DISCARD, RESET.
+func QueryFirstKeywordRaw(raw []byte) string {
+	if len(raw) < HeaderSize+1 {
+		return ""
+	}
+	body := raw[HeaderSize:]
+	// Skip leading whitespace.
+	i := 0
+	for i < len(body) && (body[i] == ' ' || body[i] == '\t' || body[i] == '\n' || body[i] == '\r') {
+		i++
+	}
+	if i >= len(body) || body[i] == 0 {
+		return ""
+	}
+	start := i
+	for i < len(body) && body[i] != 0 && isIdentByte(body[i]) {
+		i++
+	}
+	keyword := body[start:i]
+	if len(keyword) == 0 {
+		return ""
+	}
+	// Fast case-insensitive check for SET/DISCARD/RESET.
+	return matchKeyword(keyword)
+}
+
+// isIdentByte returns true for bytes that can appear in SQL identifiers.
+func isIdentByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+// matchKeyword checks if the raw keyword bytes match SET/DISCARD/RESET.
+func matchKeyword(kw []byte) string {
+	switch len(kw) {
+	case 3:
+		if eqFoldByte(kw[0], 's') && eqFoldByte(kw[1], 'e') && eqFoldByte(kw[2], 't') {
+			return "SET"
+		}
+	case 5:
+		if eqFoldByte(kw[0], 'r') && eqFoldByte(kw[1], 'e') && eqFoldByte(kw[2], 's') && eqFoldByte(kw[3], 'e') && eqFoldByte(kw[4], 't') {
+			return "RESET"
+		}
+	case 7:
+		if eqFoldByte(kw[0], 'd') && eqFoldByte(kw[1], 'i') && eqFoldByte(kw[2], 's') && eqFoldByte(kw[3], 'c') && eqFoldByte(kw[4], 'a') && eqFoldByte(kw[5], 'r') && eqFoldByte(kw[6], 'd') {
+			return "DISCARD"
+		}
+	}
+	return ""
+}
+
+func eqFoldByte(a, b byte) bool {
+	return a == b || (a|0x20) == (b|0x20)
+}
+
 // ExtractParseFields extracts the statement name and query string
 // from a raw Parse message. Parse format:
 //

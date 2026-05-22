@@ -337,7 +337,8 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			mode = override
 		}
 	}
-	pc := &PooledConn{
+	pc := connPool.Get().(*PooledConn)
+	*pc = PooledConn{
 		PooledConfig: PooledConfig{
 			CannedParams:      h.CannedParams,
 			ResetOnRelease:    h.ResetOnRelease,
@@ -366,7 +367,10 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		StickyReadWindowFn: func() time.Duration { return routerOr(h.Router).StickyReadWindow(db) },
 		PrimaryHealthy:     func() bool { return routerOr(h.Router).PrimaryHealthy(db) },
 	}
-	if err := pc.Serve(ctx, conn); err != nil {
+	err := pc.Serve(ctx, conn)
+	*pc = PooledConn{} // zero to drop live pointers before returning to pool
+	connPool.Put(pc)
+	if err != nil {
 		log.Debug("pooled serve ended", "err", err)
 	}
 }

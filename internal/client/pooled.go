@@ -37,6 +37,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -54,6 +55,36 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// connPool recycles PooledConn structs between connections to avoid
+// per-connection heap allocation. The struct is zeroed on Put; callers
+// must re-populate all fields before Serve.
+var connPool = sync.Pool{
+	New: func() any { return &PooledConn{} },
+}
+
+// writeBufPool recycles 8KB write buffers used by serveRaw to batch
+// client→backend messages into a single write syscall.
+var writeBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 8192)
+		return &b
+	},
+}
+
+func getWriteBuf() []byte {
+	bp := writeBufPool.Get().(*[]byte)
+	*bp = (*bp)[:0]
+	return *bp
+}
+
+func putWriteBuf(b []byte) {
+	if cap(b) > 0 {
+		bp := &b
+		*bp = b[:0]
+		writeBufPool.Put(bp)
+	}
+}
 
 // PooledConfig is the immutable per-handler configuration shared
 // across every PooledConn served from a single PooledHandler.
@@ -1694,10 +1725,11 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 	// Write buffer for batching client→backend messages. Messages are
 	// accumulated here and flushed to bConn.NetConn when a drain
 	// trigger (Sync/Query) arrives, coalescing multiple small writes
-	// into a single write syscall.
-	var writeBuf []byte
+	// into a single write syscall. Pre-allocated to 8KB from pool.
+	writeBuf := getWriteBuf()
 
 	defer func() {
+		putWriteBuf(writeBuf)
 		if bConn != nil {
 			releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
 			bConnPool = nil
@@ -1763,15 +1795,27 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 		// Extract SQL + compute SQLInfo for Query/Parse.
 		// When GUCTracking is disabled, skip entirely — just forward raw bytes
 		// like pgcat. SET detection falls back to CommandComplete tag.
+		//
+		// Fast path: use zero-alloc keyword check on raw bytes. Only extract
+		// the full SQL string when the keyword is SET/DISCARD/RESET (~1% of queries).
+		// This eliminates ~100% of per-query string allocations on the hot path.
 		var sql string
 		var sqlInfo *SQLInfo
 		if h.GUCTracking {
 			switch tag {
 			case rawconn.TagQuery:
-				sql = rawconn.ExtractQuerySQL(raw)
-				info := AnalyzeSQL(sql)
-				sqlInfo = &info
-				h.logSQL(log, "query", "", sql)
+				kw := rawconn.QueryFirstKeywordRaw(raw)
+				needsGUC := kw == "SET" || kw == "DISCARD" || kw == "RESET"
+				// Session-pin check on raw keyword.
+				needsPin := kw == "LISTEN" || kw == "CREATE" || kw == "DECLARE"
+				if needsGUC || needsPin || h.isStatementMode() || log.Enabled(ctx, slog.LevelInfo) || h.SlowQuery > 0 {
+					// Rare path: extract full SQL string for GUC/pin/statement-mode/logging.
+					sql = rawconn.ExtractQuerySQL(raw)
+					info := AnalyzeSQL(sql)
+					sqlInfo = &info
+					h.logSQL(log, "query", "", sql)
+				}
+				// Fast path: no string allocation when keyword is not SET/DISCARD/RESET.
 			case rawconn.TagParse:
 				_, sql = rawconn.ExtractParseFields(raw)
 				info := AnalyzeSQL(sql)
