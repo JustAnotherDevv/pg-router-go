@@ -2,6 +2,13 @@
 bin/
 *.exe
 *.test
+pgrouter-linux
+pgrouter-pgo-*
+pgrouter-phasea-b
+{{.Destination}}
+
+# Bench artifacts
+heap.pprof
 
 # Coverage
 coverage.out

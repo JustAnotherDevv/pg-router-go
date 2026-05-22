@@ -1,16 +1,21 @@
-.PHONY: build build-all test test-unit test-integration test-pg15 test-pg16 \
-        lint lint-compose clean cover run help fmt deps-up deps-down
+.PHONY: build build-all build-linux build-pgo pgo-profile test test-unit \
+        test-integration test-pg15 test-pg16 lint lint-compose clean cover \
+        run help fmt deps-up deps-down
 
 BINARY  := pgrouter
 PKG     := ./...
 BIN_DIR := bin
 GO      := go
+LDFLAGS := -s -w
 
 # Default
 help:
 	@echo "Targets:"
 	@echo "  build              compile pgrouter binary into bin/"
 	@echo "  build-all          compile all command + tool binaries"
+	@echo "  build-linux        cross-compile linux/amd64 binary (for Docker/deploy)"
+	@echo "  build-pgo          build with PGO profile (default.pgo, requires prior profile)"
+	@echo "  pgo-profile        full PGO cycle: build base → run under load → rebuild with profile"
 	@echo "  test               run unit + race tests"
 	@echo "  test-unit          run unit tests (short, no integration)"
 	@echo "  test-integration   run integration tests (needs Postgres on PGROUTER_DSN)"
@@ -35,6 +40,35 @@ build-all:
 	$(GO) build -o $(BIN_DIR)/handshake  ./test/handshake
 	$(GO) build -o $(BIN_DIR)/poke       ./test/poke
 	$(GO) build -o $(BIN_DIR)/bench      ./test/bench
+
+build-linux:
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+	  $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-linux ./cmd/pgrouter
+
+build-pgo: default.pgo
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) ./cmd/pgrouter
+
+# Full PGO cycle: build base → profile under load → rebuild with profile.
+# Requires PGROUTER_DSN pointing to a running pgrouter instance, or runs
+# the binary directly if PGROUTER_BIN is set.
+pgo-profile: build-linux
+	@echo "==> building base binary for profiling..."
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+	  $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-pgo-base ./cmd/pgrouter
+	@echo "==> base binary: $(BIN_DIR)/$(BINARY)-pgo-base"
+	@echo ""
+	@echo "==> To capture profile on a running instance:"
+	@echo "     curl -o default.pgo http://HOST:PORT/debug/pprof/profile?seconds=30"
+	@echo "     Then run: make build-pgo"
+	@echo ""
+	@echo "==> Or deploy the base binary, run pgbench, then capture:"
+	@echo "     scp $(BIN_DIR)/$(BINARY)-pgo-base HOST:/tmp/pgrouter"
+	@echo "     ssh HOST 'pgbench -h 127.0.0.1 -p PORT -U postgres -d postgres -S -M extended -c 32 -j 8 -T 30 &' "
+	@echo "     curl -o default.pgo http://HOST:9090/debug/pprof/profile?seconds=30"
+	@echo "     make build-pgo"
 
 test: test-unit
 
@@ -84,3 +118,9 @@ run: build
 
 clean:
 	rm -rf $(BIN_DIR) coverage.out coverage.html
+
+# Profile file — stale profiles hurt more than no profile.
+# Re-capture after significant code changes.
+default.pgo:
+	@echo "No default.pgo found. Run 'make pgo-profile' to generate one."
+	@exit 1

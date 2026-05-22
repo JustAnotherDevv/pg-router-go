@@ -5,6 +5,8 @@ server:
   listen_addr: 0.0.0.0
   listen_port: 6434
   max_client_conn: 1000
+  gogc: 200
+  gomemlimit: 30MB
 
 pool:
   mode: transaction
@@ -41,3 +43,5 @@ wire:
   splice: true
   splice_buffer_size: 8192
   splice_drop_unknown: false
+  raw_passthrough: true
+  skip_reset_query: true
