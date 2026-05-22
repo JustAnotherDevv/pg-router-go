@@ -124,6 +124,11 @@ type PooledHandler struct {
 	// directly to the backend. Default false. Mirrors cfg.Wire.RawPassthrough.
 	RawPassthrough bool
 
+	// GUCTracking enables per-query SQL extraction for GUC observation.
+	// When false, skips ExtractQuerySQL + AnalyzeSQL + ObserveQueryWithInfo
+	// entirely. Default true. Mirrors cfg.Wire.GUCTracking.
+	GUCTracking bool
+
 	// Router answers per-tenant routing questions (replica pick,
 	// sticky-read window, primary health, QPS cap). nil → routing
 	// disabled (always primary; healthy; no rate limit). Replaces
@@ -346,6 +351,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			Splice:            h.Splice,
 			PreparedCache:     h.PreparedCache,
 			RawPassthrough:    h.RawPassthrough,
+			GUCTracking:       h.GUCTracking,
 		},
 		Log:           log,
 		Pool:          p,

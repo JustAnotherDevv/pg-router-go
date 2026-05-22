@@ -74,6 +74,17 @@ type WireConfig struct {
 	// and the workload is purely transactional. Default false.
 	SkipResetQuery *bool `yaml:"skip_reset_query,omitempty"`
 
+	// GUCTracking, when true (default), enables per-query SQL extraction
+	// to track SET commands and session-level GUC changes. This allows
+	// automatic GUC replay on backend acquire and session pinning.
+	// When false, SQL extraction + GUC observation are skipped entirely —
+	// the hot path just forwards raw bytes like pgcat. Saves ~3-5% CPU
+	// on high-throughput workloads. Trade-off: SET commands are detected
+	// only via CommandComplete tag (SET) instead of SQL parsing, so
+	// GUC replay may be less accurate. Session pinning is also disabled.
+	// Default true.
+	GUCTracking *bool `yaml:"guc_tracking,omitempty"`
+
 
 }
 

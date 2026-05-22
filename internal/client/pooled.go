@@ -166,6 +166,13 @@ type PooledConfig struct {
 	// Trade-off: prepared-cache interception is disabled when raw
 	// passthrough is active (messages can't be rewritten without decode).
 	RawPassthrough bool
+
+	// GUCTracking, when true (default), enables per-query SQL extraction
+	// to track SET commands and GUC changes. When false, skips
+	// ExtractQuerySQL + AnalyzeSQL + ObserveQueryWithInfo entirely — the
+	// hot path just forwards raw bytes like pgcat. SET detection falls
+	// back to CommandComplete tag (less accurate but much faster).
+	GUCTracking bool
 }
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -1754,41 +1761,45 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 		}
 
 		// Extract SQL + compute SQLInfo for Query/Parse.
+		// When GUCTracking is disabled, skip entirely — just forward raw bytes
+		// like pgcat. SET detection falls back to CommandComplete tag.
 		var sql string
 		var sqlInfo *SQLInfo
-		switch tag {
-		case rawconn.TagQuery:
-			sql = rawconn.ExtractQuerySQL(raw)
-			info := AnalyzeSQL(sql)
-			sqlInfo = &info
-			h.logSQL(log, "query", "", sql)
-		case rawconn.TagParse:
-			_, sql = rawconn.ExtractParseFields(raw)
-			info := AnalyzeSQL(sql)
-			sqlInfo = &info
-			h.logSQL(log, "parse", "", sql)
-		}
+		if h.GUCTracking {
+			switch tag {
+			case rawconn.TagQuery:
+				sql = rawconn.ExtractQuerySQL(raw)
+				info := AnalyzeSQL(sql)
+				sqlInfo = &info
+				h.logSQL(log, "query", "", sql)
+			case rawconn.TagParse:
+				_, sql = rawconn.ExtractParseFields(raw)
+				info := AnalyzeSQL(sql)
+				sqlInfo = &info
+				h.logSQL(log, "parse", "", sql)
+			}
 
-		// GUC + session-pin observation.
-		if sqlInfo != nil {
-			gucCache.ObserveQueryWithInfo(sql, sqlInfo)
-			if !sessionPinned && sqlInfo.NeedsPin {
+			// GUC + session-pin observation.
+			if sqlInfo != nil {
+				gucCache.ObserveQueryWithInfo(sql, sqlInfo)
+				if !sessionPinned && sqlInfo.NeedsPin {
+					sessionPinned = true
+					log.Info("session pinned (force-session)",
+						"reason", "incompatible feature",
+						"sql_prefix", truncate(sql, 64))
+				}
+			}
+
+			// Unrecognized SET → force session-pin.
+			if !sessionPinned && gucCache.HasUnrecognizedSet() {
 				sessionPinned = true
 				log.Info("session pinned (force-session)",
-					"reason", "incompatible feature",
-					"sql_prefix", truncate(sql, 64))
+					"reason", "SET of GUC outside replayable whitelist")
 			}
 		}
 
-		// Unrecognized SET → force session-pin.
-		if !sessionPinned && gucCache.HasUnrecognizedSet() {
-			sessionPinned = true
-			log.Info("session pinned (force-session)",
-				"reason", "SET of GUC outside replayable whitelist")
-		}
-
-		// Statement-mode: reject explicit BEGIN.
-		if h.isStatementMode() {
+		// Statement-mode: reject explicit BEGIN (requires GUCTracking for SQL extraction).
+		if h.GUCTracking && h.isStatementMode() {
 			if tag == rawconn.TagQuery {
 				if IsExplicitBeginSQL(sql) {
 					log.Info("statement_mode: rejecting explicit BEGIN",
@@ -1823,14 +1834,16 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					"replaced by next Query/Parse before drain")
 			}
 			curSpan = h.startQuerySpan(ctx, lastKind, sql, "")
-			if sqlInfo != nil {
-				curSQLOp = sqlInfo.Op
-				curROBegin = sqlInfo.IsROBegin
-			} else {
-				curSQLOp, curROBegin = ClassifyDetail(sql)
-			}
-			if curSQLOp == SQLOpWrite && !curROBegin {
-				lastWriteAt = time.Now()
+			if h.GUCTracking {
+				if sqlInfo != nil {
+					curSQLOp = sqlInfo.Op
+					curROBegin = sqlInfo.IsROBegin
+				} else {
+					curSQLOp, curROBegin = ClassifyDetail(sql)
+				}
+				if curSQLOp == SQLOpWrite && !curROBegin {
+					lastWriteAt = time.Now()
+				}
 			}
 		}
 

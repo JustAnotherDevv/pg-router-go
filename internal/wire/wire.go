@@ -388,6 +388,10 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 		rawPassthrough = *in.Cfg.Wire.RawPassthrough
 	}
 	skipReset := in.Cfg.Wire.SkipResetQuery != nil && *in.Cfg.Wire.SkipResetQuery
+	gucTracking := true
+	if in.Cfg.Wire.GUCTracking != nil {
+		gucTracking = *in.Cfg.Wire.GUCTracking
+	}
 	return &client.PooledHandler{
 		Log:               in.Log,
 		Manager:           in.Mgr,
@@ -414,6 +418,7 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 		Splice:         spliceCfg,
 		PreparedCache:  preparedCache,
 		RawPassthrough: rawPassthrough,
+		GUCTracking:    gucTracking,
 	}
 }
 
