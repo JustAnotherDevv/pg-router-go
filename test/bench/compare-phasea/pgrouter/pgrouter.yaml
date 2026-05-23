@@ -11,6 +11,7 @@ server:
   max_client_conn: 1000
   gogc: 200
   gomemlimit: 30MB
+  workers: 1
 
 pool:
   mode: transaction

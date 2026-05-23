@@ -104,6 +104,13 @@ type ServerConfig struct {
 	// auth). Default false.
 	SingleThread *bool `yaml:"single_thread,omitempty"`
 
+	// Workers is the number of pgrouter processes to fork. Each worker
+	// has its own Go runtime and epoll instance. The kernel distributes
+	// incoming connections across workers via SO_REUSEPORT. Set to 1
+	// (default) for single-process mode. Set > 1 only on Linux bare-metal
+	// (not beneficial in Docker). Default 1.
+	Workers int `yaml:"workers,omitempty"`
+
 	// GOGC overrides the Go garbage collector's GOGC value at startup.
 	// GOGC controls heap growth ratio before GC triggers: GOGC=100
 	// (default) means GC runs when heap doubles. Higher values reduce

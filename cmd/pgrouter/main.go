@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
+	"github.com/JustAnotherDevv/pgrouter/internal/multiproc"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
@@ -204,9 +206,12 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	}()
 
 	// --- metrics + admin API ---
-	stats.Build.Version = version
-	stats.Build.Commit = commit
-	_ = stats.New() // sets stats.Active
+	// Workers skip metrics (main process serves them).
+	if !multiproc.IsWorker() {
+		stats.Build.Version = version
+		stats.Build.Commit = commit
+		_ = stats.New() // sets stats.Active
+	}
 	metricsCtx, metricsCancel := context.WithCancel(context.Background())
 	defer metricsCancel()
 
@@ -268,17 +273,20 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	startTime := time.Now()
 	adminAPI := buildAdminAPI(mgr, adminReloadCh, startTime)
 	_ = adminAPI // referenced below; kept for symmetry with prior layout
-	go func() {
-		err := stats.ServeMetricsAndAdmin(metricsCtx, stats.AdminServerOptions{
-			Addr:        cfg.Metrics.Listen,
-			MetricsPath: cfg.Metrics.Path,
-			AuthToken:   cfg.Metrics.AdminToken,
-			Admin:       adminAPI,
-		}, log)
-		if err != nil {
-			log.Error("metrics+admin server", "err", err)
-		}
-	}()
+	// --- metrics + admin API (main process only) ---
+	if !multiproc.IsWorker() {
+		go func() {
+			err := stats.ServeMetricsAndAdmin(metricsCtx, stats.AdminServerOptions{
+				Addr:        cfg.Metrics.Listen,
+				MetricsPath: cfg.Metrics.Path,
+				AuthToken:   cfg.Metrics.AdminToken,
+				Admin:       adminAPI,
+			}, log)
+			if err != nil {
+				log.Error("metrics+admin server", "err", err)
+			}
+		}()
+	}
 
 	// --- canned ParameterStatus ---
 	// First-client cold-start fallback: pool.CachedParams will be
@@ -365,10 +373,36 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	wire.FanInSignals(ctx, mergedHup, hupCh, adminReloadCh)
 	go wire.RunSighupReloader(ctx, mergedHup, configPath, cfg, userlist, mgr, log)
 
-	ln, err := listener.New(listenAddr, log)
+	// --- workers (SO_REUSEPORT multi-process) ---
+	workers := cfg.Server.Workers
+	// Default: 1 (single-process). Set workers > 1 + Linux bare-metal
+	// to enable SO_REUSEPORT multi-process. Not beneficial in Docker.
+	if workers <= 0 {
+		workers = 1
+	}
+	useReuseport := workers > 1
+
+	var ln *listener.Listener
+	if useReuseport {
+		ln, err = listener.NewReuseport(listenAddr, log)
+	} else {
+		ln, err = listener.New(listenAddr, log)
+	}
 	if err != nil {
 		log.Error("listener init", "err", err)
 		return 1
+	}
+
+	// Fork children AFTER listener is bound.
+	if useReuseport && !multiproc.IsWorker() {
+		log.Info("spawning worker processes", "count", workers-1)
+		var childWg *sync.WaitGroup
+		childWg = multiproc.SpawnWorkers(workers, configPath)
+		defer func() {
+			if childWg != nil {
+				childWg.Wait()
+			}
+		}()
 	}
 	if cfg.Server.ProxyProtocol {
 		ln.EnableProxyProtocol(cfg.Server.ProxyProtocolStrict)
