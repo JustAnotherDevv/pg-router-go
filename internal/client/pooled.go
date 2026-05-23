@@ -64,19 +64,11 @@ var connPool = sync.Pool{
 	New: func() any { return &PooledConn{} },
 }
 
-// writeBufPool recycles 8KB write buffers used by serveRaw to batch
-// client→backend messages into a single write syscall.
-var writeBufPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 8192)
-		return &b
-	},
-}
+// writeBufPool recycles 8KB write buffers used by serveRaw.
+var writeBufPool = util.NewBufferPool(8192)
 
 func getWriteBuf() []byte {
-	bp := writeBufPool.Get().(*[]byte)
-	*bp = (*bp)[:0]
-	return *bp
+	return *writeBufPool.Get(0)
 }
 
 func putWriteBuf(b []byte) {
@@ -881,6 +873,21 @@ func pinSession(pinned *bool, log *slog.Logger, needsPin bool, reason, sql strin
 	}
 }
 
+// finalizeRFQ clears the read deadline, calls onQueryComplete, and
+// computes shouldRelease. Called from both splice and decode paths
+// when a ReadyForQuery is received.
+func (h *PooledConn) finalizeRFQ(in drainInput, out *drainOutcome, curSpan trace.Span) trace.Span {
+	if h.QueryTimeout > 0 {
+		_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
+	}
+	queryDur := time.Since(in.queryStart)
+	h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
+		in.lastPrepName, queryDur, curSpan)
+	out.shouldRelease = !in.sessionPinned &&
+		(h.isStatementMode() || in.state.Tx().IsIdle())
+	return nil
+}
+
 // drainBackendUntilRFQ pulls backend frames until ReadyForQuery (or
 // CopyInResponse, where we stop and return control to the outer loop
 // so it can receive CopyData from the client). For every frame:
@@ -941,21 +948,13 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 		}
 		// ReadyForQuery — update state machine directly from tx_status.
 		if res.Tag == 'Z' {
-			if h.QueryTimeout > 0 {
-				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
-			}
 			prevTx := in.state.Tx()
 			boundary := in.state.ObserveTxStatus(res.TxStatus)
 			newTx := in.state.Tx()
 			if boundary {
 				h.observeTxTransition(in.state, prevTx, newTx)
 			}
-			queryDur := time.Since(in.queryStart)
-			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
-				in.lastPrepName, queryDur, curSpan)
-			curSpan = nil
-			out.shouldRelease = !in.sessionPinned &&
-				(h.isStatementMode() || in.state.Tx().IsIdle())
+			curSpan = h.finalizeRFQ(in, &out, curSpan)
 			return out, curSpan, nil
 		}
 		// Unknown tag — shouldn't happen, but be safe.
@@ -996,15 +995,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			return out, curSpan, nil
 		}
 		if _, ok := proto.IsReadyForQuery(bmsg); ok {
-			if h.QueryTimeout > 0 {
-				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
-			}
-			queryDur := time.Since(in.queryStart)
-			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
-				in.lastPrepName, queryDur, curSpan)
-			curSpan = nil
-			out.shouldRelease = !in.sessionPinned &&
-				(h.isStatementMode() || in.state.Tx().IsIdle())
+			curSpan = h.finalizeRFQ(in, &out, curSpan)
 			return out, curSpan, nil
 		}
 	}

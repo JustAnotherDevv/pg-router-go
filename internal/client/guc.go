@@ -232,58 +232,7 @@ func (c *GUCCache) ReplayQuery() string {
 // cannot match any GUC pattern (DISCARD, RESET, SET). This skips
 // 3 regex evaluations for the vast majority of queries.
 func maybeNeedsGUC(sql string) bool {
-	i := 0
-	for i < len(sql) {
-		c := sql[i]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			i++
-			continue
-		}
-		if i+1 < len(sql) && c == '-' && sql[i+1] == '-' {
-			i += 2
-			for i < len(sql) && sql[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		if i+1 < len(sql) && c == '/' && sql[i+1] == '*' {
-			i += 2
-			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
-				i++
-			}
-			if i+1 < len(sql) {
-				i += 2
-			} else {
-				i = len(sql)
-			}
-			continue
-		}
-		break
-	}
-	if i >= len(sql) {
-		return true
-	}
-	j := i
-	for j < len(sql) && sql[j] != ' ' && sql[j] != '\t' && sql[j] != '\n' && sql[j] != '\r' && sql[j] != '(' && sql[j] != ';' {
-		j++
-	}
-	if j == i {
-		return true
-	}
-	var buf [16]byte
-	kwLen := j - i
-	if kwLen > len(buf) {
-		return true
-	}
-	for k := 0; k < kwLen; k++ {
-		c := sql[i+k]
-		if c >= 'a' && c <= 'z' {
-			c -= 32
-		}
-		buf[k] = c
-	}
-	kw := string(buf[:kwLen])
-	switch kw {
+	switch firstKeyword(stripLeadingNoise(sql)) {
 	case "DISCARD", "RESET", "SET":
 		return true
 	}

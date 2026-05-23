@@ -83,7 +83,6 @@ func needsSessionPin(sql string) bool {
 func maybeNeedsPin(sql string) bool {
 	// pg_advisory_lock / pg_advisory_lock_shared are function calls
 	// that can appear anywhere (e.g. SELECT pg_advisory_lock(42)).
-	// Check with a cheap substring scan before keyword analysis.
 	for i := 0; i+10 <= len(sql); i++ {
 		if sql[i] == 'p' && sql[i+1] == 'g' && sql[i+2] == '_' &&
 			(sql[i+3] == 'a' || sql[i+3] == 'A') &&
@@ -91,63 +90,7 @@ func maybeNeedsPin(sql string) bool {
 			return true
 		}
 	}
-
-	// Skip leading whitespace + comments to find first keyword.
-	i := 0
-	for i < len(sql) {
-		c := sql[i]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			i++
-			continue
-		}
-		// Line comment
-		if i+1 < len(sql) && c == '-' && sql[i+1] == '-' {
-			i += 2
-			for i < len(sql) && sql[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		// Block comment
-		if i+1 < len(sql) && c == '/' && sql[i+1] == '*' {
-			i += 2
-			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
-				i++
-			}
-			if i+1 < len(sql) {
-				i += 2
-			} else {
-				i = len(sql)
-			}
-			continue
-		}
-		break
-	}
-	if i >= len(sql) {
-		return true // empty — let regex handle it
-	}
-	// Extract first keyword (uppercased inline).
-	j := i
-	for j < len(sql) && sql[j] != ' ' && sql[j] != '\t' && sql[j] != '\n' && sql[j] != '\r' && sql[j] != '(' && sql[j] != ';' {
-		j++
-	}
-	if j == i {
-		return true
-	}
-	// Uppercase the keyword in-place via stack buf.
-	var buf [32]byte
-	kwLen := j - i
-	if kwLen > len(buf) {
-		return true // unusual; don't optimize
-	}
-	for k := 0; k < kwLen; k++ {
-		c := sql[i+k]
-		if c >= 'a' && c <= 'z' {
-			c -= 32
-		}
-		buf[k] = c
-	}
-	kw := string(buf[:kwLen])
+	kw := firstKeyword(stripLeadingNoise(sql))
 	switch kw {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "VALUES", "TABLE",
 		"SHOW", "EXPLAIN", "WITH", "COMMIT", "ROLLBACK", "BEGIN",

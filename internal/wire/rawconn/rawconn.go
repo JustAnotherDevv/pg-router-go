@@ -14,7 +14,6 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"sync"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
@@ -108,35 +107,15 @@ func NeedsBackend(tag byte) bool {
 }
 
 // msgBufPool reuses message buffers for the raw read path.
-// Typical pgbench messages are <256 bytes; the pool grows as needed.
-var msgBufPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 512)
-		return &b
-	},
-}
+var msgBufPool = util.NewBufferPool(512)
 
 // GetMsgBuf returns a buffer from the pool with at least minCap capacity.
 func GetMsgBuf(minCap int) *[]byte {
-	bp := msgBufPool.Get().(*[]byte)
-	if cap(*bp) < minCap {
-		nb := make([]byte, minCap)
-		return &nb
-	}
-	*bp = (*bp)[:0]
-	return bp
+	return msgBufPool.Get(minCap)
 }
 
-// PutMsgBuf returns a buffer to the pool. Oversized buffers (>64KB)
-// are dropped to avoid pinning large CopyData buffers.
+// PutMsgBuf returns a buffer to the pool.
 func PutMsgBuf(bp *[]byte) {
-	if bp == nil {
-		return
-	}
-	if cap(*bp) > 64*1024 {
-		return
-	}
-	*bp = (*bp)[:0]
 	msgBufPool.Put(bp)
 }
 

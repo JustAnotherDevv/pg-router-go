@@ -13,8 +13,9 @@ import (
 	"errors"
 	"io"
 	"reflect"
-	"sync"
 	"unsafe"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 // TagClass classifies a Postgres backend message tag byte for the
@@ -146,39 +147,15 @@ var ErrSpliceStop = errors.New("wire: splice stop (interesting message pending)"
 const HeaderSize = 5
 
 // spliceBufPool reuses the working buffer used by DrainSplice.
-// Allocated buffers are pinned to the pool until PutSpliceBuf.
-var spliceBufPool = sync.Pool{
-	New: func() any {
-		// Default 8KB; overridden by callers via GetSpliceBuf.
-		b := make([]byte, 8*1024)
-		return &b
-	},
-}
+var spliceBufPool = util.NewBufferPool(8 * 1024)
 
 // GetSpliceBuf returns a buffer with the requested minimum size.
-// If the pooled buffer is too small, a new one is allocated. The
-// returned pointer must be returned via PutSpliceBuf.
 func GetSpliceBuf(minSize int) *[]byte {
-	bp := spliceBufPool.Get().(*[]byte)
-	if cap(*bp) < minSize {
-		// Too small for this workload; grow.
-		nb := make([]byte, minSize)
-		return &nb
-	}
-	*bp = (*bp)[:minSize]
-	return bp
+	return spliceBufPool.GetSized(minSize)
 }
 
-// PutSpliceBuf returns a buffer to the pool. Oversized buffers
-// (>64 KiB) are dropped to avoid pinning huge CopyData buffers.
+// PutSpliceBuf returns a buffer to the pool.
 func PutSpliceBuf(bp *[]byte) {
-	if bp == nil {
-		return
-	}
-	if cap(*bp) > 64*1024 {
-		return
-	}
-	*bp = (*bp)[:0]
 	spliceBufPool.Put(bp)
 }
 
