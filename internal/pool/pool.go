@@ -613,7 +613,6 @@ func (p *Pool) CloseWithDeadline(deadline time.Time) error {
 		return nil // already closed
 	}
 
-	// Drain idle channel.
 	var idle []*pooledConn
 loop:
 	for {
@@ -625,7 +624,6 @@ loop:
 		}
 	}
 
-	// Wake all waiters with ErrPoolClosed.
 	p.wmu.Lock()
 	waiters := p.waiters
 	p.waiters = nil
@@ -642,7 +640,6 @@ loop:
 		return nil
 	}
 
-	// Wait for active to drain.
 	done := make(chan struct{})
 	go func() {
 		p.wmu.Lock()
@@ -690,7 +687,6 @@ func (p *Pool) EvictIdleOnce(now time.Time) int {
 		keepCount = 0
 	}
 
-	// Drain idle channel into a temp slice.
 	var all []*pooledConn
 loop:
 	for {
@@ -717,7 +713,6 @@ loop:
 		evicted = append(evicted, pc)
 	}
 
-	// Rebuild idle channel with kept connections.
 	p.idle = make(chan *pooledConn, p.cfg.DefaultPoolSize)
 	for _, pc := range kept {
 		p.idle <- pc

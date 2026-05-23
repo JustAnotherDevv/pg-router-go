@@ -27,15 +27,6 @@ func WrapServerFrontend(fe *pgproto3.Frontend) *ServerSide {
 	return &ServerSide{fe: fe}
 }
 
-// Frontend exposes the underlying pgproto3.Frontend for places that
-// still need it during M.2's incremental migration. New code should
-// avoid it — callers should reach for the typed methods instead.
-//
-// TODO(M.6): remove once internal/backend stops needing it.
-func (s *ServerSide) Frontend() *pgproto3.Frontend {
-	return s.fe
-}
-
 // Receive reads the next BackendMessage from the upstream.
 func (s *ServerSide) Receive() (pgproto3.BackendMessage, error) {
 	return s.fe.Receive()

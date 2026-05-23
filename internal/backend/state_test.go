@@ -7,9 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newLifecycle(now time.Time) *Lifecycle {
+	lc := &Lifecycle{}
+	lc.Init(now)
+	return lc
+}
+
 func TestLifecycleInitialState(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
-	lc := NewLifecycle(now)
+	lc := newLifecycle(now)
 	require.Equal(t, StateNew, lc.State())
 	require.Equal(t, now, lc.CreatedAt())
 	require.Equal(t, now, lc.LastActive())
@@ -18,7 +24,7 @@ func TestLifecycleInitialState(t *testing.T) {
 
 func TestLifecycleTransitions(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
-	lc := NewLifecycle(t0)
+	lc := newLifecycle(t0)
 
 	t1 := t0.Add(time.Second)
 	lc.MarkActive(t1)
@@ -40,7 +46,7 @@ func TestLifecycleTransitions(t *testing.T) {
 
 func TestLifecycleShouldRecycle(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
-	lc := NewLifecycle(t0)
+	lc := newLifecycle(t0)
 	require.False(t, lc.ShouldRecycle(t0, 0)) // 0 = disabled
 	require.False(t, lc.ShouldRecycle(t0.Add(time.Minute), time.Hour))
 	require.True(t, lc.ShouldRecycle(t0.Add(time.Hour), time.Hour))
@@ -49,7 +55,7 @@ func TestLifecycleShouldRecycle(t *testing.T) {
 
 func TestLifecycleShouldEvict(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
-	lc := NewLifecycle(t0)
+	lc := newLifecycle(t0)
 	// Active state never evicts.
 	lc.MarkActive(t0)
 	require.False(t, lc.ShouldEvict(t0.Add(time.Hour), time.Second))

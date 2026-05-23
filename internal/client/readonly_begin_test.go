@@ -2,8 +2,6 @@ package client
 
 import (
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 func TestIsExplicitReadOnlyBeginSQL(t *testing.T) {
@@ -38,14 +36,20 @@ func TestIsExplicitReadOnlyBeginSQL(t *testing.T) {
 	}
 }
 
-func TestIsReadMessageHonoursReadOnlyBegin(t *testing.T) {
-	if !isReadMessage(&pgproto3.Query{String: "BEGIN READ ONLY"}) {
-		t.Error("BEGIN READ ONLY should be read")
+func TestReadOnlyBeginClassification(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want SQLOp
+	}{
+		{"SELECT 1", SQLOpRead},
+		{"INSERT INTO t VALUES (1)", SQLOpWrite},
+		{"BEGIN", SQLOpWrite},
+		{"BEGIN READ ONLY", SQLOpWrite}, // BEGIN is always write
+		{"SET TRANSACTION READ ONLY", SQLOpWrite},
 	}
-	if isReadMessage(&pgproto3.Query{String: "BEGIN"}) {
-		t.Error("BEGIN should NOT be read")
-	}
-	if !isReadMessage(&pgproto3.Parse{Query: "START TRANSACTION READ ONLY"}) {
-		t.Error("START TRANSACTION READ ONLY (Parse) should be read")
+	for _, tt := range tests {
+		if got := ClassifySQL(tt.sql); got != tt.want {
+			t.Errorf("ClassifySQL(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
 	}
 }

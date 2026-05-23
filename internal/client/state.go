@@ -87,25 +87,7 @@ func (s *ClientState) ObserveBackendMessage(msg pgproto3.BackendMessage) bool {
 	if !ok {
 		return false
 	}
-	prev := s.tx
-	next := TxState(rfq.TxStatus)
-	s.tx = next
-	// Boundary if prev was idle and we entered a transaction OR if we
-	// returned to idle from in/failed.
-	switch {
-	case prev != TxInBlock && prev != TxFailed && (next == TxInBlock):
-		s.TxStarts++
-		return true
-	case (prev == TxInBlock || prev == TxFailed) && next == TxIdle:
-		// Distinguish commit vs rollback by previous state — failed → rollback.
-		if prev == TxFailed {
-			s.TxRollbacks++
-		} else {
-			s.TxCommits++
-		}
-		return true
-	}
-	return false
+	return s.ObserveTxStatus(rfq.TxStatus)
 }
 
 // ObserveClientMessage tracks client → server message counts. No state

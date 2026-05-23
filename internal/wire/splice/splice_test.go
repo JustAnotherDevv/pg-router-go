@@ -314,20 +314,25 @@ func TestPutbackReader_Overflow(t *testing.T) {
 	}
 }
 
-func TestPutbackReader_Stats(t *testing.T) {
+func TestPutbackReader_Putback(t *testing.T) {
+	// Putback inserts at front; when buffer is empty, it's straightforward.
 	pb := NewPutbackReader(bytes.NewReader([]byte("abc")))
-	before := pb.Stats()
-	if before.Putbacks != 0 {
-		t.Errorf("initial Putbacks = %d, want 0", before.Putbacks)
+	pb.Putback([]byte("XY"))
+	buf := make([]byte, 5)
+	n, err := pb.Read(buf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	pb.Putback([]byte("X"))
-	pb.Putback([]byte("YZ"))
-	after := pb.Stats()
-	if after.Putbacks != 2 {
-		t.Errorf("Putbacks = %d, want 2", after.Putbacks)
+	if n != 2 || string(buf[:n]) != "XY" {
+		t.Errorf("Read after Putback = %q, want %q", string(buf[:n]), "XY")
 	}
-	if after.Puts != 3 {
-		t.Errorf("Puts = %d, want 3", after.Putbacks)
+	// Then the underlying reader returns the rest.
+	n, err = pb.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 || string(buf[:n]) != "abc" {
+		t.Errorf("Read after Putback = %q, want %q", string(buf[:n]), "abc")
 	}
 }
 

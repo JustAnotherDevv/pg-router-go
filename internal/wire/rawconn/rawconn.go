@@ -15,6 +15,8 @@ import (
 	"io"
 	"net"
 	"sync"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
 // HeaderSize is the Postgres wire protocol message header size
@@ -164,7 +166,6 @@ func New(conn net.Conn) *RawConn {
 //
 // Returns io.EOF on clean client disconnect.
 func (rc *RawConn) ReadMessage() (tag byte, raw []byte, err error) {
-	// Read 5-byte header
 	hdr, err := rc.reader.Peek(HeaderSize)
 	if err != nil {
 		return 0, nil, err
@@ -214,7 +215,6 @@ func ExtractQuerySQL(raw []byte) string {
 	}
 	// Skip header (5 bytes), the rest is the null-terminated SQL.
 	body := raw[HeaderSize:]
-	// Find the null terminator.
 	for i, b := range body {
 		if b == 0 {
 			return string(body[:i])
@@ -252,10 +252,7 @@ func QueryFirstKeywordRaw(raw []byte) string {
 	return matchKeyword(keyword)
 }
 
-// isIdentByte returns true for bytes that can appear in SQL identifiers.
-func isIdentByte(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
-}
+func isIdentByte(b byte) bool { return util.IsIdentByte(b) }
 
 // matchKeyword checks if the raw keyword bytes match SET/DISCARD/RESET.
 func matchKeyword(kw []byte) string {
@@ -276,9 +273,7 @@ func matchKeyword(kw []byte) string {
 	return ""
 }
 
-func eqFoldByte(a, b byte) bool {
-	return a == b || (a|0x20) == (b|0x20)
-}
+func eqFoldByte(a, b byte) bool { return util.EqFold(a, b) }
 
 // ExtractParseFields extracts the statement name and query string
 // from a raw Parse message. Parse format:
@@ -334,7 +329,6 @@ func ExtractParseParamOIDs(raw []byte) []uint32 {
 	}
 	body := raw[HeaderSize:]
 
-	// Skip name (null-terminated).
 	i := 0
 	for i < len(body) && body[i] != 0 {
 		i++
@@ -344,7 +338,6 @@ func ExtractParseParamOIDs(raw []byte) []uint32 {
 	}
 	i++ // skip null
 
-	// Skip query (null-terminated).
 	for i < len(body) && body[i] != 0 {
 		i++
 	}

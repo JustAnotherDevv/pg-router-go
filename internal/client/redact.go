@@ -26,7 +26,11 @@
 
 package client
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
+)
 
 // RedactSQL returns sql with every recognised literal replaced by `?`.
 // Bind parameters ($1, $42) are kept verbatim because they don't carry
@@ -208,10 +212,7 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 func isHex(c byte) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
-func isIdentByte(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-		(c >= '0' && c <= '9') || c == '_'
-}
+func isIdentByte(c byte) bool { return util.IsIdentByte(c) }
 
 // SQLForLog returns the SQL string to log under the given mode.
 // Truncated to maxLen with a trailing '…' so a 10 MB INSERT can't blow

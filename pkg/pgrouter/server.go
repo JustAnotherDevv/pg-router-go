@@ -99,7 +99,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("audit: %w", err)
 	}
 
-	logSQLMode := string(config.NormalizeLogSQL(cfg.Logging.LogSQL))
+	logSQLMode := config.NormalizeLogSQL(cfg.Logging.LogSQL)
 	stats.SetAppNameCap(stats.DefaultAppNameCardinalityCap) // HB2
 	h := wire.BuildPooledHandler(wire.HandlerInput{
 		Cfg:             cfg,

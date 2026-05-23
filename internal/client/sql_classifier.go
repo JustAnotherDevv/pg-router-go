@@ -23,7 +23,11 @@
 
 package client
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/util"
+)
 
 // SQLOp is the classification verdict.
 type SQLOp int
@@ -163,9 +167,7 @@ func ClassifyDetail(sql string) (op SQLOp, isROBegin bool) {
 
 // eqFold returns true if a equals b case-insensitively.
 // a and b must be ASCII identifier bytes.
-func eqFold(a, b byte) bool {
-	return a == b || (a|0x20) == (b|0x20)
-}
+func eqFold(a, b byte) bool { return util.EqFold(a, b) }
 
 // firstKeyword returns the first SQL token uppercased.
 // Uses byte-level comparison to avoid strings.ToUpper allocation.

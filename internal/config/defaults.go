@@ -19,9 +19,6 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.MaxClientConn == 0 {
 		cfg.Server.MaxClientConn = 1000
 	}
-	if cfg.Server.ClientLogin == 0 {
-		cfg.Server.ClientLogin = 60 * time.Second
-	}
 
 	// Pool.
 	if cfg.Pool.Mode == "" {
@@ -84,7 +81,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Logging.Format = "text"
 	}
 	if cfg.Logging.LogSQL == "" {
-		cfg.Logging.LogSQL = string(LogSQLRedacted)
+		cfg.Logging.LogSQL = "redacted"
 	}
 
 	// Wire.

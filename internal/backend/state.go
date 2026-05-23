@@ -48,14 +48,6 @@ type Lifecycle struct {
 	useCount    atomic.Uint64
 }
 
-// NewLifecycle starts in StateNew with createdAt = now.
-func NewLifecycle(now time.Time) *Lifecycle {
-	lc := &Lifecycle{createdAt: now}
-	lc.lastActive.Store(now.UnixNano())
-	lc.state.Store(uint32(StateNew))
-	return lc
-}
-
 // Init initializes a zero-value Lifecycle in place (avoids heap alloc).
 func (l *Lifecycle) Init(now time.Time) {
 	l.createdAt = now

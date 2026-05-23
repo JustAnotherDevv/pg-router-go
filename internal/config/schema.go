@@ -37,13 +37,6 @@ type WireConfig struct {
 	// kernel socket buffer + handles any single Postgres message.
 	SpliceBufferSize int `yaml:"splice_buffer_size,omitempty"`
 
-	// SpliceDropUnknown, when true, drops backend messages whose tag
-	// byte isn't in the known tag table instead of splicing them
-	// forward. Default false (forward as boring). Use only if you're
-	// debugging a protocol mismatch and don't want unknown tags
-	// reaching the client.
-	SpliceDropUnknown bool `yaml:"splice_drop_unknown,omitempty"`
-
 	// PreparedCache enables the cross-backend prepared-statement
 	// cache (per-client name→server-name rewrite + per-backend LRU
 	// of pgr_<hash> statements). Default true. Set false to disable
@@ -129,16 +122,6 @@ type ServerConfig struct {
 	// GOGC=off).
 	GOMEMLIMIT string `yaml:"gomemlimit,omitempty"`
 
-	// SocketRecvBuf overrides SO_RCVBUF on accepted client connections.
-	// Larger buffers reduce read syscall frequency under high throughput.
-	// Default 0 = kernel default (typically 128-256KB).
-	SocketRecvBuf int `yaml:"socket_recv_buf,omitempty"`
-
-	// SocketSendBuf overrides SO_SNDBUF on accepted client connections.
-	// Larger buffers reduce write syscall frequency under high throughput.
-	// Default 0 = kernel default (typically 128-256KB).
-	SocketSendBuf int `yaml:"socket_send_buf,omitempty"`
-
 	// ProxyProtocol enables HAProxy PROXY v1/v2 preamble parsing on
 	// every accepted TCP conn. Required when pgrouter sits behind an
 	// L4 load balancer that prefixes the real client addr.
@@ -155,7 +138,6 @@ type ServerConfig struct {
 
 	MaxClientConn  int           `yaml:"max_client_conn"`            // default 1000
 	ClientIdle     time.Duration `yaml:"client_idle_timeout"`        // 0 = disabled
-	ClientLogin    time.Duration `yaml:"client_login_timeout"`       // default 60s
 	IdleTx         time.Duration `yaml:"idle_transaction_timeout"`   // 0 = disabled
 }
 
@@ -225,7 +207,6 @@ type TLSConfig struct {
 	ClientCertFile string  `yaml:"client_cert_file,omitempty"`
 	ClientKeyFile  string  `yaml:"client_key_file,omitempty"`
 	ClientCAFile   string  `yaml:"client_ca_file,omitempty"`
-	ClientProtocols []string `yaml:"client_protocols,omitempty"` // e.g. ["TLSv1.2", "TLSv1.3"]
 
 	ServerMode     SSLMode `yaml:"server_mode"` // default "disable"
 	ServerCertFile string  `yaml:"server_cert_file,omitempty"`
@@ -277,25 +258,16 @@ type LoggingConfig struct {
 	AuditFile string `yaml:"audit_file,omitempty"`
 }
 
-// LogSQLMode normalises LoggingConfig.LogSQL into one of the three
-// canonical strings. Empty / unrecognised falls back to "redacted".
-type LogSQLMode string
-
-const (
-	LogSQLOff      LogSQLMode = "off"
-	LogSQLRedacted LogSQLMode = "redacted"
-	LogSQLFull     LogSQLMode = "full"
-)
-
-// NormalizeLogSQL maps a YAML string to a canonical LogSQLMode.
-func NormalizeLogSQL(v string) LogSQLMode {
+// NormalizeLogSQL maps a YAML string to a canonical log mode.
+// Returns "off", "full", or "redacted" (default).
+func NormalizeLogSQL(v string) string {
 	switch v {
 	case "off", "none", "false":
-		return LogSQLOff
+		return "off"
 	case "full", "raw":
-		return LogSQLFull
+		return "full"
 	default:
-		return LogSQLRedacted
+		return "redacted"
 	}
 }
 

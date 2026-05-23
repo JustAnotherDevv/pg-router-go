@@ -374,9 +374,8 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 	var spliceCfg *splice.SpliceConfig
 	if in.Cfg.Wire.Splice != nil && *in.Cfg.Wire.Splice {
 		spliceCfg = &splice.SpliceConfig{
-			Enabled:         true,
-			BufferSize:      in.Cfg.Wire.SpliceBufferSize,
-			DropUnknownTags: in.Cfg.Wire.SpliceDropUnknown,
+			Enabled:    true,
+			BufferSize: in.Cfg.Wire.SpliceBufferSize,
 		}
 	}
 	preparedCache := true

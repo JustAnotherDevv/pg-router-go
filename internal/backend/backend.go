@@ -142,7 +142,6 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 
 	fe := pgproto3.NewFrontend(c, c)
 
-	// Send StartupMessage.
 	params := map[string]string{
 		"user":     opts.User,
 		"database": opts.Database,
@@ -207,7 +206,7 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 			_ = c.Close()
 			return nil, fmt.Errorf("backend startup error: %s: %s", m.Severity, m.Message)
 		case *pgproto3.ReadyForQuery:
-			_ = c.SetDeadline(time.Time{}) // clear deadline post-handshake
+			_ = c.SetDeadline(time.Time{})
 			log.Debug("backend ready",
 				"tx_status", string(m.TxStatus),
 				"backend_pid", conn.PostgresPID,

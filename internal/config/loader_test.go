@@ -59,7 +59,6 @@ func TestLoadFullConfig(t *testing.T) {
 	require.Equal(t, "127.0.0.1", cfg.Server.ListenAddr)
 	require.Equal(t, 16432, cfg.Server.ListenPort)
 	require.Equal(t, 500, cfg.Server.MaxClientConn)
-	require.Equal(t, 30*time.Second, cfg.Server.ClientLogin)
 
 	require.Equal(t, PoolModeSession, cfg.Pool.Mode)
 	require.Equal(t, 10, cfg.Pool.DefaultPoolSize)

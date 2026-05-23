@@ -2,7 +2,6 @@ server:
   listen_addr: 127.0.0.1
   listen_port: 16432
   max_client_conn: 500
-  client_login_timeout: 30s
 
 pool:
   mode: session

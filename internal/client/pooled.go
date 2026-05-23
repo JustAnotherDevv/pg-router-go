@@ -30,8 +30,6 @@ package client
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -569,11 +567,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// Unrecognized SET (outside the GUC replay whitelist) forces
 		// session-pin: replaying an unknown variable across backends
 		// would be incorrect, so we hold the current backend instead.
-		if !sessionPinned && gucCache.HasUnrecognizedSet() {
-			sessionPinned = true
-			log.Info("session pinned (force-session)",
-				"reason", "SET of GUC outside replayable whitelist")
-		}
+		pinSession(&sessionPinned, log, gucCache.HasUnrecognizedSet(),
+			"SET of GUC outside replayable whitelist", "")
 		// Statement-mode: reject explicit transaction openers. The
 		// client gets a clean error and the connection stays up; PG
 		// itself never sees the offending message.
@@ -589,10 +584,6 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// Per-(db, user) Query/Parse counter + slow-query stash +
 		// SQL classification (cached for the rest of the iteration so
 		// ClassifySQL doesn't run multiple times per message).
-		//
-		// curSQLOp + curROBegin flow into the lazy-acquire / routing
-		// decision below and the lastWriteAt stamp; isReadMessage no
-		// longer re-classifies.
 		var curSQLOp SQLOp
 		var curROBegin bool
 		if sql, kind, prepName, ok := extractClientQuery(msg); ok {
@@ -849,18 +840,49 @@ type drainInput struct {
 	spliceReader *splice.RawReader
 	// spliceBufSize is the buffer size hint passed to DrainSplice.
 	spliceBufSize int
-	// spliceCoalesceSize is the max bytes to accumulate in the splice
-	// buffer before flushing (batch writes for fewer syscalls).
-	spliceCoalesceSize int
 }
 
 // drainOutcome is what the outer loop needs to act on:
 //   - queryTimedOut: caller should Close + nil bConn + emit 57014
 //   - shouldRelease: caller should Release bConn back to its pool
-//   - sawRFQ:        diagnostic; both timeout + RFQ exit set it false/true
 type drainOutcome struct {
 	queryTimedOut bool
 	shouldRelease bool
+}
+
+// observeTxTransition emits per-(db,user) counters for tx-state changes.
+func (h *PooledConn) observeTxTransition(state *ClientState, prev, new TxState) {
+	switch {
+	case prev != TxInBlock && prev != TxFailed && new == TxInBlock:
+		h.counters.OnTxStart()
+	case prev == TxFailed && new == TxIdle:
+		h.counters.OnTxRollback()
+	case prev == TxInBlock && new == TxIdle:
+		h.counters.OnTxCommit()
+	}
+}
+
+// handleQueryTimeout sets out.queryTimedOut and logs; returns true if handled.
+func (h *PooledConn) handleQueryTimeout(err error, out *drainOutcome, log *slog.Logger) bool {
+	if isTimeoutErr(err) && h.QueryTimeout > 0 {
+		out.queryTimedOut = true
+		h.counters.OnQueryTimeout()
+		log.Info("query_timeout fired; closing backend",
+			"timeout", h.QueryTimeout,
+		)
+		return true
+	}
+	return false
+}
+
+// pinSession sets *pinned and logs once when needsPin is true.
+func pinSession(pinned *bool, log *slog.Logger, needsPin bool, reason, sql string) {
+	if !*pinned && needsPin {
+		*pinned = true
+		log.Info("session pinned (force-session)",
+			"reason", reason,
+			"sql_prefix", truncate(sql, 64))
+	}
 }
 
 // drainBackendUntilRFQ pulls backend frames until ReadyForQuery (or
@@ -909,12 +931,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			if res.EOF {
 				return out, curSpan, nil
 			}
-			if isTimeoutErr(serr) && h.QueryTimeout > 0 {
-				out.queryTimedOut = true
-				h.counters.OnQueryTimeout()
-				in.log.Info("query_timeout fired; closing backend",
-					"timeout", h.QueryTimeout,
-				)
+			if h.handleQueryTimeout(serr, &out, in.log) {
 				return out, curSpan, nil
 			}
 			return out, curSpan, fmt.Errorf("raw forward: %w", serr)
@@ -935,14 +952,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			boundary := in.state.ObserveTxStatus(res.TxStatus)
 			newTx := in.state.Tx()
 			if boundary {
-				switch {
-				case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
-					h.counters.OnTxStart()
-				case prevTx == TxFailed && newTx == TxIdle:
-					h.counters.OnTxRollback()
-				case prevTx == TxInBlock && newTx == TxIdle:
-					h.counters.OnTxCommit()
-				}
+				h.observeTxTransition(in.state, prevTx, newTx)
 			}
 			queryDur := time.Since(in.queryStart)
 			h.onQueryComplete(in.log, in.lastKind, in.lastSQL,
@@ -960,12 +970,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 	for {
 		bmsg, err := in.bConn.Frontend.Receive()
 		if err != nil {
-			if isTimeoutErr(err) && h.QueryTimeout > 0 {
-				out.queryTimedOut = true
-				h.counters.OnQueryTimeout()
-				in.log.Info("query_timeout fired; closing backend",
-					"timeout", h.QueryTimeout,
-				)
+			if h.handleQueryTimeout(err, &out, in.log) {
 				return out, curSpan, nil
 			}
 			return out, curSpan, fmt.Errorf("server recv: %w", err)
@@ -984,14 +989,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 		prevTx := in.state.Tx()
 		if in.state.ObserveBackendMessage(bmsg) {
 			newTx := in.state.Tx()
-			switch {
-			case prevTx != TxInBlock && prevTx != TxFailed && newTx == TxInBlock:
-				h.counters.OnTxStart()
-			case prevTx == TxFailed && newTx == TxIdle:
-				h.counters.OnTxRollback()
-			case prevTx == TxInBlock && newTx == TxIdle:
-				h.counters.OnTxCommit()
-			}
+			h.observeTxTransition(in.state, prevTx, newTx)
 		}
 		// CopyInResponse — backend is now waiting for client
 		// CopyData. Stop draining; outer loop will receive CopyData.
@@ -1033,22 +1031,10 @@ func (h *PooledConn) observeClientMessage(
 		h.logSQL(log, "query", "", m.String)
 		if info != nil {
 			gucCache.ObserveQueryWithInfo(m.String, info)
-			if !*sessionPinned && info.NeedsPin {
-				*sessionPinned = true
-				log.Info("session pinned (force-session)",
-					"reason", "incompatible feature in Query",
-					"sql_prefix", truncate(m.String, 64),
-				)
-			}
+			pinSession(sessionPinned, log, info.NeedsPin, "incompatible feature in Query", m.String)
 		} else {
 			gucCache.ObserveQuery(m.String)
-			if !*sessionPinned && needsSessionPin(m.String) {
-				*sessionPinned = true
-				log.Info("session pinned (force-session)",
-					"reason", "incompatible feature in Query",
-					"sql_prefix", truncate(m.String, 64),
-				)
-			}
+			pinSession(sessionPinned, log, needsSessionPin(m.String), "incompatible feature in Query", m.String)
 		}
 	case *pgproto3.Parse:
 		h.logSQL(log, "parse", m.Name, m.Query)
@@ -1059,21 +1045,9 @@ func (h *PooledConn) observeClientMessage(
 			prepCache.Observe(m.Name, m.Query, m.ParameterOIDs)
 		}
 		if info != nil {
-			if !*sessionPinned && info.NeedsPin {
-				*sessionPinned = true
-				log.Info("session pinned (force-session)",
-					"reason", "incompatible feature in Parse",
-					"sql_prefix", truncate(m.Query, 64),
-				)
-			}
+			pinSession(sessionPinned, log, info.NeedsPin, "incompatible feature in Parse", m.Query)
 		} else {
-			if !*sessionPinned && needsSessionPin(m.Query) {
-				*sessionPinned = true
-				log.Info("session pinned (force-session)",
-					"reason", "incompatible feature in Parse",
-					"sql_prefix", truncate(m.Query, 64),
-				)
-			}
+			pinSession(sessionPinned, log, needsSessionPin(m.Query), "incompatible feature in Parse", m.Query)
 		}
 	case *pgproto3.Close:
 		// Close('S', name) untracks a prepared statement.
@@ -1108,7 +1082,6 @@ func (h *PooledConn) logSQL(log *slog.Logger, kind, prepName, sql string) {
 	log.Debug("client query", attrs...)
 }
 
-// truncate is a no-frills string slicer for log fields.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -1142,7 +1115,7 @@ func (h *PooledConn) sendWelcome(ctx context.Context, be *pgproto3.Backend) erro
 	pid := h.WelcomePID
 	sec := h.WelcomeSecret
 	if pid == 0 || len(sec) == 0 {
-		p, s, err := randomBackendKey()
+		p, s, err := randomKey()
 		if err != nil {
 			return err
 		}
@@ -1241,9 +1214,6 @@ func (h *PooledConn) takeQPS() bool {
 	stats.OnQPSReject("user", h.User)
 	return false
 }
-
-// silence unused import linter when only ratelimit type is used via field
-var _ = util.NewTokenBucket
 
 // releasePool returns p if non-nil else fallback. Used to pick the
 // pool to Release into (acquired-from pool — primary or replica).
@@ -1354,21 +1324,6 @@ func extractClientQuery(msg pgproto3.FrontendMessage) (sql, kind, prepName strin
 		return m.Query, "parse", m.Name, true
 	}
 	return "", "", "", false
-}
-
-// isReadMessage is retained for the existing test surface (#128
-// readonly_begin_test.go calls it directly). Serve's hot path uses
-// the cached curSQLOp/curROBegin pair to avoid re-running the
-// classifier 3× per message.
-func isReadMessage(msg pgproto3.FrontendMessage) bool {
-	sql, _, _, ok := extractClientQuery(msg)
-	if !ok {
-		return false
-	}
-	if IsExplicitReadOnlyBeginSQL(sql) {
-		return true
-	}
-	return ClassifySQL(sql) == SQLOpRead
 }
 
 // startQuerySpan opens an OTel span for one Query/Parse. Returns a
@@ -1669,22 +1624,6 @@ func (h *PooledConn) prepareInterceptForward(
 	return msg, false, nil
 }
 
-// randomBackendKey is a copy of the helper in conn.go; kept here so
-// pooled.go is independently testable.
-func randomBackendKey() (uint32, []byte, error) {
-	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return 0, nil, err
-	}
-	pid := binary.BigEndian.Uint32(buf[0:4])
-	if pid == 0 {
-		pid = 1
-	}
-	sec := make([]byte, 4)
-	copy(sec, buf[4:8])
-	return pid, sec, nil
-}
-
 // serveRaw is the raw-passthrough variant of Serve. When
 // PooledConfig.RawPassthrough is true, this method handles the client
 // connection by reading raw bytes (bypassing pgproto3 decode/re-encode)
@@ -1776,12 +1715,10 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			return fmt.Errorf("client recv: %w", err)
 		}
 
-		// Clear the read deadline.
 		if h.hasIdleDeadline {
 			_ = conn.SetReadDeadline(time.Time{})
 		}
 
-		// Terminate.
 		if rawconn.IsTerminate(tag) {
 			log.Info("client sent Terminate")
 			return nil
@@ -1826,20 +1763,13 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			// GUC + session-pin observation.
 			if sqlInfo != nil {
 				gucCache.ObserveQueryWithInfo(sql, sqlInfo)
-				if !sessionPinned && sqlInfo.NeedsPin {
-					sessionPinned = true
-					log.Info("session pinned (force-session)",
-						"reason", "incompatible feature",
-						"sql_prefix", truncate(sql, 64))
-				}
+				pinSession(&sessionPinned, log, sqlInfo.NeedsPin,
+					"incompatible feature", sql)
 			}
 
 			// Unrecognized SET → force session-pin.
-			if !sessionPinned && gucCache.HasUnrecognizedSet() {
-				sessionPinned = true
-				log.Info("session pinned (force-session)",
-					"reason", "SET of GUC outside replayable whitelist")
-			}
+			pinSession(&sessionPinned, log, gucCache.HasUnrecognizedSet(),
+				"SET of GUC outside replayable whitelist", "")
 		}
 
 		// Statement-mode: reject explicit BEGIN (requires GUCTracking for SQL extraction).
@@ -1938,7 +1868,6 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			// with their original raw bytes (no rewrite in raw mode).
 			writeBuf = append(writeBuf, raw...)
 
-			// Flush when a drain trigger arrives.
 			if rawconn.IsDrainTrigger(tag) {
 				if _, err := bConn.NetConn.Write(writeBuf); err != nil {
 					return fmt.Errorf("server send: %w", err)

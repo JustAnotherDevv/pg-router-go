@@ -66,19 +66,13 @@ type SpliceConfig struct {
 	// workload produces (typical DataRow <2KB; some workloads push 8KB
 	// RowDescription). Must be >= 5 (the wire header size). 0 = default.
 	BufferSize int
-
-	// DropUnknownTags, when true, silently drops messages whose tag
-	// byte is not in tagClassTable. Default false (forward as boring).
-	// Useful for forward-compat with future Postgres protocol additions.
-	DropUnknownTags bool
 }
 
-// Default splice config: enabled, 8 KiB buffer, no drop.
+// Default splice config: enabled, 8 KiB buffer.
 func DefaultSpliceConfig() SpliceConfig {
 	return SpliceConfig{
-		Enabled:         true,
-		BufferSize:      8 * 1024,
-		DropUnknownTags: false,
+		Enabled:    true,
+		BufferSize: 8 * 1024,
 	}
 }
 
@@ -197,22 +191,9 @@ func PutSpliceBuf(bp *[]byte) {
 // we ever need to put back: a Postgres message header is exactly
 // 1 type byte + 4 length bytes. We never need to put back the body.
 type PutbackReader struct {
-	r    io.Reader
-	buf  [HeaderSize]byte
-	n    int // number of bytes currently in buf
-	stat PutbackStats
-}
-
-// PutbackStats tracks usage so operators can observe the splice path
-// is actually engaged (via /metrics or debug logs).
-type PutbackStats struct {
-	// Putbacks is the number of times Putback was called (i.e. the
-	// number of times the splice loop yielded control).
-	Putbacks uint64
-	// Puts is the number of bytes put back (always <= HeaderSize).
-	Puts uint64
-	// Reads is the number of underlying Read calls made.
-	Reads uint64
+	r   io.Reader
+	buf [HeaderSize]byte
+	n   int // number of bytes currently in buf
 }
 
 // NewPutbackReader wraps r.
@@ -233,7 +214,6 @@ func (p *PutbackReader) Read(dst []byte) (int, error) {
 		}
 		return n, nil
 	}
-	p.stat.Reads++
 	return p.r.Read(dst)
 }
 
@@ -279,7 +259,6 @@ type chunkReaderMirror struct {
 // changes its chunkReader implementation, this method must be updated
 // in lockstep.
 func (m *chunkReaderMirror) Next(n int) ([]byte, error) {
-	// Reset the buffer if it is empty
 	if m.rp == m.wp {
 		if len(*m.buf) != m.minBufSize {
 			// pgproto3 uses an internal pool; we don't bother —
@@ -293,14 +272,12 @@ func (m *chunkReaderMirror) Next(n int) ([]byte, error) {
 		m.wp = 0
 	}
 
-	// n bytes already in buf
 	if (m.wp - m.rp) >= n {
 		buf := (*m.buf)[m.rp : m.rp+n : m.rp+n]
 		m.rp += n
 		return buf, nil
 	}
 
-	// buf is smaller than requested number of bytes
 	if len(*m.buf) < n {
 		bigBuf := make([]byte, n)
 		m.wp = copy(bigBuf, (*m.buf)[m.rp:m.wp])
@@ -315,7 +292,6 @@ func (m *chunkReaderMirror) Next(n int) ([]byte, error) {
 		m.rp = 0
 	}
 
-	// Read at least the required number of bytes from the underlying io.Reader
 	readBytesCount, err := io.ReadAtLeast(m.r, (*m.buf)[m.wp:], minReadCount)
 	m.wp += readBytesCount
 	if err != nil {
@@ -459,7 +435,6 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 	woff := 0 // bytes accumulated in buf
 
 	for {
-		// Read 5-byte header.
 		if _, err := io.ReadFull(src, buf[woff:woff+HeaderSize]); err != nil {
 			if err == io.EOF {
 				if woff > 0 {
@@ -478,9 +453,7 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 
 		msgTotal := HeaderSize + bodyLen
 
-		// Check if message fits in buffer.
 		if woff+msgTotal <= len(buf) {
-			// Read body after header.
 			if bodyLen > 0 {
 				if _, err := io.ReadFull(src, buf[woff+HeaderSize:woff+msgTotal]); err != nil {
 					return res, err
@@ -488,7 +461,6 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 			}
 			woff += msgTotal
 		} else {
-			// Flush accumulated data first.
 			if woff > 0 {
 				if _, err := dst.Write(buf[:woff]); err != nil {
 					return res, err
@@ -506,7 +478,6 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 			}
 		}
 
-		// Classify and handle special messages.
 		switch tag {
 		case 'Z': // ReadyForQuery
 			// Extract tx_status: it's at offset 5 in the message
@@ -520,7 +491,6 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 				res.TxStatus = buf[woff-bodyLen]
 			}
 			res.Tag = tag
-			// Flush any remaining data.
 			if woff > 0 {
 				if _, err := dst.Write(buf[:woff]); err != nil {
 					return res, err
@@ -568,7 +538,6 @@ func (p *PutbackReader) Putback(buf []byte) {
 	if len(buf) == 0 {
 		return
 	}
-	p.stat.Putbacks++
 	keep := buf
 	if len(keep) > HeaderSize {
 		keep = keep[len(keep)-HeaderSize:]
@@ -581,12 +550,6 @@ func (p *PutbackReader) Putback(buf []byte) {
 	copy(p.buf[p.n+shift:], p.buf[:p.n])
 	copy(p.buf[:shift], keep)
 	p.n += shift
-	p.stat.Puts += uint64(shift)
-}
-
-// Stats returns a copy of the current stats. Safe to call concurrently.
-func (p *PutbackReader) Stats() PutbackStats {
-	return p.stat
 }
 
 // Rewind stuffs buf back into the putback buffer so the next Read
@@ -677,7 +640,6 @@ func DrainSplice(dst io.Writer, src SpliceReader, bufsize int) (rerr error) {
 				woff += msgTotal
 				continue
 			}
-			// Flush, then handle this message.
 			if woff > 0 {
 				if _, err := dst.Write(buf[:woff]); err != nil {
 					return err

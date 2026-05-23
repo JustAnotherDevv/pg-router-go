@@ -310,8 +310,8 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	}
 
 	// --- handler ---
-	logSQLMode := string(config.NormalizeLogSQL(cfg.Logging.LogSQL))
-	if logSQLMode == string(config.LogSQLFull) {
+	logSQLMode := config.NormalizeLogSQL(cfg.Logging.LogSQL)
+	if logSQLMode == "full" {
 		log.Warn("logging.log_sql=full enabled — raw SQL (with literals) will be logged. Use only in dev.")
 	}
 	auditWriter, err := client.OpenAuditFile(cfg.Logging.AuditFile)
