@@ -188,6 +188,21 @@ func New(name string, dial Dialer, cfg Config) *Pool {
 // Name is the (db, user) key this pool is registered under.
 func (p *Pool) Name() string { return p.name }
 
+// drainIdle drains the idle channel and returns all waiting connections.
+func (p *Pool) drainIdle() []*pooledConn {
+	var conns []*pooledConn
+loop:
+	for {
+		select {
+		case pc := <-p.idle:
+			conns = append(conns, pc)
+		default:
+			break loop
+		}
+	}
+	return conns
+}
+
 // Resize updates the live DefaultPoolSize cap. Growing wakes any
 // blocked waiters; shrinking lets the janitor's next sweep evict
 // excess idle backends. Returns the previous size.
@@ -205,16 +220,7 @@ func (p *Pool) Resize(newSize int) int {
 		p.cfg.MinPoolSize = newSize
 	}
 	// Drain idle channel, close excess, rebuild channel with new cap.
-	var kept []*pooledConn
-loop:
-	for {
-		select {
-		case pc := <-p.idle:
-			kept = append(kept, pc)
-		default:
-			break loop
-		}
-	}
+	kept := p.drainIdle()
 	curActive := int(p.active.Load())
 	excess := (curActive + len(kept)) - newSize
 	for excess > 0 && len(kept) > 0 {
@@ -613,16 +619,7 @@ func (p *Pool) CloseWithDeadline(deadline time.Time) error {
 		return nil // already closed
 	}
 
-	var idle []*pooledConn
-loop:
-	for {
-		select {
-		case pc := <-p.idle:
-			idle = append(idle, pc)
-		default:
-			break loop
-		}
-	}
+	idle := p.drainIdle()
 
 	p.wmu.Lock()
 	waiters := p.waiters
@@ -687,16 +684,7 @@ func (p *Pool) EvictIdleOnce(now time.Time) int {
 		keepCount = 0
 	}
 
-	var all []*pooledConn
-loop:
-	for {
-		select {
-		case pc := <-p.idle:
-			all = append(all, pc)
-		default:
-			break loop
-		}
-	}
+	all := p.drainIdle()
 
 	var kept, evicted []*pooledConn
 	for _, pc := range all {

@@ -401,7 +401,7 @@ func (b *bufioReader) Peek(n int) ([]byte, error) {
 		}
 		// Grow if buffer too small.
 		if len(b.buf) < n {
-			newBuf := make([]byte, maxInt(len(b.buf)*2, n))
+			newBuf := make([]byte, max(len(b.buf)*2, n))
 			b.wp = copy(newBuf, b.buf[b.rp:b.wp])
 			b.rp = 0
 			b.buf = newBuf
@@ -423,11 +423,4 @@ func (b *bufioReader) Peek(n int) ([]byte, error) {
 // first to ensure the bytes are available.
 func (b *bufioReader) Discard(n int) {
 	b.rp += n
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"sync"
 	"time"
@@ -53,6 +54,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const fatalWriteTimeout = 200 * time.Millisecond
 
 // connPool recycles PooledConn structs between connections to avoid
 // per-connection heap allocation. The struct is zeroed on Put; callers
@@ -269,12 +272,6 @@ type PooledConn struct {
 	// canonical code for transient overload).
 	QPSLimiter *util.TokenBucket
 
-	// resetOnReleaseSet is true once a caller has explicitly written to
-	// ResetOnRelease (including via the zero value of the bool — but
-	// most production paths go via NewPooledConn which sets this).
-	// Internal toggle; not exported.
-	resetOnReleaseSet bool
-
 	// counters caches the per-(db, user, app) Prometheus handles so the
 	// per-message stats path skips the WithLabelValues mutex + map
 	// lookup. Lazy-initialised on first Serve so tests that build a
@@ -317,7 +314,6 @@ func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]strin
 		},
 		Log:               log,
 		Pool:              p,
-		resetOnReleaseSet: true,
 	}
 }
 
@@ -533,8 +529,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				log.Info("client closed by timeout", "kind", which)
 				// Short write deadline so a wedged client can't keep
 				// the Serve goroutine alive forever.
-				h.sendFatalErrorWithWriteDeadline(be, conn, code,
-					"pgrouter: "+which, 200*time.Millisecond)
+				sendFatalWithDeadline(be, conn, code,
+					"pgrouter: "+which, fatalWriteTimeout)
 				return nil
 			}
 			return fmt.Errorf("client recv: %w", err)
@@ -576,7 +572,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			if sql, isBegin := clientExplicitBegin(msg); isBegin {
 				log.Info("statement_mode: rejecting explicit BEGIN",
 					"sql_prefix", truncate(sql, 64))
-				h.sendErrorWithRFQ(be, "25001",
+				proto.SendErrorRFQ(be, "25001",
 					"pgrouter: explicit transactions are not allowed in statement-mode pool")
 				continue
 			}
@@ -589,7 +585,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if sql, kind, prepName, ok := extractClientQuery(msg); ok {
 			if !h.takeQPS() {
 				log.Info("qps_limit: rejected", "kind", kind)
-				h.sendErrorWithRFQ(be, "53300",
+				proto.SendErrorRFQ(be, "53300",
 					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
 						h.Database, h.User))
 				continue
@@ -630,7 +626,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			if acquirePool == h.Pool && h.PrimaryHealthy != nil && !h.PrimaryHealthy() {
 				log.Info("failover: rejecting write — primary unhealthy",
 					"db", h.Database)
-				h.sendErrorWithRFQ(be, "08006",
+				proto.SendErrorRFQ(be, "08006",
 					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
 				// End the span we just opened for this rejected query —
 				// otherwise sustained failover rejections leak spans.
@@ -642,7 +638,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			}
 			bConn, err = acquirePool.Acquire(ctx)
 			if err != nil {
-				h.sendFatalError(be, "08006",
+				proto.SendFatalError(be, "08006",
 					fmt.Sprintf("pgrouter: cannot acquire backend: %v", err))
 				return err
 			}
@@ -665,7 +661,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					// Defensively discard the backend.
 					_ = bConn.Close()
 					bConn = nil
-					h.sendFatalError(be, "57P03",
+					proto.SendFatalError(be, "57P03",
 						fmt.Sprintf("pgrouter: backend replay failed: %v", err))
 					return err
 				}
@@ -766,9 +762,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				_ = bConn.Close()
 				bConn = nil
 				h.counters.OnQueryDuration(time.Since(queryStart).Seconds())
-				h.sendFatalErrorWithWriteDeadline(be, conn, "57014",
+				sendFatalWithDeadline(be, conn, "57014",
 					fmt.Sprintf("pgrouter: query_timeout (%s) exceeded", h.QueryTimeout),
-					200*time.Millisecond)
+					fatalWriteTimeout)
 				// Connection survives; client may issue a new Query.
 			}
 			continue
@@ -1139,13 +1135,8 @@ func (h *PooledConn) welcomeParams(ctx context.Context) map[string]string {
 	if len(cached) == 0 {
 		return h.CannedParams
 	}
-	merged := make(map[string]string, len(cached)+len(h.CannedParams))
-	for k, v := range h.CannedParams {
-		merged[k] = v
-	}
-	for k, v := range cached {
-		merged[k] = v
-	}
+	merged := maps.Clone(h.CannedParams)
+	maps.Copy(merged, cached)
 	return merged
 }
 
@@ -1177,21 +1168,6 @@ func (h *PooledConn) cachedOrWarm(ctx context.Context) map[string]string {
 	cached := h.Pool.CachedParams()
 	h.Pool.Release(c, false)
 	return cached
-}
-
-// sendFatalError is a thin wrapper around proto.SendFatalError kept
-// as a method so the existing call sites stay legible; the actual
-// pgwire synth happens in internal/proto/synth.go (reusable from any
-// pgrouter component that needs a synthetic FATAL).
-func (h *PooledConn) sendFatalError(be *pgproto3.Backend, code, msg string) {
-	proto.SendFatalError(be, code, msg)
-}
-
-// sendErrorWithRFQ wraps proto.SendErrorRFQ. Used for proxy-level
-// rejections (statement-mode BEGIN guard, QPS cap hit, failover
-// write reject) where the connection stays usable.
-func (h *PooledConn) sendErrorWithRFQ(be *pgproto3.Backend, code, msg string) {
-	proto.SendErrorRFQ(be, code, msg)
 }
 
 // isStatementMode returns true when the handler is configured for
@@ -1273,10 +1249,7 @@ func (h *PooledConn) onQueryComplete(log *slog.Logger, kind, sql, prepName strin
 
 	if wantSlow {
 		// Re-truncate to the slow_query cap (512) for terser log lines.
-		slowSQL := renderedSQL
-		if len(slowSQL) > 512 {
-			slowSQL = slowSQL[:512] + "…"
-		}
+		slowSQL := truncate(renderedSQL, 512)
 		log.Warn("slow_query",
 			"kind", kind,
 			"duration", dur,
@@ -1396,15 +1369,12 @@ func clientExplicitBegin(msg pgproto3.FrontendMessage) (string, bool) {
 	return "", false
 }
 
-// sendFatalErrorWithWriteDeadline is sendFatalError variant that caps the
-// blocking flush time. Used from timeout-driven exit paths where the
-// client may have disappeared and we don't want the goroutine to hang.
-func (h *PooledConn) sendFatalErrorWithWriteDeadline(
-	be *pgproto3.Backend, conn net.Conn, code, msg string, d time.Duration,
-) {
+// sendFatalWithDeadline caps the flush with a write deadline. Used on
+// timeout-driven exit paths where the client may have disappeared.
+func sendFatalWithDeadline(be *pgproto3.Backend, conn net.Conn, code, msg string, d time.Duration) {
 	_ = conn.SetWriteDeadline(time.Now().Add(d))
 	defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
-	h.sendFatalError(be, code, msg)
+	proto.SendFatalError(be, code, msg)
 }
 
 // messageNeedsBackend returns true if the client message implies we
@@ -1708,8 +1678,8 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					h.counters.OnClientIdleTimeout()
 				}
 				log.Info("client closed by timeout", "kind", which)
-				h.sendFatalErrorWithWriteDeadline(be, conn, code,
-					"pgrouter: "+which, 200*time.Millisecond)
+				sendFatalWithDeadline(be, conn, code,
+					"pgrouter: "+which, fatalWriteTimeout)
 				return nil
 			}
 			return fmt.Errorf("client recv: %w", err)
@@ -1778,7 +1748,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 				if IsExplicitBeginSQL(sql) {
 					log.Info("statement_mode: rejecting explicit BEGIN",
 						"sql_prefix", truncate(sql, 64))
-					h.sendErrorWithRFQ(be, "25001",
+					proto.SendErrorRFQ(be, "25001",
 						"pgrouter: explicit transactions are not allowed in statement-mode pool")
 					continue
 				}
@@ -1791,7 +1761,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 		if tag == rawconn.TagQuery || tag == rawconn.TagParse {
 			if !h.takeQPS() {
 				log.Info("qps_limit: rejected", "kind", "raw")
-				h.sendErrorWithRFQ(be, "53300",
+				proto.SendErrorRFQ(be, "53300",
 					fmt.Sprintf("pgrouter: per-tenant QPS cap exceeded (db=%s user=%s)",
 						h.Database, h.User))
 				continue
@@ -1829,7 +1799,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			if acquirePool == h.Pool && h.PrimaryHealthy != nil && !h.PrimaryHealthy() {
 				log.Info("failover: rejecting write — primary unhealthy",
 					"db", h.Database)
-				h.sendErrorWithRFQ(be, "08006",
+				proto.SendErrorRFQ(be, "08006",
 					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
 				if curSpan != nil {
 					h.markSpanFailed(curSpan, "08006", "primary unhealthy (failover)")
@@ -1839,7 +1809,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			}
 			bConn, err = acquirePool.Acquire(ctx)
 			if err != nil {
-				h.sendFatalError(be, "08006",
+				proto.SendFatalError(be, "08006",
 					fmt.Sprintf("pgrouter: cannot acquire backend: %v", err))
 				return err
 			}
@@ -1855,7 +1825,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					log.Warn("guc replay failed; treating backend as bad", "err", err)
 					_ = bConn.Close()
 					bConn = nil
-					h.sendFatalError(be, "57P03",
+					proto.SendFatalError(be, "57P03",
 						fmt.Sprintf("pgrouter: backend replay failed: %v", err))
 					return err
 				}
@@ -1908,9 +1878,9 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					_ = bConn.Close()
 					bConn = nil
 					h.counters.OnQueryDuration(time.Since(queryStart).Seconds())
-					h.sendFatalErrorWithWriteDeadline(be, conn, "57014",
+					sendFatalWithDeadline(be, conn, "57014",
 						fmt.Sprintf("pgrouter: query_timeout (%s) exceeded", h.QueryTimeout),
-						200*time.Millisecond)
+						fatalWriteTimeout)
 				}
 			}
 			continue

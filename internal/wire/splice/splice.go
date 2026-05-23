@@ -507,26 +507,9 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 				}
 			}
 			return res, nil
-
-		case 'E': // ErrorResponse
-			// Forward raw. No inspection needed in pooler mode.
-			// (SQLSTATE extraction was only for logging/counters,
-			// which we skip in raw passthrough mode.)
-			res.Tag = tag
-
-		case 'S': // ParameterStatus
-			// Forward raw. We already intercept SET on client side.
-			res.Tag = tag
-
-		case 'K': // BackendKeyData
-			// Forward raw. Cancel key is only used for QueryCancel,
-			// which we don't support in pooler mode.
-			res.Tag = tag
-
-		default:
-			// All other messages (NoticeResponse, etc.): forward raw.
-			res.Tag = tag
 		}
+		// All other messages (E/S/K/NoticeResponse/etc.): forward raw.
+		res.Tag = tag
 	}
 }
 
