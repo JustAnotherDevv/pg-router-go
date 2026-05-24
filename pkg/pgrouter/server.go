@@ -17,12 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
-	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/replica"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/wire"
 )
@@ -34,14 +30,9 @@ type Server struct {
 	cfg *config.Config
 	log *slog.Logger
 
-	mgr             *pool.Manager
-	listener        *listener.Listener
-	unixListener    *listener.Listener
-	handler         *client.PooledHandler
-	replicaMgrs     map[string]*replica.Manager
-	primaryMonitors map[string]*replica.PrimaryMonitor
-	auditWriter     *client.AuditWriter
-	cancelTracker   *cancel.Tracker
+	rt           *wire.Runtime
+	listener     *listener.Listener
+	unixListener *listener.Listener
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -66,58 +57,13 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	stats.Build.Commit = "lib"
 	_ = stats.New()
 
-	clientTLS, backendTLS, backendTLSRequired, err := wire.BuildTLS(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	authOpts, userlist, err := wire.BuildAuthOpts(cfg, backendTLS,
-		backendTLSRequired, "pgrouter-lib-auth_query", log)
-	if err != nil {
-		return nil, err
-	}
-
-	cancelTracker := cancel.NewTracker()
-	dialerFor := wire.BuildPoolDialer(cfg, userlist, backendTLS,
-		backendTLSRequired, "pgrouter-lib", log)
-	mgr := wire.BuildPoolManager(cfg, cancelTracker, dialerFor, log)
-	mgr.Start(cfg.Pool.ServerCheckDelay)
-
-	// SB9: preflight backend dials.
-	if err := wire.Preflight(context.Background(), cfg, backendTLS, backendTLSRequired, log); err != nil {
-		return nil, fmt.Errorf("preflight: %w", err)
-	}
-
-	defaultPoolCfg := wire.DefaultPoolConfig(cfg, log)
-	replicaMgrs := wire.BuildReplicaManagers(cfg, defaultPoolCfg,
-		backendTLS, backendTLSRequired, log)
-	primaryMonitors := wire.BuildPrimaryMonitors(cfg, backendTLS,
-		backendTLSRequired, log)
-
-	auditWriter, err := client.OpenAuditFile(cfg.Logging.AuditFile)
-	if err != nil {
-		return nil, fmt.Errorf("audit: %w", err)
-	}
-
-	logSQLMode := config.NormalizeLogSQL(cfg.Logging.LogSQL)
-	stats.SetAppNameCap(stats.DefaultAppNameCardinalityCap) // HB2
-	h := wire.BuildPooledHandler(wire.HandlerInput{
-		Cfg:             cfg,
-		Log:             log,
-		Mgr:             mgr,
-		ClientTLS:       clientTLS,
-		AuthOpts:        authOpts,
-		CancelTracker:   cancelTracker,
-		CannedParams:    wire.CannedParams(),
-		LogSQLMode:      logSQLMode,
-		AuditWriter:     auditWriter,
-		ReplicaMgrs:     replicaMgrs,
-		PrimaryMonitors: primaryMonitors,
-		// Library mode: no admin reload channel by default. The
-		// embedding service can call (*Server).Reload() if it needs
-		// SIGHUP-equivalent semantics.
+	rt, err := wire.BuildRuntime(context.Background(), cfg, log, wire.RuntimeOptions{
+		AuthAppName: "pgrouter-lib-auth_query",
+		DialAppName: "pgrouter-lib",
 	})
-	stats.InflightFn = h.InflightClients // SB6: feeds pgrouter_inflight_clients gauge
+	if err != nil {
+		return nil, err
+	}
 
 	listenAddr := net.JoinHostPort(cfg.Server.ListenAddr,
 		strconv.Itoa(cfg.Server.ListenPort))
@@ -140,17 +86,12 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:             cfg,
-		log:             log,
-		mgr:             mgr,
-		listener:        ln,
-		unixListener:    unixLn,
-		handler:         h,
-		replicaMgrs:     replicaMgrs,
-		primaryMonitors: primaryMonitors,
-		auditWriter:     auditWriter,
-		cancelTracker:   cancelTracker,
-		stopped:         make(chan struct{}),
+		cfg:          cfg,
+		log:          log,
+		rt:           rt,
+		listener:     ln,
+		unixListener: unixLn,
+		stopped:      make(chan struct{}),
 	}, nil
 }
 
@@ -167,19 +108,19 @@ func (s *Server) Run(ctx context.Context) error {
 // Start launches replica goroutines + listener(s) in their own
 // goroutines and returns immediately. Use with Stop for async control.
 func (s *Server) Start(ctx context.Context) error {
-	for _, rm := range s.replicaMgrs {
+	for _, rm := range s.rt.ReplicaManagers {
 		rm.Start()
 		rm.StartLagPolls(5 * time.Second)
 	}
 
 	// Sweep orphan cancel-tracker entries. See cmd/pgrouter for rationale.
-	s.cancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
+	s.rt.CancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
 
 	stats.Ready.Store(true) // /readyz returns 200 from here on
 	errCh := make(chan error, 2)
-	go func() { errCh <- s.listener.Serve(ctx, s.handler.Handle) }()
+	go func() { errCh <- s.listener.Serve(ctx, s.rt.Handler.Handle) }()
 	if s.unixListener != nil {
-		go func() { errCh <- s.unixListener.Serve(ctx, s.handler.Handle) }()
+		go func() { errCh <- s.unixListener.Serve(ctx, s.rt.Handler.Handle) }()
 	}
 	go func() {
 		<-errCh
@@ -192,21 +133,21 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop(deadline time.Duration) error {
 	s.stopOnce.Do(func() { close(s.stopped) })
 	stats.Ready.Store(false) // K8s readiness flips to 503 immediately
-	if d := s.handler.WaitForDrain(time.Now().Add(deadline)); d > 0 {
+	if d := s.rt.Handler.WaitForDrain(time.Now().Add(deadline)); d > 0 {
 		s.log.Warn("drain deadline reached with active clients", "remaining", d)
 	}
-	for _, pm := range s.primaryMonitors {
+	for _, pm := range s.rt.PrimaryMonitors {
 		pm.Stop()
 	}
-	for _, rm := range s.replicaMgrs {
+	for _, rm := range s.rt.ReplicaManagers {
 		rm.Stop()
 	}
 	if s.unixListener != nil {
 		_ = s.unixListener.Close()
 	}
 	_ = s.listener.Close()
-	if s.auditWriter != nil {
-		_ = s.auditWriter.Close()
+	if s.rt.AuditWriter != nil {
+		_ = s.rt.AuditWriter.Close()
 	}
-	return s.mgr.CloseWithDeadline(time.Now().Add(deadline))
+	return s.rt.Manager.CloseWithDeadline(time.Now().Add(deadline))
 }
