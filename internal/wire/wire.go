@@ -28,7 +28,6 @@ import (
 
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
@@ -36,6 +35,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/replica"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
 )
 
 // dialEnv carries the per-process TLS + log defaults every backend
@@ -419,6 +419,116 @@ func BuildPooledHandler(in HandlerInput) *client.PooledHandler {
 		RawPassthrough: rawPassthrough,
 		GUCTracking:    gucTracking,
 	}
+}
+
+// RuntimeOptions names the mode-specific labels and hooks used while
+// building a pgrouter runtime.
+type RuntimeOptions struct {
+	AuthAppName string
+	DialAppName string
+	AdminReload func() error
+}
+
+// Runtime is the shared set of live components used by cmd-mode and
+// library-mode pgrouter instances.
+type Runtime struct {
+	ClientTLS          *tls.Config
+	BackendTLS         *tls.Config
+	BackendTLSRequired bool
+	AuthOpts           *auth.ServerAuthOptions
+	Userlist           *auth.Userlist
+	CancelTracker      *cancel.Tracker
+	Manager            *pool.Manager
+	DefaultPoolConfig  pool.Config
+	ReplicaManagers    map[string]*replica.Manager
+	PrimaryMonitors    map[string]*replica.PrimaryMonitor
+	AuditWriter        *client.AuditWriter
+	Handler            *client.PooledHandler
+}
+
+// BuildRuntime constructs all config-derived runtime components that
+// are identical between cmd and library mode. It does not bind
+// listeners and does not start replica lag-poll goroutines; callers own
+// process lifecycle concerns.
+func BuildRuntime(ctx context.Context, cfg *config.Config, log *slog.Logger,
+	opts RuntimeOptions,
+) (*Runtime, error) {
+	if opts.AuthAppName == "" {
+		opts.AuthAppName = "pgrouter-auth_query"
+	}
+	if opts.DialAppName == "" {
+		opts.DialAppName = "pgrouter"
+	}
+
+	clientTLS, backendTLS, backendTLSRequired, err := BuildTLS(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("TLS init: %w", err)
+	}
+	authOpts, userlist, err := BuildAuthOpts(cfg, backendTLS,
+		backendTLSRequired, opts.AuthAppName, log)
+	if err != nil {
+		return nil, fmt.Errorf("auth init: %w", err)
+	}
+
+	cancelTracker := cancel.NewTracker()
+	dialerFor := BuildPoolDialer(cfg, userlist, backendTLS,
+		backendTLSRequired, opts.DialAppName, log)
+	mgr := BuildPoolManager(cfg, cancelTracker, dialerFor, log)
+	mgr.Start(cfg.Pool.ServerCheckDelay)
+
+	if err := Preflight(ctx, cfg, backendTLS, backendTLSRequired, log); err != nil {
+		return nil, fmt.Errorf("preflight: %w", err)
+	}
+
+	defaultCfg := DefaultPoolConfig(cfg, log)
+	replicaMgrs := BuildReplicaManagers(cfg, defaultCfg, backendTLS,
+		backendTLSRequired, log)
+	primaryMonitors := BuildPrimaryMonitors(cfg, backendTLS,
+		backendTLSRequired, log)
+
+	auditWriter, err := client.OpenAuditFile(cfg.Logging.AuditFile)
+	if err != nil {
+		return nil, fmt.Errorf("audit file: %w", err)
+	}
+	if auditWriter != nil {
+		log.Info("audit log enabled", "path", cfg.Logging.AuditFile)
+	}
+
+	logSQLMode := config.NormalizeLogSQL(cfg.Logging.LogSQL)
+	if logSQLMode == "full" {
+		log.Warn("logging.log_sql=full enabled; raw SQL with literals will be logged")
+	}
+	stats.SetAppNameCap(stats.DefaultAppNameCardinalityCap)
+	handler := BuildPooledHandler(HandlerInput{
+		Cfg:             cfg,
+		Log:             log,
+		Mgr:             mgr,
+		ClientTLS:       clientTLS,
+		AuthOpts:        authOpts,
+		CancelTracker:   cancelTracker,
+		CannedParams:    CannedParams(),
+		LogSQLMode:      logSQLMode,
+		AuditWriter:     auditWriter,
+		AdminReload:     opts.AdminReload,
+		ReplicaMgrs:     replicaMgrs,
+		PrimaryMonitors: primaryMonitors,
+	})
+	stats.InflightFn = handler.InflightClients
+
+	return &Runtime{
+		ClientTLS:          clientTLS,
+		BackendTLS:         backendTLS,
+		BackendTLSRequired: backendTLSRequired,
+		AuthOpts:           authOpts,
+		Userlist:           userlist,
+		CancelTracker:      cancelTracker,
+		Manager:            mgr,
+		DefaultPoolConfig:  defaultCfg,
+		ReplicaManagers:    replicaMgrs,
+		PrimaryMonitors:    primaryMonitors,
+		AuditWriter:        auditWriter,
+		Handler:            handler,
+	}, nil
 }
 
 // cfgRouter is the production client.Router implementation. Reads
