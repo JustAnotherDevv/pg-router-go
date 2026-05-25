@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,6 +82,21 @@ func TestValidateUsage(t *testing.T) {
 	code := realMain([]string{"validate"}, &stdout, &stderr)
 	require.Equal(t, 2, code)
 	require.Contains(t, stderr.String(), "usage:")
+}
+
+func TestLegacyConfigIsValid(t *testing.T) {
+	path, cleanup, err := writeLegacyConfig(":16432", "localhost:15432", "json", "warn")
+	require.NoError(t, err)
+	defer cleanup()
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Equal(t, "0.0.0.0", cfg.Server.ListenAddr)
+	require.Equal(t, 16432, cfg.Server.ListenPort)
+	require.True(t, cfg.Pool.SkipPreflight)
+	require.Equal(t, "127.0.0.1:0", cfg.Metrics.Listen)
+	require.Equal(t, "localhost", cfg.Databases["postgres"].Host)
+	require.Equal(t, 15432, cfg.Databases["postgres"].Port)
 }
 
 // TestSampleConfigsAreValid is run from the package directory; the
