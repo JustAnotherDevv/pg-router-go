@@ -9,7 +9,7 @@
 //
 // The PoC's legacy positional flags (--listen, --backend, --log-format,
 // --log-level) still work without a subcommand to keep the demo scripts
-// from breaking — they implicitly run `pgrouter run` with synthesised
+// from breaking â€” they implicitly run `pgrouter run` with synthesised
 // in-memory config.
 package main
 
@@ -30,17 +30,12 @@ import (
 	"syscall"
 	"time"
 
-
-	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire"
-
-	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
-	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 	"github.com/JustAnotherDevv/pgrouter/internal/multiproc"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
+	"github.com/JustAnotherDevv/pgrouter/internal/wire"
 )
 
 var (
@@ -64,9 +59,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Subcommand dispatch on argv[0]. If it looks like a flag (starts
-	// with `-`), fall through to the legacy positional-flag path so
-	// `pgrouter --listen :6432 --backend 127.0.0.1:5432` keeps working.
+	// Subcommand dispatch on argv[0]. If it looks like a flag, fall
+	// through to the bare-flag compatibility path.
 	switch args[0] {
 	case "run":
 		return cmdRun(args[1:], stdout, stderr)
@@ -80,8 +74,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// Legacy / PoC path: bare flags, no config file. Kept so demo
-	// scripts + integration tests don't have to learn subcommands.
+	// Bare-flag compatibility path.
 	if len(args) > 0 && (args[0][0] == '-') {
 		return cmdLegacyRun(args, stdout, stderr)
 	}
@@ -100,7 +93,7 @@ Usage:
   pgrouter version                 print version
   pgrouter --help                  this help
 
-Legacy (PoC-style) flags continue to work without a subcommand:
+Compatibility flags continue to work without a subcommand:
   pgrouter --listen :6432 --backend 127.0.0.1:5432
 
 `)
@@ -134,7 +127,7 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdRun starts the pooler driven by a config file. Wires:
-//   - YAML config → TLS, auth, pool sizing
+//   - YAML config â†’ TLS, auth, pool sizing
 //   - per-(db, user) pool routing via pool.Manager
 //   - Prometheus /metrics + /healthz endpoint
 //   - cancel.Tracker for per-client (PID, secret) routing
@@ -215,64 +208,46 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	metricsCtx, metricsCancel := context.WithCancel(context.Background())
 	defer metricsCancel()
 
-	// --- TLS configs ---
-	clientTLS, backendTLS, backendTLSRequired, err := wire.BuildTLS(cfg)
-	if err != nil {
-		log.Error("TLS init", "err", err)
-		return 1
-	}
-
-	// --- auth ---
-	authOpts, userlist, err := wire.BuildAuthOpts(cfg, backendTLS,
-		backendTLSRequired, "pgrouter-auth_query", log)
-	if err != nil {
-		log.Error("auth init", "err", err)
-		return 1
-	}
-
-	// --- pool.Manager ---
-	cancelTracker := cancel.NewTracker()
-	dialerFor := wire.BuildPoolDialer(cfg, userlist, backendTLS,
-		backendTLSRequired, "pgrouter", log)
-	defaultCfg := wire.DefaultPoolConfig(cfg, log)
-	mgr := wire.BuildPoolManager(cfg, cancelTracker, dialerFor, log)
-	mgr.Start(cfg.Pool.ServerCheckDelay)
-
-	// SB9: dial each backend once before opening the listener so an
-	// obvious misconfig (typo'd host, wrong port, bad creds) aborts at
-	// boot instead of leaking into client latency.
-	if err := wire.Preflight(context.Background(), cfg, backendTLS, backendTLSRequired, log); err != nil {
-		log.Error("preflight failed", "err", err)
-		return 1
-	}
-
-	// Per-database replica managers (R/W split).
-	replicaMgrs := wire.BuildReplicaManagers(cfg, defaultCfg, backendTLS,
-		backendTLSRequired, log)
-	for _, rm := range replicaMgrs {
-		rm.Start()
-		rm.StartLagPolls(5 * time.Second)
-	}
-	defer func() {
-		for _, rm := range replicaMgrs {
-			rm.Stop()
-		}
-	}()
-
-	primaryMonitors := wire.BuildPrimaryMonitors(cfg, backendTLS, backendTLSRequired, log)
-	defer func() {
-		for _, pm := range primaryMonitors {
-			pm.Stop()
-		}
-	}()
-
 	// adminReloadCh fires a synthetic SIGHUP into the same reloader
 	// goroutine the OS signal handler uses, so POST /api/v1/reload
 	// runs identical code.
 	adminReloadCh := make(chan os.Signal, 1)
+	adminReload := func() error {
+		select {
+		case adminReloadCh <- syscall.SIGHUP:
+			return nil
+		default:
+			return fmt.Errorf("reload channel busy")
+		}
+	}
+	rt, err := wire.BuildRuntime(context.Background(), cfg, log, wire.RuntimeOptions{
+		AuthAppName: "pgrouter-auth_query",
+		DialAppName: "pgrouter",
+		AdminReload: adminReload,
+	})
+	if err != nil {
+		log.Error("runtime init", "err", err)
+		return 1
+	}
+	defer func() {
+		for _, pm := range rt.PrimaryMonitors {
+			pm.Stop()
+		}
+		if rt.AuditWriter != nil {
+			_ = rt.AuditWriter.Close()
+		}
+	}()
+	for _, rm := range rt.ReplicaManagers {
+		rm.Start()
+		rm.StartLagPolls(5 * time.Second)
+	}
+	defer func() {
+		for _, rm := range rt.ReplicaManagers {
+			rm.Stop()
+		}
+	}()
 	startTime := time.Now()
-	adminAPI := buildAdminAPI(mgr, adminReloadCh, startTime)
-	_ = adminAPI // referenced below; kept for symmetry with prior layout
+	adminAPI := buildAdminAPI(rt.Manager, adminReloadCh, startTime)
 	// --- metrics + admin API (main process only) ---
 	if !multiproc.IsWorker() {
 		go func() {
@@ -288,71 +263,10 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		}()
 	}
 
-	// --- canned ParameterStatus ---
-	// First-client cold-start fallback: pool.CachedParams will be
-	// populated on the first successful upstream dial and override
-	// these. The full set mirrors what real Postgres emits during the
-	// startup phase so drivers that check specific fields (psql's
-	// is_superuser, application_name watchers in dashboards, pgx's
-	// server_version-keyed protocol decisions, etc.) don't degrade.
-	cannedParams := map[string]string{
-		"server_version":              "16.0 (pgrouter)",
-		"server_encoding":             "UTF8",
-		"client_encoding":             "UTF8",
-		"DateStyle":                   "ISO, MDY",
-		"IntervalStyle":               "postgres",
-		"TimeZone":                    "UTC",
-		"integer_datetimes":           "on",
-		"standard_conforming_strings": "on",
-		"is_superuser":                "off",
-		"session_authorization":       "pgrouter",
-		"application_name":            "",
-	}
-
-	// --- handler ---
-	logSQLMode := config.NormalizeLogSQL(cfg.Logging.LogSQL)
-	if logSQLMode == "full" {
-		log.Warn("logging.log_sql=full enabled — raw SQL (with literals) will be logged. Use only in dev.")
-	}
-	auditWriter, err := client.OpenAuditFile(cfg.Logging.AuditFile)
-	if err != nil {
-		log.Error("audit file", "err", err)
-		return 1
-	}
-	if auditWriter != nil {
-		log.Info("audit log enabled", "path", cfg.Logging.AuditFile)
-		defer auditWriter.Close()
-	}
-	adminReload := func() error {
-		select {
-		case adminReloadCh <- syscall.SIGHUP:
-			return nil
-		default:
-			return fmt.Errorf("reload channel busy")
-		}
-	}
-	stats.SetAppNameCap(stats.DefaultAppNameCardinalityCap) // HB2 (idempotent)
-	h := wire.BuildPooledHandler(wire.HandlerInput{
-		Cfg:             cfg,
-		Log:             log,
-		Mgr:             mgr,
-		ClientTLS:       clientTLS,
-		AuthOpts:        authOpts,
-		CancelTracker:   cancelTracker,
-		CannedParams:    cannedParams,
-		LogSQLMode:      logSQLMode,
-		AuditWriter:     auditWriter,
-		AdminReload:     adminReload,
-		ReplicaMgrs:     replicaMgrs,
-		PrimaryMonitors: primaryMonitors,
-	})
-	stats.InflightFn = h.InflightClients // SB6: feeds pgrouter_inflight_clients gauge
-
 	// --- listener + signal-driven shutdown ---
 	// SIGINT + SIGTERM trigger shutdown via the cancel-context. SIGHUP is
 	// handled separately: it must NOT shut pgrouter down, only trigger a
-	// config reload + log the diff (live pool resize is post-MVP per the
-	// roadmap; this fixes the bug where SIGHUP killed the process).
+	// config reload and keep the current runtime state on failure.
 	ctx, signalCancel := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer signalCancel()
@@ -361,9 +275,9 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	// (servePooled defer) covers clean shutdowns; the sweeper catches
 	// the panic/crash path where Allocate() succeeds but the deferred
 	// Release never fires, leaving (PID, secret) entries pinned in the
-	// map forever. 5min tick + 1h ttl is generous — real cancels arrive
+	// map forever. 5min tick + 1h ttl is generous â€” real cancels arrive
 	// within seconds of the originating query.
-	cancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
+	rt.CancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
 
 	hupCh := make(chan os.Signal, 1)
 	signal.Notify(hupCh, syscall.SIGHUP)
@@ -371,7 +285,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	// Fan-in: OS SIGHUP + admin-API /reload POST share the same goroutine.
 	mergedHup := make(chan os.Signal, 4)
 	wire.FanInSignals(ctx, mergedHup, hupCh, adminReloadCh)
-	go wire.RunSighupReloader(ctx, mergedHup, configPath, cfg, userlist, mgr, log)
+	go wire.RunSighupReloader(ctx, mergedHup, configPath, cfg, rt.Userlist, rt.Manager, log)
 
 	// --- workers (SO_REUSEPORT multi-process) ---
 	workers := cfg.Server.Workers
@@ -411,7 +325,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	log.Info("listening", "addr", ln.Addr().String())
 
 	// Optional Unix socket listener for PgBouncer-compat in-host clients
-	// + peer auth. unix_socket_dir empty → skip.
+	// + peer auth. unix_socket_dir empty â†’ skip.
 	var unixLn *listener.Listener
 	if cfg.Server.UnixSocketDir != "" {
 		uln, err := listener.NewUnix(cfg.Server.UnixSocketDir,
@@ -428,9 +342,9 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	// both to drain in parallel.
 	stats.Ready.Store(true) // /readyz returns 200 from here on
 	errCh := make(chan error, 2)
-	go func() { errCh <- ln.Serve(ctx, h.Handle) }()
+	go func() { errCh <- ln.Serve(ctx, rt.Handler.Handle) }()
 	if unixLn != nil {
-		go func() { errCh <- unixLn.Serve(ctx, h.Handle) }()
+		go func() { errCh <- unixLn.Serve(ctx, rt.Handler.Handle) }()
 	}
 	serveErr := <-errCh
 	// Flip readiness immediately so K8s stops routing new traffic
@@ -443,11 +357,11 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 
 	// Graceful drain: wait for in-flight clients (SB6) then close pool.
 	drainDeadline := time.Now().Add(30 * time.Second)
-	if remaining := h.WaitForDrain(drainDeadline); remaining > 0 {
+	if remaining := rt.Handler.WaitForDrain(drainDeadline); remaining > 0 {
 		log.Warn("drain deadline reached with active clients",
 			"remaining", remaining)
 	}
-	if err := mgr.CloseWithDeadline(drainDeadline); err != nil {
+	if err := rt.Manager.CloseWithDeadline(drainDeadline); err != nil {
 		log.Warn("pool drain", "err", err)
 	}
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
@@ -458,8 +372,9 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-// cmdLegacyRun reproduces the PoC v0.1.0 CLI: bare flags, no config.
-func cmdLegacyRun(args []string, _ io.Writer, stderr io.Writer) int {
+// cmdLegacyRun keeps the old bare-flag CLI shape but runs through the
+// production config path so there is only one connection engine.
+func cmdLegacyRun(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("pgrouter", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	listenAddr := fs.String("listen", ":6432", "address to listen on")
@@ -471,47 +386,77 @@ func cmdLegacyRun(args []string, _ io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if *showVer {
-		fmt.Println("pgrouter", version)
+		fmt.Fprintln(stdout, "pgrouter", version)
 		return 0
 	}
 
-	log := newLogger(*logFormat, *logLevel)
-	log.Info("pgrouter starting (legacy CLI)",
-		"version", version,
-		"listen", *listenAddr,
-		"backend", *backend,
-	)
-	return runServer(log, *listenAddr, *backend)
-}
-
-// runServer is shared by cmdRun + cmdLegacyRun.
-func runServer(log *slog.Logger, listenAddr, backendAddr string) int {
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer cancel()
-
-	ln, err := listener.New(listenAddr, log)
+	configPath, cleanup, err := writeLegacyConfig(*listenAddr, *backend,
+		*logFormat, *logLevel)
 	if err != nil {
-		log.Error("listener init", "err", err)
+		fmt.Fprintf(stderr, "legacy config: %s\n", err)
 		return 1
 	}
-	log.Info("listening", "addr", ln.Addr().String())
-
-	h := &client.Conn{Log: log, BackendAddr: backendAddr}
-	if err := ln.Serve(ctx, h.Handle); err != nil {
-		log.Error("serve", "err", err)
-		return 1
-	}
-	log.Info("pgrouter stopped")
-	return 0
+	defer cleanup()
+	return cmdRun([]string{"--config", configPath}, stdout, stderr)
 }
 
-// splitPoolName forwards to pool.SplitName + indicates whether the
-// name was in "db/user" form (ok=false when no slash).
-func splitPoolName(name string) (db, user string, ok bool) {
-	k := pool.SplitName(name)
-	ok = k.User != "" || (len(name) > 0 && name[len(name)-1] == '/')
-	return k.DB, k.User, ok
+func writeLegacyConfig(listenAddr, backendAddr, logFormat, logLevel string) (string, func(), error) {
+	listenHost, listenPort, err := splitHostPortDefault(listenAddr, "0.0.0.0")
+	if err != nil {
+		return "", nil, fmt.Errorf("listen: %w", err)
+	}
+	backendHost, backendPort, err := splitHostPortDefault(backendAddr, "localhost")
+	if err != nil {
+		return "", nil, fmt.Errorf("backend: %w", err)
+	}
+	f, err := os.CreateTemp("", "pgrouter-legacy-*.yaml")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.Remove(f.Name()) }
+	_, err = fmt.Fprintf(f, `server:
+  listen_addr: %s
+  listen_port: %d
+pool:
+  skip_preflight: true
+metrics:
+  listen: "127.0.0.1:0"
+logging:
+  format: %s
+  level: %s
+databases:
+  postgres:
+    host: %s
+    port: %d
+    dbname: "postgres"
+`,
+		strconv.Quote(listenHost), listenPort,
+		strconv.Quote(logFormat), strconv.Quote(logLevel),
+		strconv.Quote(backendHost), backendPort)
+	closeErr := f.Close()
+	if err != nil || closeErr != nil {
+		cleanup()
+		if err != nil {
+			return "", nil, err
+		}
+		return "", nil, closeErr
+	}
+	return f.Name(), cleanup, nil
+}
+
+func splitHostPortDefault(addr, defaultHost string) (string, int, error) {
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0, err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid port %q", portText)
+	}
+	if host == "" {
+		host = defaultHost
+	}
+	return host, port, nil
 }
 
 func newLogger(format, level string) *slog.Logger {
