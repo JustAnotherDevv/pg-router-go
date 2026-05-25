@@ -104,7 +104,7 @@ func (a *AdminConsole) Serve(ctx context.Context, conn net.Conn) error {
 		case *pgproto3.Query:
 			a.handleQuery(be, m.String)
 		default:
-			a.sendError(be, "0A000",
+			proto.SendErrorRFQ(be, "0A000",
 				fmt.Sprintf("admin console: unsupported message type %T", m))
 		}
 	}
@@ -130,10 +130,10 @@ var adminHandlers = []struct {
 	{"SHOW VERSION", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showVersion(be) }},
 	{"SHOW HELP", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.showHelp(be) }},
 	{"PAUSE", func(a *AdminConsole, be *pgproto3.Backend, up string) {
-		a.sendCommandComplete(be, up, "PAUSE accepted (no-op in v1)")
+		proto.SendNoticeCompleteRFQ(be, up, "PAUSE accepted (no-op in v1)")
 	}},
 	{"RESUME", func(a *AdminConsole, be *pgproto3.Backend, up string) {
-		a.sendCommandComplete(be, up, "RESUME accepted (no-op in v1)")
+		proto.SendNoticeCompleteRFQ(be, up, "RESUME accepted (no-op in v1)")
 	}},
 	{"RELOAD", func(a *AdminConsole, be *pgproto3.Backend, _ string) { a.doReload(be) }},
 }
@@ -154,7 +154,7 @@ func (a *AdminConsole) handleQuery(be *pgproto3.Backend, sql string) {
 			return
 		}
 	}
-	a.sendError(be, "42601",
+	proto.SendErrorRFQ(be, "42601",
 		fmt.Sprintf("admin console: unknown command: %s", trimmed))
 }
 
@@ -165,22 +165,22 @@ func (a *AdminConsole) handleQuery(be *pgproto3.Backend, sql string) {
 func (a *AdminConsole) emitTable(be *pgproto3.Backend, colNames []string, rowsFn func(emit func(...string))) {
 	cols := make([]pgproto3.FieldDescription, len(colNames))
 	for i, n := range colNames {
-		cols[i] = col(n)
+		cols[i] = proto.TextCol(n)
 	}
-	a.sendRowDesc(be, cols)
-	rowsFn(func(vals ...string) { a.sendDataRow(be, vals...) })
-	a.completeAndRFQ(be, "SHOW")
+	proto.SendRowDesc(be, cols)
+	rowsFn(func(vals ...string) { proto.SendDataRow(be, vals...) })
+	proto.CompleteAndRFQ(be, "SHOW")
 }
 
-func itoa(n int)    string { return fmt.Sprintf("%d", n) }
+func itoa(n int) string    { return fmt.Sprintf("%d", n) }
 func u64a(n uint64) string { return fmt.Sprintf("%d", n) }
 
 func (a *AdminConsole) showStats(be *pgproto3.Backend) {
 	a.emitTable(be, []string{"database", "user", "total_xact_count", "total_query_count"},
 		func(emit func(...string)) {
 			for _, ps := range a.Manager.AllStats() {
-				db, user := splitName(ps.Name)
-				emit(db, user, u64a(ps.TotalAcquired), u64a(ps.TotalSpawned))
+				k := pool.SplitName(ps.Name)
+				emit(k.DB, k.User, u64a(ps.TotalAcquired), u64a(ps.TotalSpawned))
 			}
 		})
 }
@@ -191,8 +191,8 @@ func (a *AdminConsole) showPools(be *pgproto3.Backend) {
 		func(emit func(...string)) {
 			for _, p := range a.Manager.Pools() {
 				ps := p.Stats()
-				db, user := splitName(ps.Name)
-				emit(db, user, itoa(ps.Active), itoa(ps.Waiters),
+				k := pool.SplitName(ps.Name)
+				emit(k.DB, k.User, itoa(ps.Active), itoa(ps.Waiters),
 					itoa(ps.Active), itoa(ps.Idle), itoa(p.Size()))
 			}
 		})
@@ -202,8 +202,7 @@ func (a *AdminConsole) showDatabases(be *pgproto3.Backend) {
 	a.emitTable(be, []string{"name", "backend_pools"}, func(emit func(...string)) {
 		seen := map[string]int{}
 		for _, p := range a.Manager.Pools() {
-			db, _ := splitName(p.Name())
-			seen[db]++
+			seen[pool.SplitName(p.Name()).DB]++
 		}
 		for db, n := range seen {
 			emit(db, itoa(n))
@@ -216,9 +215,9 @@ func (a *AdminConsole) showLists(be *pgproto3.Backend) {
 		pools := a.Manager.Pools()
 		dbSet, userSet := map[string]struct{}{}, map[string]struct{}{}
 		for _, p := range pools {
-			db, user := splitName(p.Name())
-			dbSet[db] = struct{}{}
-			userSet[user] = struct{}{}
+			k := pool.SplitName(p.Name())
+			dbSet[k.DB] = struct{}{}
+			userSet[k.User] = struct{}{}
 		}
 		emit("databases", itoa(len(dbSet)))
 		emit("users", itoa(len(userSet)))
@@ -246,45 +245,12 @@ func (a *AdminConsole) showHelp(be *pgproto3.Backend) {
 
 func (a *AdminConsole) doReload(be *pgproto3.Backend) {
 	if a.Reload == nil {
-		a.sendError(be, "0A000", "RELOAD: not wired (Admin.Reload nil)")
+		proto.SendErrorRFQ(be, "0A000", "RELOAD: not wired (Admin.Reload nil)")
 		return
 	}
 	if err := a.Reload(); err != nil {
-		a.sendError(be, "XX000", fmt.Sprintf("RELOAD failed: %v", err))
+		proto.SendErrorRFQ(be, "XX000", fmt.Sprintf("RELOAD failed: %v", err))
 		return
 	}
-	a.sendCommandComplete(be, "RELOAD", "RELOAD")
-}
-
-// Method wrappers delegate to internal/proto so the admin handlers
-// read naturally while the actual pgwire synth lives in one place
-// (also reusable by future code that needs to fabricate responses).
-
-func col(name string) pgproto3.FieldDescription { return proto.TextCol(name) }
-
-func (a *AdminConsole) sendRowDesc(be *pgproto3.Backend, cols []pgproto3.FieldDescription) {
-	proto.SendRowDesc(be, cols)
-}
-
-func (a *AdminConsole) sendDataRow(be *pgproto3.Backend, vals ...string) {
-	proto.SendDataRow(be, vals...)
-}
-
-func (a *AdminConsole) completeAndRFQ(be *pgproto3.Backend, tag string) {
-	proto.CompleteAndRFQ(be, tag)
-}
-
-func (a *AdminConsole) sendCommandComplete(be *pgproto3.Backend, tag, msg string) {
-	proto.SendNoticeCompleteRFQ(be, tag, msg)
-}
-
-func (a *AdminConsole) sendError(be *pgproto3.Backend, code, msg string) {
-	proto.SendErrorRFQ(be, code, msg)
-}
-
-// splitName forwards to the canonical pool.SplitName. Local wrapper
-// kept so admin handlers read naturally.
-func splitName(s string) (string, string) {
-	k := pool.SplitName(s)
-	return k.DB, k.User
+	proto.SendNoticeCompleteRFQ(be, "RELOAD", "RELOAD")
 }
