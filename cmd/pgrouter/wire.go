@@ -27,11 +27,11 @@ func buildAdminAPI(mgr *pool.Manager, adminReloadCh chan os.Signal,
 		Pools: func() ([]stats.PoolSnapshot, error) {
 			out := []stats.PoolSnapshot{}
 			for _, ps := range mgr.AllStats() {
-				db, user, _ := splitPoolName(ps.Name)
+				k := pool.SplitName(ps.Name)
 				out = append(out, stats.PoolSnapshot{
 					Name:    ps.Name,
-					DB:      db,
-					User:    user,
+					DB:      k.DB,
+					User:    k.User,
 					Idle:    ps.Idle,
 					Active:  ps.Active,
 					Waiters: ps.Waiters,
