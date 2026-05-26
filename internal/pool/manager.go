@@ -48,12 +48,12 @@ type Manager struct {
 	janitorDone chan struct{}
 
 	// Global per-(db | user) connection caps. 0 = unlimited.
-	maxDBConn    int
-	maxUserConn  int
-	limitObs     LimitObserver
-	limitMu      sync.Mutex
-	dbSemas      map[string]chan struct{} // db -> sema cap=maxDBConn
-	userSemas    map[string]chan struct{} // user -> sema cap=maxUserConn
+	maxDBConn   int
+	maxUserConn int
+	limitObs    LimitObserver
+	limitMu     sync.Mutex
+	dbSemas     map[string]chan struct{} // db -> sema cap=maxDBConn
+	userSemas   map[string]chan struct{} // user -> sema cap=maxUserConn
 }
 
 // NewManager builds a registry. Janitor isn't started until Start is called.
@@ -288,7 +288,7 @@ func (m *Manager) ApplyDefaultSize(defaultSize int, perKey func(k Key) int) []Re
 	pools := m.Pools()
 	var out []ResizeRecord
 	for _, p := range pools {
-		k := keyFromName(p.Name())
+		k := SplitName(p.Name())
 		want := defaultSize
 		if perKey != nil {
 			if v := perKey(k); v > 0 {
@@ -333,10 +333,6 @@ func SplitName(name string) Key {
 	}
 	return Key{DB: name}
 }
-
-// keyFromName is the internal alias kept for back-compat with existing
-// call sites in this package.
-func keyFromName(name string) Key { return SplitName(name) }
 
 // AllStats is a single-shot snapshot across every pool.
 func (m *Manager) AllStats() []Stats {
