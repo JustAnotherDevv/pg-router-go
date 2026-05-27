@@ -1,7 +1,7 @@
 // Transaction-mode pooled proxy.
 //
-// The PoC's client.Conn pins one backend per client conn for the full
-// session. PooledConn instead:
+// PooledConn avoids pinning one backend per client conn for the full
+// session:
 //
 //  1. Synthesizes the post-startup welcome (AuthenticationOk +
 //     ParameterStatus* + BackendKeyData + ReadyForQuery) WITHOUT a
@@ -30,6 +30,8 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +64,20 @@ const fatalWriteTimeout = 200 * time.Millisecond
 // must re-populate all fields before Serve.
 var connPool = sync.Pool{
 	New: func() any { return &PooledConn{} },
+}
+
+func randomKey() (uint32, []byte, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0, nil, err
+	}
+	pid := binary.BigEndian.Uint32(buf[0:4])
+	if pid == 0 {
+		pid = 1
+	}
+	sec := make([]byte, 4)
+	copy(sec, buf[4:8])
+	return pid, sec, nil
 }
 
 // writeBufPool recycles 8KB write buffers used by serveRaw.
@@ -304,8 +320,8 @@ func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]strin
 			CannedParams:   cannedParams,
 			ResetOnRelease: true,
 		},
-		Log:               log,
-		Pool:              p,
+		Log:  log,
+		Pool: p,
 	}
 }
 
@@ -799,8 +815,8 @@ func (h *PooledConn) selectPoolForMsg(
 // drainInput collapses the dozen-plus parameters drainBackendUntilRFQ
 // needs into a single struct.
 type drainInput struct {
-	bConn          *backend.Conn
-	be             *pgproto3.Backend
+	bConn *backend.Conn
+	be    *pgproto3.Backend
 	// clientConn is the raw client-facing net.Conn (may be wrapped in
 	// CountingConn for byte accounting). DrainSplice writes the
 	// spliced boring bytes directly to it (bypassing pgproto3.Backend's
@@ -1213,10 +1229,10 @@ func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
 // onQueryComplete is the single fan-out point for all per-query
 // observability after the backend reports ReadyForQuery:
 //
-//   1. stats.OnQueryDuration  (Prometheus histogram, always on)
-//   2. slow_query log         (when h.SlowQuery > 0 and dur >= it)
-//   3. audit JSON line        (when h.Audit != nil)
-//   4. OTel span end          (when curSpan != nil)
+//  1. stats.OnQueryDuration  (Prometheus histogram, always on)
+//  2. slow_query log         (when h.SlowQuery > 0 and dur >= it)
+//  3. audit JSON line        (when h.Audit != nil)
+//  4. OTel span end          (when curSpan != nil)
 //
 // The redacted SQL is rendered ONCE at the longest cap any sink needs
 // (1024 bytes for audit) and reused — previously slow_query + audit
