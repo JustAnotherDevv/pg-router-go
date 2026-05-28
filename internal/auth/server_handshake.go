@@ -20,8 +20,8 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 )
 
-// ServerAuthOptions carries the decisions made by client.Conn for the
-// auth phase: which AuthType to enforce, which Userlist to query.
+// ServerAuthOptions carries the startup-auth decisions: which AuthType
+// to enforce, which Userlist to query, and optional HBA/auth_query state.
 type ServerAuthOptions struct {
 	Type     config.AuthType
 	Userlist *Userlist         // nil for trust mode
@@ -35,9 +35,7 @@ type ServerAuthOptions struct {
 }
 
 // PerformServerAuth runs the server-side authentication phase against
-// a newly-connected client. After StartupMessage has been parsed,
-// client.Conn calls this with the username + database (for logging) and
-// the pgproto3 Backend driving the client conn.
+// a newly-connected client after StartupMessage has been parsed.
 //
 // Returns nil on success; the caller should then send the
 // AuthenticationOk + ParameterStatus* + BackendKeyData + ReadyForQuery
@@ -100,7 +98,7 @@ func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthO
 		return doServerHBA(be, conn, opts, log, username)
 
 	default:
-		return fmt.Errorf("auth type %q not supported in MVP", opts.Type)
+		return fmt.Errorf("auth type %q not supported", opts.Type)
 	}
 }
 
