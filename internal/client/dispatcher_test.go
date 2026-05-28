@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,6 +19,14 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
 )
+
+func writeUserlist(t *testing.T, user, secret string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "userlist.txt")
+	body := `"` + user + `" "` + secret + `"`
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return path
+}
 
 // TestDispatcherTrustAuthAndPoolRoute: client sends StartupMessage,
 // server dispatches to the right pool (no auth, trust mode), pool dial
