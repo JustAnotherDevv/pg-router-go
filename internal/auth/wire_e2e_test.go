@@ -43,7 +43,7 @@ func TestWireSCRAMHandshake(t *testing.T) {
 			Log: testutil.Discard,
 		}, username)
 		if err == nil {
-			// Mirror what client.Conn.Handle does after PerformServerAuth.
+			// Mirror the client startup path after PerformServerAuth.
 			be.Send(&pgproto3.AuthenticationOk{})
 			_ = be.Flush()
 		}
