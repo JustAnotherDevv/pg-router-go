@@ -17,7 +17,12 @@ jobs:
       - name: Build all
         run: make build-all
       - name: Verify binary
-        run: ./bin/pgrouter --version
+        run: ./bin/pgrouter version
+      - name: Validate sample configs
+        run: |
+          ./bin/pgrouter validate examples/configs/basic.yaml
+          ./bin/pgrouter validate examples/configs/session-mode.yaml
+          ./bin/pgrouter validate examples/configs/multi-pool.yaml
 
   test-unit:
     runs-on: ubuntu-latest

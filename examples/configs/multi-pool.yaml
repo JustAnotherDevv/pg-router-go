@@ -1,0 +1,64 @@
+# multi-pool.yaml — multiple databases + per-user overrides.
+#
+# Demonstrates:
+#   - 3 distinct upstream databases on different hosts
+#   - per-database pool_mode override (warehouse uses session pooling)
+#   - per-user limits (reporter capped lower than app_user)
+
+server:
+  listen_addr: 0.0.0.0
+  listen_port: 6432
+  max_client_conn: 2000
+
+pool:
+  mode: transaction         # default
+  default_pool_size: 25
+  min_pool_size: 2
+  query_wait_timeout: 60s
+  server_idle_timeout: 600s
+  server_lifetime: 3600s
+
+auth:
+  type: scram-sha-256
+  userlist_file: /etc/pgrouter/userlist.txt
+
+tls:
+  client_mode: require
+  client_cert_file: /etc/pgrouter/tls/server.crt
+  client_key_file: /etc/pgrouter/tls/server.key
+  server_mode: verify-full
+  server_ca_file: /etc/ssl/certs/ca-bundle.crt
+
+metrics:
+  listen: ":9090"
+  path: /metrics
+
+logging:
+  level: info
+  format: json
+
+databases:
+  appdb:
+    host: primary-db.internal
+    port: 5432
+    dbname: production
+    pool_size: 50
+  analytics:
+    host: analytics-db.internal
+    port: 5432
+    dbname: analytics
+  warehouse:
+    host: warehouse-db.internal
+    port: 5432
+    dbname: warehouse
+    pool_mode: session       # long-running BI queries need full session
+    pool_size: 10
+
+users:
+  app_user:
+    pool_size: 80
+  reporter:
+    pool_mode: session
+    pool_size: 5
+  admin:
+    pool_size: 5

@@ -1,0 +1,31 @@
+# session-mode.yaml — session-mode pooling.
+#
+# Use this when your workload needs full per-session state: LISTEN/NOTIFY,
+# advisory locks, session-level prepared statements, temp tables that
+# outlive a single transaction, GUC SETs that persist across statements.
+#
+# Pool reuse only happens after the client disconnects, so pool_size has
+# to match peak concurrent client count.
+
+server:
+  listen_addr: 0.0.0.0
+  listen_port: 6432
+  max_client_conn: 500
+
+pool:
+  mode: session
+  default_pool_size: 50      # match peak concurrent client count
+  min_pool_size: 5
+  query_wait_timeout: 60s
+  server_idle_timeout: 1200s
+  server_lifetime: 7200s
+
+auth:
+  type: scram-sha-256
+  userlist_file: /etc/pgrouter/userlist.txt
+
+databases:
+  appdb:
+    host: 127.0.0.1
+    port: 5432
+    dbname: appdb
