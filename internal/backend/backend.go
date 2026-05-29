@@ -5,13 +5,18 @@ package backend
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
+
+	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 )
 
 // Conn is a ready upstream Postgres backend connection.
@@ -34,6 +39,17 @@ type DialOptions struct {
 	AppName  string // optional application_name
 	Timeout  time.Duration
 	Log      *slog.Logger
+
+	// TLSConfig, if non-nil, makes Dial negotiate TLS before sending
+	// StartupMessage. The ServerName must already be set (typically the
+	// hostname portion of Addr). Nil = plain TCP.
+	TLSConfig *tls.Config
+
+	// TLSRequired controls how a backend's 'N' response to our
+	// SSLRequest is handled.
+	//   false  → fall back to plaintext (matches pgwire sslmode=prefer)
+	//   true   → error (matches sslmode=require / verify-ca / verify-full)
+	TLSRequired bool
 }
 
 // Dial opens a TCP connection to the upstream and performs the startup
@@ -57,6 +73,42 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 	// Deadline only for the handshake; remove after we're connected.
 	deadline := time.Now().Add(opts.Timeout)
 	_ = c.SetDeadline(deadline)
+
+	// Optional TLS upgrade BEFORE StartupMessage (pgwire flow).
+	if opts.TLSConfig != nil {
+		var sslReq [8]byte
+		binary.BigEndian.PutUint32(sslReq[0:4], 8)
+		binary.BigEndian.PutUint32(sslReq[4:8], listener.SSLRequestMagic)
+		if _, err := c.Write(sslReq[:]); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("send SSLRequest: %w", err)
+		}
+		var resp [1]byte
+		if _, err := io.ReadFull(c, resp[:]); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("read SSLRequest reply: %w", err)
+		}
+		switch resp[0] {
+		case 'S':
+			tlsConn, err := listener.UpgradeClientToTLS(c, opts.TLSConfig)
+			if err != nil {
+				_ = c.Close()
+				return nil, fmt.Errorf("backend tls upgrade: %w", err)
+			}
+			c = tlsConn
+			log.Debug("backend TLS upgrade ok",
+				"version", tlsConn.ConnectionState().Version)
+		case 'N':
+			if opts.TLSRequired {
+				_ = c.Close()
+				return nil, errors.New("backend refused TLS and server_mode requires it")
+			}
+			log.Warn("backend declined TLS; falling back to plaintext")
+		default:
+			_ = c.Close()
+			return nil, fmt.Errorf("unexpected SSLRequest reply byte 0x%02x", resp[0])
+		}
+	}
 
 	fe := pgproto3.NewFrontend(c, c)
 

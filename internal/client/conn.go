@@ -11,6 +11,7 @@ package client
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 	"github.com/JustAnotherDevv/pgrouter/internal/proto"
 )
 
@@ -42,6 +44,11 @@ type Conn struct {
 	// BackendAddr is the upstream Postgres "host:port" to dial on a
 	// successful client StartupMessage. If empty, no upstream is opened.
 	BackendAddr string
+
+	// TLSConfig, if non-nil, makes the handler accept SSLRequest with
+	// 'S' and upgrade the conn via tls.Server. Nil → SSLRequest is
+	// declined with 'N' (PoC carryover behaviour).
+	TLSConfig *tls.Config
 }
 
 // Handle is the `listener.Handler` signature. One goroutine per client.
@@ -64,9 +71,30 @@ func (h *Conn) Handle(ctx context.Context, conn net.Conn) {
 
 		switch m := msg.(type) {
 		case *pgproto3.SSLRequest:
-			// M.1 carryover: decline SSL. TLS wired in M.4.
-			log.Info("SSLRequest received, declining (trust mode)")
-			if _, err := conn.Write([]byte{'N'}); err != nil {
+			if h.TLSConfig != nil {
+				log.Info("SSLRequest received, accepting (TLS upgrade)")
+				if err := listener.WriteSSLAccept(conn); err != nil {
+					log.Debug("ssl accept write err", "err", err)
+					return
+				}
+				upgraded, err := listener.UpgradeServerToTLS(conn, h.TLSConfig)
+				if err != nil {
+					log.Warn("tls handshake failed", "err", err)
+					return
+				}
+				// Swap the underlying conn + recreate the pgproto3 Backend
+				// on the encrypted stream. The remainder of the startup
+				// flow happens over TLS.
+				conn = upgraded
+				be = pgproto3.NewBackend(conn, conn)
+				log.Info("tls handshake complete",
+					"version", upgraded.ConnectionState().Version,
+					"cipher", upgraded.ConnectionState().CipherSuite,
+				)
+				continue
+			}
+			log.Info("SSLRequest received, declining (TLS off)")
+			if err := listener.WriteSSLDecline(conn); err != nil {
 				log.Debug("ssl decline write err", "err", err)
 				return
 			}
