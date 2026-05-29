@@ -1,8 +1,12 @@
-// Package handler implements per-connection Postgres wire-protocol
-// handling. PoC scope: parse StartupMessage + dispatch SSL/GSS/Cancel +
-// open a per-client upstream backend.
-// Forwarding wired in P.3.2.
-package handler
+// Package client owns per-client connection handling: TCP accept hand-off,
+// startup parsing, the client-facing half of the proxy loop, and (in later
+// milestones) the per-client state machine, GUC tracking, and prepared
+// statement tracking.
+//
+// This file is the MVP M.1 carryover of the PoC handler. It will be
+// progressively split across this package and `internal/proto/` as the
+// wire-protocol layer (M.2) and client lifecycle (M.6) milestones land.
+package client
 
 import (
 	"context"
@@ -20,10 +24,18 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 )
 
-// PoCHandler handles one accepted client connection. PoC scope: parse
-// the startup message, decline SSL/GSS, accept Cancel, open a per-client
-// upstream backend connection (P.3.1).
-type PoCHandler struct {
+// Conn handles one accepted client connection. Renamed from the PoC's
+// `handler.PoCHandler`; functional behaviour unchanged at M.1.
+//
+// MVP scope (carried over from PoC):
+//   - parse StartupMessage, decline SSL/GSS, accept Cancel
+//   - open a per-client upstream backend (trust auth only)
+//   - run a pass-through forwarder loop
+//
+// Things explicitly NOT here yet: pooling (M.6-M.9), SCRAM/MD5 (M.5),
+// TLS (M.4), GUC tracking (M.10), prepared-stmt cache (M.11),
+// cancel routing (M.12).
+type Conn struct {
 	Log *slog.Logger
 
 	// BackendAddr is the upstream Postgres "host:port" to dial on a
@@ -31,8 +43,8 @@ type PoCHandler struct {
 	BackendAddr string
 }
 
-// Handle is the listener.Handler signature.
-func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
+// Handle is the `listener.Handler` signature. One goroutine per client.
+func (h *Conn) Handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	log := h.Log.With("remote", conn.RemoteAddr().String())
 	log.Info("client connected")
@@ -51,8 +63,8 @@ func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
 
 		switch m := msg.(type) {
 		case *pgproto3.SSLRequest:
-			// PoC: decline SSL. TLS wired in P.4 of MVP roadmap (M.4).
-			log.Info("SSLRequest received, declining (PoC trust mode)")
+			// M.1 carryover: decline SSL. TLS wired in M.4.
+			log.Info("SSLRequest received, declining (trust mode)")
 			if _, err := conn.Write([]byte{'N'}); err != nil {
 				log.Debug("ssl decline write err", "err", err)
 				return
@@ -71,7 +83,7 @@ func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
 				"process_id", m.ProcessID,
 				"secret_key", fmt.Sprintf("%08x", m.SecretKey),
 			)
-			// Real cancel routing in M.12. PoC: just log + close.
+			// Real cancel routing in M.12. M.1: just log + close.
 			return
 
 		case *pgproto3.StartupMessage:
@@ -83,7 +95,7 @@ func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
 			)
 
 			if h.BackendAddr == "" {
-				// No upstream configured: trust-mode canned response (PoC P.2.3 path).
+				// No upstream configured: trust-mode canned response.
 				if err := h.sendStartupResponse(be, conn, log); err != nil {
 					log.Debug("startup response err", "err", err)
 					return
@@ -92,7 +104,7 @@ func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
 				return
 			}
 
-			// P.3.1: open upstream backend (per-client, no pooling yet).
+			// Per-client upstream (no pooling yet — M.6-M.9).
 			user := m.Parameters["user"]
 			db := m.Parameters["database"]
 			app := m.Parameters["application_name"]
@@ -121,7 +133,7 @@ func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
 				"backend_params_count", len(bConn.Params),
 			)
 
-			// P.3.2: forward backend's startup state to client + proxy.
+			// Forward backend's startup state to client + proxy.
 			if err := h.forwardStartupToClient(be, bConn, log); err != nil {
 				log.Debug("forward startup err", "err", err)
 				return
@@ -136,16 +148,17 @@ func (h *PoCHandler) Handle(ctx context.Context, conn net.Conn) {
 	}
 }
 
-// sendStartupResponse emits the trust-mode startup sequence:
+// sendStartupResponse emits the trust-mode startup sequence used when no
+// upstream is configured:
 // AuthenticationOk -> ParameterStatus* -> BackendKeyData -> ReadyForQuery 'I'.
 // Note: pgx/v5 pgproto3 Backend.Send() returns no error; errors surface via Flush.
-func (h *PoCHandler) sendStartupResponse(be *pgproto3.Backend, conn net.Conn, log *slog.Logger) error {
+func (h *Conn) sendStartupResponse(be *pgproto3.Backend, _ net.Conn, log *slog.Logger) error {
 	// 1. AuthenticationOk.
 	be.Send(&pgproto3.AuthenticationOk{})
 
 	// 2. ParameterStatus — minimal viable set so psql is happy.
 	params := []struct{ k, v string }{
-		{"server_version", "16.4 (pgrouter PoC)"},
+		{"server_version", "16.4 (pgrouter)"},
 		{"server_encoding", "UTF8"},
 		{"client_encoding", "UTF8"},
 		{"DateStyle", "ISO, MDY"},
@@ -171,7 +184,6 @@ func (h *PoCHandler) sendStartupResponse(be *pgproto3.Backend, conn net.Conn, lo
 	// 4. ReadyForQuery 'I' (idle).
 	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 
-	// Flush to client — this is where any queued Send errors surface.
 	if err := be.Flush(); err != nil {
 		return fmt.Errorf("flush: %w", err)
 	}
@@ -185,7 +197,7 @@ func (h *PoCHandler) sendStartupResponse(be *pgproto3.Backend, conn net.Conn, lo
 // forwardStartupToClient relays the backend's startup state to the client.
 // The backend's StartupMessage has already been processed by backend.Dial;
 // we synthesize the equivalent client-facing sequence using captured values.
-func (h *PoCHandler) forwardStartupToClient(be *pgproto3.Backend, bConn *backend.Conn, log *slog.Logger) error {
+func (h *Conn) forwardStartupToClient(be *pgproto3.Backend, bConn *backend.Conn, log *slog.Logger) error {
 	// AuthenticationOk.
 	be.Send(&pgproto3.AuthenticationOk{})
 
@@ -218,9 +230,10 @@ func (h *PoCHandler) forwardStartupToClient(be *pgproto3.Backend, bConn *backend
 // proxy runs two goroutines that forward messages between the client and
 // the backend. Returns when either side disconnects or ctx is cancelled.
 //
-// PoC scope: full pass-through, no per-message inspection. Pool reuse +
-// transaction-boundary detection are MVP-scope (M.6 / M.9).
-func (h *PoCHandler) proxy(ctx context.Context, be *pgproto3.Backend, bConn *backend.Conn, log *slog.Logger) {
+// M.1 scope: full pass-through, no per-message inspection. Pool reuse +
+// transaction-boundary detection are M.6 / M.9. Buffered raw forwarding
+// (the perf optimisation noted in the PoC bench results) is M.2.
+func (h *Conn) proxy(ctx context.Context, be *pgproto3.Backend, bConn *backend.Conn, log *slog.Logger) {
 	done := make(chan struct{}, 2)
 
 	// client → backend
@@ -275,8 +288,9 @@ func (h *PoCHandler) proxy(ctx context.Context, be *pgproto3.Backend, bConn *bac
 }
 
 // idleLoop reads client messages and responds with a minimal stub so the
-// PoC can keep a session alive when no backend is configured.
-func (h *PoCHandler) idleLoop(ctx context.Context, be *pgproto3.Backend, conn net.Conn, log *slog.Logger) {
+// router can keep a session alive when no backend is configured (useful for
+// unit tests + the no-upstream demo mode).
+func (h *Conn) idleLoop(ctx context.Context, be *pgproto3.Backend, _ net.Conn, log *slog.Logger) {
 	for {
 		// Honor ctx cancellation.
 		select {
@@ -298,12 +312,12 @@ func (h *PoCHandler) idleLoop(ctx context.Context, be *pgproto3.Backend, conn ne
 			log.Info("client terminate")
 			return
 		case *pgproto3.Query:
-			log.Info("PoC query received (no upstream yet)", "sql", m.String)
+			log.Info("idle-mode query received (no upstream)", "sql", m.String)
 			// Respond with a synthetic error so client doesn't hang.
 			be.Send(&pgproto3.ErrorResponse{
 				Severity: "ERROR",
 				Code:     "0A000",
-				Message:  "pgrouter PoC: query handling wired in P.3.x",
+				Message:  "pgrouter: no upstream configured (set --backend)",
 			})
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 			_ = be.Flush()

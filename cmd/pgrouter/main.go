@@ -12,7 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/handler"
+	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 )
 
@@ -51,7 +51,7 @@ func main() {
 	}
 	log.Info("listening", "addr", ln.Addr().String())
 
-	h := &handler.PoCHandler{Log: log, BackendAddr: *backend}
+	h := &client.Conn{Log: log, BackendAddr: *backend}
 	if err := ln.Serve(ctx, h.Handle); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)

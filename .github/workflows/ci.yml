@@ -14,12 +14,12 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Build
-        run: make build
+      - name: Build all
+        run: make build-all
       - name: Verify binary
-        run: ./bin/pgrouter --help || true  # PoC stub may exit non-zero
+        run: ./bin/pgrouter --version
 
-  test:
+  test-unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,8 +27,46 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Unit tests
-        run: make test-unit
+      - name: Unit tests + coverage
+        run: |
+          go test -race -short -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out
+          flags: unit
+          fail_ci_if_error: false
+
+  test-integration:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pg: ['15', '16']
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: testpw
+          POSTGRES_DB: test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test"
+          --health-interval=2s
+          --health-timeout=3s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Integration tests (PG ${{ matrix.pg }})
+        env:
+          PGROUTER_DSN: postgres://test@127.0.0.1:5432/test?sslmode=disable
+        run: go test -race -tags=integration ./test/integration/...
 
   lint:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-package handler
+package client
 
 import (
 	"bytes"
@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func testHandler() *PoCHandler {
-	return &PoCHandler{Log: slog.New(slog.DiscardHandler)}
+func testConn() *Conn {
+	return &Conn{Log: slog.New(slog.DiscardHandler)}
 }
 
 // pair returns a connected pair of net.Conn for testing.
@@ -26,22 +26,22 @@ func pair(t *testing.T) (net.Conn, net.Conn) {
 	return c1, c2
 }
 
-// runHandler starts the PoC handler on server side and returns a done chan.
-func runHandler(t *testing.T, server net.Conn) chan struct{} {
+// runConn starts the client handler on server side and returns a done chan.
+func runConn(t *testing.T, server net.Conn) chan struct{} {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		testHandler().Handle(context.Background(), server)
+		testConn().Handle(context.Background(), server)
 	}()
 	return done
 }
 
 // readBackendMsg reads one BackendMessage from a client-side pipe using
 // pgproto3 Frontend (client-perspective reader).
-func readBackendMsg(t *testing.T, client net.Conn) pgproto3.BackendMessage {
+func readBackendMsg(t *testing.T, c net.Conn) pgproto3.BackendMessage {
 	t.Helper()
-	fe := pgproto3.NewFrontend(client, client)
+	fe := pgproto3.NewFrontend(c, c)
 	msg, err := fe.Receive()
 	require.NoError(t, err)
 	return msg
@@ -50,8 +50,8 @@ func readBackendMsg(t *testing.T, client net.Conn) pgproto3.BackendMessage {
 // TestStartupResponseSequence checks the full trust-mode startup:
 // StartupMessage -> AuthOk + ParameterStatus* + BackendKeyData + ReadyForQuery.
 func TestStartupResponseSequence(t *testing.T) {
-	client, server := pair(t)
-	done := runHandler(t, server)
+	clt, server := pair(t)
+	done := runConn(t, server)
 
 	// Send a StartupMessage.
 	startup := &pgproto3.StartupMessage{
@@ -63,10 +63,10 @@ func TestStartupResponseSequence(t *testing.T) {
 	}
 	buf, err := startup.Encode(nil)
 	require.NoError(t, err)
-	_, err = client.Write(buf)
+	_, err = clt.Write(buf)
 	require.NoError(t, err)
 
-	fe := pgproto3.NewFrontend(client, client)
+	fe := pgproto3.NewFrontend(clt, clt)
 
 	// 1. AuthenticationOk.
 	msg, err := fe.Receive()
@@ -100,12 +100,12 @@ func TestStartupResponseSequence(t *testing.T) {
 	require.GreaterOrEqual(t, paramCount, 8, "expected several ParameterStatus messages")
 
 	// Terminate to let handler exit.
-	be := pgproto3.NewBackend(client, client)
+	be := pgproto3.NewBackend(clt, clt)
 	_ = be // not used; we send Terminate manually since pgproto3 Frontend lacks Send for FE messages here.
 	term := &pgproto3.Terminate{}
 	enc, _ := term.Encode(nil)
-	_, _ = client.Write(enc)
-	_ = client.Close()
+	_, _ = clt.Write(enc)
+	_ = clt.Close()
 
 	select {
 	case <-done:
@@ -114,11 +114,11 @@ func TestStartupResponseSequence(t *testing.T) {
 	}
 }
 
-// TestQueryInPoCReturnsError verifies the PoC's idle loop responds to a
-// Query with an ErrorResponse + ReadyForQuery (no upstream proxy yet).
-func TestQueryInPoCReturnsError(t *testing.T) {
-	client, server := pair(t)
-	done := runHandler(t, server)
+// TestQueryInIdleModeReturnsError verifies the no-upstream idle loop responds
+// to a Query with ErrorResponse + ReadyForQuery (no upstream proxy yet).
+func TestQueryInIdleModeReturnsError(t *testing.T) {
+	clt, server := pair(t)
+	done := runConn(t, server)
 
 	// Startup.
 	startup := &pgproto3.StartupMessage{
@@ -127,9 +127,9 @@ func TestQueryInPoCReturnsError(t *testing.T) {
 	}
 	enc, err := startup.Encode(nil)
 	require.NoError(t, err)
-	_, _ = client.Write(enc)
+	_, _ = clt.Write(enc)
 
-	fe := pgproto3.NewFrontend(client, client)
+	fe := pgproto3.NewFrontend(clt, clt)
 	// Drain until ReadyForQuery 'I'.
 	for {
 		m, err := fe.Receive()
@@ -143,7 +143,7 @@ func TestQueryInPoCReturnsError(t *testing.T) {
 	q := &pgproto3.Query{String: "SELECT 1"}
 	qenc, err := q.Encode(nil)
 	require.NoError(t, err)
-	_, _ = client.Write(qenc)
+	_, _ = clt.Write(qenc)
 
 	// Expect ErrorResponse + ReadyForQuery.
 	m, err := fe.Receive()
@@ -162,8 +162,8 @@ func TestQueryInPoCReturnsError(t *testing.T) {
 	// Cleanup.
 	term := &pgproto3.Terminate{}
 	tenc, _ := term.Encode(nil)
-	_, _ = client.Write(tenc)
-	_ = client.Close()
+	_, _ = clt.Write(tenc)
+	_ = clt.Close()
 
 	select {
 	case <-done:
@@ -175,19 +175,19 @@ func TestQueryInPoCReturnsError(t *testing.T) {
 // TestSSLRequestDeclinedThenStartup checks SSL decline + StartupMessage
 // continuation works.
 func TestSSLRequestDeclinedThenStartup(t *testing.T) {
-	client, server := pair(t)
-	done := runHandler(t, server)
+	clt, server := pair(t)
+	done := runConn(t, server)
 
 	// Encode an SSLRequest: int32 length=8, int32 magic 80877103.
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint32(buf[0:4], 8)
 	binary.BigEndian.PutUint32(buf[4:8], 80877103)
-	_, err := client.Write(buf)
+	_, err := clt.Write(buf)
 	require.NoError(t, err)
 
 	resp := make([]byte, 1)
-	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, err = io.ReadFull(client, resp)
+	_ = clt.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = io.ReadFull(clt, resp)
 	require.NoError(t, err)
 	require.Equal(t, byte('N'), resp[0])
 
@@ -198,16 +198,16 @@ func TestSSLRequestDeclinedThenStartup(t *testing.T) {
 	}
 	enc, err := startup.Encode(nil)
 	require.NoError(t, err)
-	_, _ = client.Write(enc)
+	_, _ = clt.Write(enc)
 
-	fe := pgproto3.NewFrontend(client, client)
+	fe := pgproto3.NewFrontend(clt, clt)
 	m, err := fe.Receive()
 	require.NoError(t, err)
 	_, ok := m.(*pgproto3.AuthenticationOk)
 	require.True(t, ok)
 
 	// Cleanup.
-	_ = client.Close()
+	_ = clt.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -217,22 +217,22 @@ func TestSSLRequestDeclinedThenStartup(t *testing.T) {
 
 // TestGSSEncRequestDeclined ensures GSSEncRequest is declined.
 func TestGSSEncRequestDeclined(t *testing.T) {
-	client, server := pair(t)
-	done := runHandler(t, server)
+	clt, server := pair(t)
+	done := runConn(t, server)
 
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint32(buf[0:4], 8)
 	binary.BigEndian.PutUint32(buf[4:8], 80877104)
-	_, err := client.Write(buf)
+	_, err := clt.Write(buf)
 	require.NoError(t, err)
 
 	resp := make([]byte, 1)
-	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, err = io.ReadFull(client, resp)
+	_ = clt.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = io.ReadFull(clt, resp)
 	require.NoError(t, err)
 	require.Equal(t, byte('N'), resp[0])
 
-	_ = client.Close()
+	_ = clt.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -242,15 +242,15 @@ func TestGSSEncRequestDeclined(t *testing.T) {
 
 // TestCancelRequestLogged checks CancelRequest doesn't crash.
 func TestCancelRequestLogged(t *testing.T) {
-	client, server := pair(t)
-	done := runHandler(t, server)
+	clt, server := pair(t)
+	done := runConn(t, server)
 
 	buf := make([]byte, 16)
 	binary.BigEndian.PutUint32(buf[0:4], 16)
 	binary.BigEndian.PutUint32(buf[4:8], 80877102)
 	binary.BigEndian.PutUint32(buf[8:12], 12345)
 	binary.BigEndian.PutUint32(buf[12:16], 0xDEADBEEF)
-	_, err := client.Write(buf)
+	_, err := clt.Write(buf)
 	require.NoError(t, err)
 
 	select {
@@ -262,10 +262,10 @@ func TestCancelRequestLogged(t *testing.T) {
 
 // TestEOFOnRead checks EOF doesn't error.
 func TestEOFOnRead(t *testing.T) {
-	client, server := pair(t)
-	done := runHandler(t, server)
+	clt, server := pair(t)
+	done := runConn(t, server)
 
-	_ = client.Close()
+	_ = clt.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -276,4 +276,28 @@ func TestEOFOnRead(t *testing.T) {
 // Compile-touch test.
 func TestUnusedHelpersDoNotCompile(t *testing.T) {
 	require.True(t, bytes.Equal([]byte("a"), []byte("a")))
+}
+
+// TestStartupMessageParsed ensures a StartupMessage is recognized by the
+// handler (regression: prior to M.1 this lived in handler/startup_test.go).
+func TestStartupMessageParsed(t *testing.T) {
+	clt, server := pair(t)
+	done := runConn(t, server)
+
+	startup := &pgproto3.StartupMessage{
+		ProtocolVersion: pgproto3.ProtocolVersionNumber,
+		Parameters:      map[string]string{"user": "x", "database": "y"},
+	}
+	enc, err := startup.Encode(nil)
+	require.NoError(t, err)
+	_, err = clt.Write(enc)
+	require.NoError(t, err)
+
+	// First message back must be AuthenticationOk.
+	msg := readBackendMsg(t, clt)
+	_, ok := msg.(*pgproto3.AuthenticationOk)
+	require.True(t, ok, "first response is AuthenticationOk")
+
+	_ = clt.Close()
+	<-done
 }
