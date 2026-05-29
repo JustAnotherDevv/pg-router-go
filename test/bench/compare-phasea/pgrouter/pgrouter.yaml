@@ -47,6 +47,5 @@ databases:
 wire:
   splice: true              # Phase A splice forwarder (backend->client drain)
   splice_buffer_size: 8192
-  splice_drop_unknown: false
   raw_passthrough: true     # bypass pgproto3 for client->backend hot path
   skip_reset_query: true    # skip DISCARD ALL — biggest perf win (+17% TPS)
