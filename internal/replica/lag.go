@@ -26,7 +26,6 @@
 package replica
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,7 +73,7 @@ func (m *Manager) lagProbe(r *Replica) {
 	if !r.Healthy() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := m.probeCtx(2 * time.Second)
 	defer cancel()
 	c, err := r.Pool.Acquire(ctx)
 	if err != nil {
