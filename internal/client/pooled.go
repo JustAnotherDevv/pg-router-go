@@ -103,8 +103,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	be := pgproto3.NewBackend(conn, conn)
 	clientSide := proto.WrapClientBackend(be)
 
-	// 1. Send the synthetic welcome.
-	if err := h.sendWelcome(be); err != nil {
+	// 1. Send the synthetic welcome. May trigger an eager-warm dial so
+	//    the ParameterStatus values reflect the real upstream.
+	if err := h.sendWelcome(ctx, be); err != nil {
 		return fmt.Errorf("welcome: %w", err)
 	}
 	log.Info("pooled client ready")
@@ -300,14 +301,19 @@ func (h *PooledConn) fireReplay(bConn *backend.Conn, sql string) error {
 	}
 }
 
-// sendWelcome sends AuthOk + canned ParameterStatus + BackendKeyData +
-// ReadyForQuery 'I'. PID/secret come from WelcomePID/Secret if set,
+// sendWelcome sends AuthOk + ParameterStatus + BackendKeyData +
+// ReadyForQuery 'I'. ParameterStatus values come from the pool's
+// captured upstream params merged over our canned defaults (real values
+// win on collision). PID/secret come from WelcomePID/Secret if set,
 // otherwise random one-shot values.
-func (h *PooledConn) sendWelcome(be *pgproto3.Backend) error {
+func (h *PooledConn) sendWelcome(ctx context.Context, be *pgproto3.Backend) error {
 	be.Send(&pgproto3.AuthenticationOk{})
-	for k, v := range h.CannedParams {
+
+	params := h.welcomeParams(ctx)
+	for k, v := range params {
 		be.Send(&pgproto3.ParameterStatus{Name: k, Value: v})
 	}
+
 	pid := h.WelcomePID
 	sec := h.WelcomeSecret
 	if pid == 0 || len(sec) == 0 {
@@ -320,6 +326,59 @@ func (h *PooledConn) sendWelcome(be *pgproto3.Backend) error {
 	be.Send(&pgproto3.BackendKeyData{ProcessID: pid, SecretKey: sec})
 	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 	return be.Flush()
+}
+
+// welcomeParams returns the merged ParameterStatus map for the welcome:
+//
+//	cached (real upstream values) over canned (our defaults).
+//
+// If the pool has never successfully dialed (cold start), we eagerly
+// acquire+release one backend to capture params. If THAT also fails
+// (e.g. upstream is down), fall back to the canned defaults so the
+// client at least sees a valid pgwire welcome.
+func (h *PooledConn) welcomeParams(ctx context.Context) map[string]string {
+	cached := h.cachedOrWarm(ctx)
+	if len(cached) == 0 {
+		return h.CannedParams
+	}
+	merged := make(map[string]string, len(cached)+len(h.CannedParams))
+	for k, v := range h.CannedParams {
+		merged[k] = v
+	}
+	for k, v := range cached {
+		merged[k] = v
+	}
+	return merged
+}
+
+// cachedOrWarm returns the pool's cached params if non-empty, otherwise
+// performs a one-shot eager Acquire+Release to populate the cache.
+//
+// We skip the warm if:
+//   - h.Pool is nil (some tests), or
+//   - the pool reports a previous dial already attempted: either it
+//     succeeded and populated the cache, or the upstream emitted no
+//     ParameterStatus (in which case repeated warms wouldn't help).
+//
+// This caps the warm at one attempt per pool ever — keeps welcome
+// latency O(RTT) only on the very first client.
+func (h *PooledConn) cachedOrWarm(ctx context.Context) map[string]string {
+	if h.Pool == nil {
+		return nil
+	}
+	if cached := h.Pool.CachedParams(); len(cached) > 0 {
+		return cached
+	}
+	if h.Pool.DialAttempted() {
+		return nil
+	}
+	c, err := h.Pool.Acquire(ctx)
+	if err != nil {
+		return nil
+	}
+	cached := h.Pool.CachedParams()
+	h.Pool.Release(c, false)
+	return cached
 }
 
 func (h *PooledConn) sendFatalError(be *pgproto3.Backend, code, msg string) {

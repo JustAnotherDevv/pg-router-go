@@ -300,7 +300,12 @@ func TestPooledMultipleClientsShareSingleBackend(t *testing.T) {
 
 	require.Equal(t, 1, fleet.Count(), "pool should reuse single backend")
 	require.Equal(t, uint64(1), p.Stats().TotalSpawned)
-	require.Equal(t, uint64(2), p.Stats().TotalAcquired)
+	// 3 acquires total:
+	//   1 eager-warm by client A (cold cache, populates CachedParams)
+	//   1 client-A query
+	//   1 client-B query
+	// Client B does NOT warm because Pool.DialAttempted() is now true.
+	require.Equal(t, uint64(3), p.Stats().TotalAcquired)
 }
 
 // TestGUCReplayPropagatesError: a backend that errors on the replay
