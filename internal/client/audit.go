@@ -79,6 +79,11 @@ type auditEvent struct {
 
 // Write emits one JSON record terminated by '\n'. Safe to call
 // concurrently from many goroutines.
+//
+// Format + json.Marshal happen OUTSIDE the lock so concurrent
+// callers serialise only on the underlying file Write, not on
+// timestamp formatting + JSON encoding (which together account for
+// most of the CPU per call).
 func (a *AuditWriter) Write(reqID, db, user, app, kind, sql string, dur time.Duration) {
 	if a == nil || a.w == nil {
 		return
@@ -97,7 +102,8 @@ func (a *AuditWriter) Write(reqID, db, user, app, kind, sql string, dur time.Dur
 	if err != nil {
 		return
 	}
+	b = append(b, '\n')
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	_, _ = a.w.Write(append(b, '\n'))
+	_, _ = a.w.Write(b)
+	a.mu.Unlock()
 }
