@@ -22,6 +22,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 )
@@ -127,7 +128,7 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, path, cfg,
+		runSighupReloader(ctx, hupCh, path, cfg, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
@@ -159,4 +160,86 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reloader did not exit on ctx cancel")
 	}
+}
+
+func TestSighupReloaderReloadsUserlist(t *testing.T) {
+	resetReg := stats.Reg
+	stats.Reg = newTestRegistry()
+	t.Cleanup(func() { stats.Reg = resetReg })
+	_ = stats.New()
+
+	dir := t.TempDir()
+	userPath := filepath.Join(dir, "userlist.txt")
+	require.NoError(t, os.WriteFile(userPath, []byte(`"alice" "old"`), 0o600))
+	ul, err := auth.NewUserlist(userPath)
+	require.NoError(t, err)
+
+	cfgPath := minimalValidConfig(t, 10)
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+
+	hupCh := make(chan os.Signal, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSighupReloader(ctx, hupCh, cfgPath, cfg, ul,
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+
+	// Mutate userlist + HUP. New entry "bob" should appear.
+	require.NoError(t, os.WriteFile(userPath,
+		[]byte(`"alice" "new"`+"\n"+`"bob" "fresh"`), 0o600))
+	hupCh <- syscall.SIGHUP
+	time.Sleep(50 * time.Millisecond)
+
+	require.Equal(t, float64(1),
+		getCounter(t, "pgrouter_sighup_userlist_reloads_total",
+			map[string]string{"outcome": "ok"}))
+	require.Equal(t, 2, ul.Len())
+	a, ok := ul.Lookup("alice")
+	require.True(t, ok)
+	require.Equal(t, "new", a.PlainPassword)
+	_, ok = ul.Lookup("bob")
+	require.True(t, ok)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reloader did not exit on ctx cancel")
+	}
+}
+
+func TestSighupReloaderUserlistSkipWhenNil(t *testing.T) {
+	resetReg := stats.Reg
+	stats.Reg = newTestRegistry()
+	t.Cleanup(func() { stats.Reg = resetReg })
+	_ = stats.New()
+
+	cfgPath := minimalValidConfig(t, 10)
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+
+	hupCh := make(chan os.Signal, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSighupReloader(ctx, hupCh, cfgPath, cfg, nil,
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+
+	hupCh <- syscall.SIGHUP
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, float64(1),
+		getCounter(t, "pgrouter_sighup_userlist_reloads_total",
+			map[string]string{"outcome": "skip"}))
+
+	cancel()
+	<-done
 }

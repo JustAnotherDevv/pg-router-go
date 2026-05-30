@@ -84,11 +84,11 @@ func Validate(cfg *Config) error {
 
 	// Auth.
 	switch cfg.Auth.Type {
-	case AuthTrust, AuthSCRAM, AuthMD5:
+	case AuthTrust, AuthSCRAM, AuthMD5, AuthPeer:
 		// supported in MVP
 	case AuthHBA, AuthCert:
 		errs = errs.add("auth.type",
-			"%q is post-MVP; supported MVP types: trust, scram-sha-256, md5", cfg.Auth.Type)
+			"%q is post-MVP; supported MVP types: trust, scram-sha-256, md5, peer", cfg.Auth.Type)
 	default:
 		errs = errs.add("auth.type",
 			"unknown auth type %q", cfg.Auth.Type)
@@ -98,6 +98,10 @@ func Validate(cfg *Config) error {
 			errs = errs.add("auth",
 				"%s requires either auth.userlist_file or auth.auth_query", cfg.Auth.Type)
 		}
+	}
+	if cfg.Auth.Type == AuthPeer && cfg.Server.UnixSocketDir == "" {
+		errs = errs.add("auth.type",
+			"peer auth requires server.unix_socket_dir to be set")
 	}
 	if cfg.Auth.AuthQuery != "" && cfg.Auth.AuthUser == "" {
 		errs = errs.add("auth.auth_user",

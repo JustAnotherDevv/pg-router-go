@@ -1,5 +1,6 @@
 // Server-side auth handshakes: pgrouter authenticates clients via
-// userlist.txt-backed trust / MD5 / SCRAM-SHA-256.
+// userlist.txt-backed trust / MD5 / SCRAM-SHA-256, or — on Unix
+// socket conns — via SO_PEERCRED ("peer" auth).
 //
 // Called from internal/client during the startup phase.
 
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
@@ -32,7 +34,19 @@ type ServerAuthOptions struct {
 // Returns nil on success; the caller should then send the
 // AuthenticationOk + ParameterStatus* + BackendKeyData + ReadyForQuery
 // sequence (or hand off to the proxy forwarder).
+//
+// Deprecated: prefer PerformServerAuthConn which can authenticate via
+// peer credentials on Unix sockets. PerformServerAuth keeps the old
+// signature working for trust / MD5 / SCRAM tests that don't need the
+// raw net.Conn.
 func PerformServerAuth(be *pgproto3.Backend, opts ServerAuthOptions, username string) error {
+	return PerformServerAuthConn(be, nil, opts, username)
+}
+
+// PerformServerAuthConn is PerformServerAuth + access to the raw client
+// net.Conn so peer auth can call SO_PEERCRED. Pass `conn == nil` only
+// when peer auth is impossible (TCP-only listener / tests).
+func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthOptions, username string) error {
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
@@ -63,9 +77,36 @@ func PerformServerAuth(be *pgproto3.Backend, opts ServerAuthOptions, username st
 		}
 		return doServerSCRAM(be, log, username, entry)
 
+	case config.AuthPeer:
+		if conn == nil {
+			return sendAuthFailed(be, log,
+				"peer auth requires a Unix socket connection")
+		}
+		return doServerPeer(be, conn, log, username)
+
 	default:
 		return fmt.Errorf("auth type %q not supported in MVP", opts.Type)
 	}
+}
+
+// doServerPeer authenticates via SO_PEERCRED — the OS uid on the far
+// side of the Unix socket. Match → accept, mismatch → FATAL 28P01.
+//
+// Caller is responsible for ensuring `conn` is a *net.UnixConn (the
+// peer subsystem returns a clean error otherwise).
+func doServerPeer(be *pgproto3.Backend, conn net.Conn, log *slog.Logger, username string) error {
+	peerUser, err := PeerUsername(conn)
+	if err != nil {
+		return sendAuthFailed(be, log,
+			fmt.Sprintf("peer-cred lookup failed: %v", err))
+	}
+	if peerUser != username {
+		return sendAuthFailed(be, log,
+			fmt.Sprintf("peer auth: socket uid maps to %q, client claimed %q",
+				peerUser, username))
+	}
+	log.Debug("peer auth ok", "user", username)
+	return nil
 }
 
 // doServerMD5 sends AuthenticationMD5Password, reads the client's

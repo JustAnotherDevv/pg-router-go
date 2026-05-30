@@ -97,6 +97,20 @@ type PooledConn struct {
 	// Mirrors PgBouncer idle_transaction_timeout. 0 = disabled.
 	IdleTxTimeout time.Duration
 
+	// LogSQL is one of: "off" | "redacted" | "full". Controls the
+	// per-query log emission. Empty defaults to "redacted".
+	LogSQL string
+
+	// PoolMode is one of: "session" | "transaction" | "statement". Empty
+	// defaults to "transaction" (MVP default). In statement mode the
+	// backend is released after EVERY ReadyForQuery — even ones with
+	// TxStatus 'T' — and explicit BEGIN / START TRANSACTION statements
+	// are rejected with SQLSTATE 25001 before reaching a backend.
+	// "session" is treated as "force session-pin from the first message"
+	// for clients that need it; the existing session-pin path covers
+	// LISTEN / advisory_lock / temp table / cursor.
+	PoolMode string
+
 	// resetOnReleaseSet is true once a caller has explicitly written to
 	// ResetOnRelease (including via the zero value of the bool — but
 	// most production paths go via NewPooledConn which sets this).
@@ -226,6 +240,18 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			sessionPinned = true
 			log.Info("session pinned (force-session)",
 				"reason", "SET of GUC outside replayable whitelist")
+		}
+		// Statement-mode: reject explicit transaction openers. The
+		// client gets a clean error and the connection stays up; PG
+		// itself never sees the offending message.
+		if h.isStatementMode() {
+			if sql, isBegin := clientExplicitBegin(msg); isBegin {
+				log.Info("statement_mode: rejecting explicit BEGIN",
+					"sql_prefix", truncate(sql, 64))
+				h.sendErrorWithRFQ(be, "25001",
+					"pgrouter: explicit transactions are not allowed in statement-mode pool")
+				continue
+			}
 		}
 		// Per-(db, user) Query/Parse counter.
 		switch msg.(type) {
@@ -368,7 +394,17 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					// (LISTEN, advisory_lock, temp table, cursor) —
 					// then we hold the backend for the remainder of the
 					// session.
-					if state.Tx().IsIdle() && !sessionPinned {
+					//
+					// In statement-mode we release on EVERY RFQ —
+					// including ones with TxStatus 'T' — because
+					// statement mode by definition forbids
+					// cross-statement state on the backend. Explicit
+					// BEGIN is already rejected upstream so we'd never
+					// observe 'T' in practice, but the guard makes the
+					// invariant explicit.
+					shouldRelease := !sessionPinned &&
+						(h.isStatementMode() || state.Tx().IsIdle())
+					if shouldRelease {
 						h.Pool.Release(bConn, h.ResetOnRelease)
 						bConn = nil
 					}
@@ -413,6 +449,7 @@ func (h *PooledConn) observeClientMessage(
 ) {
 	switch m := msg.(type) {
 	case *pgproto3.Query:
+		h.logSQL(log, "query", "", m.String)
 		gucCache.ObserveQuery(m.String)
 		if !*sessionPinned && needsSessionPin(m.String) {
 			*sessionPinned = true
@@ -422,6 +459,7 @@ func (h *PooledConn) observeClientMessage(
 			)
 		}
 	case *pgproto3.Parse:
+		h.logSQL(log, "parse", m.Name, m.Query)
 		prepCache.Observe(m.Name, m.Query, m.ParameterOIDs)
 		if !*sessionPinned && needsSessionPin(m.Query) {
 			*sessionPinned = true
@@ -436,6 +474,27 @@ func (h *PooledConn) observeClientMessage(
 			prepCache.Close(m.Name)
 		}
 	}
+}
+
+// logSQL emits a structured per-query log line obeying the LogSQL mode.
+// kind is "query" (simple) or "parse" (extended). prepName is the
+// client-supplied statement name for Parse, "" for Query.
+//
+// LogSQL=="off" still emits the line — so operators always see request
+// flow — but with no `sql` field.
+func (h *PooledConn) logSQL(log *slog.Logger, kind, prepName, sql string) {
+	mode := h.LogSQL
+	if mode == "" {
+		mode = "redacted"
+	}
+	attrs := []any{"kind", kind}
+	if prepName != "" {
+		attrs = append(attrs, "prepared_name", prepName)
+	}
+	if rendered := SQLForLog(mode, sql, 256); rendered != "" {
+		attrs = append(attrs, "sql", rendered)
+	}
+	log.Debug("client query", attrs...)
 }
 
 // truncate is a no-frills string slicer for log fields.
@@ -557,6 +616,46 @@ func (h *PooledConn) sendFatalError(be *pgproto3.Backend, code, msg string) {
 		Message:  msg,
 	})
 	_ = be.Flush()
+}
+
+// sendErrorWithRFQ sends a non-fatal ErrorResponse followed by a fresh
+// ReadyForQuery so the client can issue another statement. Used for
+// proxy-level rejections (statement-mode BEGIN guard, etc.) where the
+// connection stays usable.
+func (h *PooledConn) sendErrorWithRFQ(be *pgproto3.Backend, code, msg string) {
+	be.Send(&pgproto3.ErrorResponse{
+		Severity: "ERROR",
+		Code:     code,
+		Message:  msg,
+	})
+	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+	_ = be.Flush()
+}
+
+// isStatementMode returns true when the handler is configured for
+// statement-mode pooling (release after every RFQ + reject BEGIN).
+func (h *PooledConn) isStatementMode() bool {
+	return h.PoolMode == "statement"
+}
+
+// clientExplicitBegin recognises an explicit transaction-open coming
+// from the client.
+//
+// Both simple Query and extended-protocol Parse paths are checked. The
+// returned string is the SQL we matched against (for logging); the
+// boolean is the verdict.
+func clientExplicitBegin(msg pgproto3.FrontendMessage) (string, bool) {
+	switch m := msg.(type) {
+	case *pgproto3.Query:
+		if IsExplicitBeginSQL(m.String) {
+			return m.String, true
+		}
+	case *pgproto3.Parse:
+		if IsExplicitBeginSQL(m.Query) {
+			return m.Query, true
+		}
+	}
+	return "", false
 }
 
 // sendFatalErrorWithWriteDeadline is sendFatalError variant that caps the

@@ -132,6 +132,14 @@ func OnSighupReload(outcome string) {
 	}
 }
 
+// OnSighupUserlistReload counts SIGHUP-driven userlist.txt reloads.
+// `outcome` = "ok" | "fail" | "skip" (skip = no userlist configured).
+func OnSighupUserlistReload(outcome string) {
+	if Active != nil {
+		Active.SighupUserlistReloads.WithLabelValues(outcome).Inc()
+	}
+}
+
 // OnPreparedHit increments the per-(db, user) prepared-statement cache
 // hit counter (Parse for a SQL whose server-side name is already
 // cached on the backend → no extra Parse round trip).
@@ -205,7 +213,8 @@ type Metrics struct {
 	IdleTxTimeouts     *prometheus.CounterVec // {database, user}
 
 	// Lifecycle.
-	SighupReloads *prometheus.CounterVec // {"outcome": "ok"|"fail"}
+	SighupReloads         *prometheus.CounterVec // {"outcome": "ok"|"fail"}
+	SighupUserlistReloads *prometheus.CounterVec // {"outcome": "ok"|"fail"|"skip"}
 
 	// Prepared statement cross-backend cache (M.11.2).
 	PreparedHits      *prometheus.CounterVec // {database, user}
@@ -333,6 +342,10 @@ func New() *Metrics {
 			Name: "pgrouter_sighup_reloads_total",
 			Help: "SIGHUP-driven config reloads.",
 		}, []string{"outcome"}),
+		SighupUserlistReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_sighup_userlist_reloads_total",
+			Help: "SIGHUP-driven userlist.txt reloads.",
+		}, []string{"outcome"}),
 
 		PreparedHits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_prepared_cache_hits_total",
@@ -364,7 +377,7 @@ func New() *Metrics {
 		m.CancelsReceived, m.CancelsForwarded, m.CancelsDropped,
 		m.GlobalLimitRejects, m.QueryTimeouts,
 		m.ClientIdleTimeouts, m.IdleTxTimeouts,
-		m.SighupReloads,
+		m.SighupReloads, m.SighupUserlistReloads,
 		m.PreparedHits, m.PreparedMisses, m.PreparedEvictions,
 	)
 	Active = m

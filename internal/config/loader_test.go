@@ -205,6 +205,35 @@ func TestValidationSCRAMRequiresUserlistOrAuthQuery(t *testing.T) {
 	require.Contains(t, err.Error(), "auth_query")
 }
 
+func TestValidationPeerRequiresUnixSocketDir(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
+		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
+		Auth:   AuthConfig{Type: AuthPeer},
+		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
+		Databases: map[string]DatabaseConfig{
+			"appdb": {Host: "127.0.0.1", Port: 5432},
+		},
+	}
+	err := Validate(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unix_socket_dir")
+}
+
+func TestValidationPeerOKWithUnixSocketDir(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100,
+			UnixSocketDir: "/var/run/pgrouter"},
+		Pool: PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
+		Auth: AuthConfig{Type: AuthPeer},
+		TLS:  TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
+		Databases: map[string]DatabaseConfig{
+			"appdb": {Host: "127.0.0.1", Port: 5432},
+		},
+	}
+	require.NoError(t, Validate(cfg))
+}
+
 func TestValidationTLSRequireNeedsCert(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
