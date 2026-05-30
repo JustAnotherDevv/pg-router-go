@@ -1,0 +1,16 @@
+apiVersion: v2
+name: pgrouter
+description: Modern PostgreSQL connection pooler — Helm chart
+type: application
+version: 0.1.0
+appVersion: "0.5.0"
+home: https://github.com/JustAnotherDevv/pgrouter
+sources:
+  - https://github.com/JustAnotherDevv/pgrouter
+maintainers:
+  - name: JustAnotherDevv
+keywords:
+  - postgres
+  - pooler
+  - pgbouncer-alternative
+  - connection-pool
