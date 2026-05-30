@@ -82,6 +82,6 @@ jobs:
           go-version: '1.26'
           check-latest: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.62.0
+          version: v2.6.0
