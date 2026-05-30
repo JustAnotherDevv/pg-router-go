@@ -124,10 +124,13 @@ type PooledConn struct {
 	// reads stay on the currently-attached backend).
 	ReplicaPicker func() *pool.Pool
 
-	// StickyReadWindow, if > 0, pins reads following a Write to the
-	// primary for this much wall-clock time (read-your-own-writes).
-	// 0 = always route reads to replicas.
-	StickyReadWindow time.Duration
+	// StickyReadWindowFn, if non-nil, returns the sticky-read window
+	// at the moment a routing decision is made. We call it per-message
+	// (cheap closure) rather than capturing the value at PooledConn
+	// construction time, so SIGHUP'd config changes apply to already
+	// connected clients without requiring them to reconnect.
+	// nil-returning-0 disables sticky-read for that client.
+	StickyReadWindowFn func() time.Duration
 
 	// PrimaryHealthy reports the current health of the primary backing
 	// this conn's database. When false, new writes get 08006
@@ -801,13 +804,22 @@ func releasePool(p *pool.Pool, fallback *pool.Pool) *pool.Pool {
 }
 
 // stickyToPrimary returns true when we should route this client's read
-// to the PRIMARY because StickyReadWindow hasn't elapsed since the
-// last write. 0 lastWriteAt = no write seen = no stickiness.
+// to the PRIMARY because the sticky-read window hasn't elapsed since
+// the last write on this conn. 0 lastWriteAt = no write seen = no
+// stickiness.
+//
+// We re-resolve the window per call via StickyReadWindowFn so a SIGHUP
+// reload of the per-db sticky_read_window takes effect on already
+// connected clients.
 func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
-	if h.StickyReadWindow <= 0 || lastWrite.IsZero() {
+	if h.StickyReadWindowFn == nil || lastWrite.IsZero() {
 		return false
 	}
-	return time.Since(lastWrite) < h.StickyReadWindow
+	window := h.StickyReadWindowFn()
+	if window <= 0 {
+		return false
+	}
+	return time.Since(lastWrite) < window
 }
 
 // isReadMessage classifies a fresh Query/Parse for replica-routing
