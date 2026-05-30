@@ -190,6 +190,29 @@ type DatabaseConfig struct {
 	// MaxQPS, if > 0, caps the per-tenant Query/Parse rate via a token
 	// bucket. Burst = MaxQPS (capacity equals refill-per-second).
 	MaxQPS float64 `yaml:"max_qps,omitempty"`
+
+	// Replicas is the list of read replicas backing this database.
+	// pgrouter classifies SQL into read vs write (see internal/client
+	// classifier), routes reads to the least-laggy replica, writes to
+	// the primary. Empty list = primary-only (back-compat).
+	Replicas []ReplicaConfig `yaml:"replicas,omitempty"`
+
+	// MaxReplicaLagBytes is the cap on replication lag (WAL bytes
+	// behind primary) above which a replica is excluded from the
+	// read-routing pool. 0 = unbounded (don't skip).
+	MaxReplicaLagBytes int64 `yaml:"max_replica_lag_bytes,omitempty"`
+
+	// StickyReadWindow is how long after a write on this database a
+	// follow-up SELECT from the same client is pinned to the primary
+	// (read-your-own-writes). 0 = disabled.
+	StickyReadWindow time.Duration `yaml:"sticky_read_window,omitempty"`
+}
+
+// ReplicaConfig is one read replica entry under databases.<name>.replicas.
+type ReplicaConfig struct {
+	Host   string `yaml:"host"`
+	Port   int    `yaml:"port"`             // default 5432
+	Weight int    `yaml:"weight,omitempty"` // default 1; relative read-routing weight
 }
 
 // UserConfig is a per-user override.

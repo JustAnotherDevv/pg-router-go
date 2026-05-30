@@ -220,6 +220,37 @@ func TestValidationPeerRequiresUnixSocketDir(t *testing.T) {
 	require.Contains(t, err.Error(), "unix_socket_dir")
 }
 
+func TestValidationReplicaRequiresHostAndPort(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100},
+		Pool:   PoolConfig{Mode: PoolModeTransaction, DefaultPoolSize: 10},
+		Auth:   AuthConfig{Type: AuthTrust},
+		TLS:    TLSConfig{ClientMode: SSLDisable, ServerMode: SSLDisable},
+		Databases: map[string]DatabaseConfig{
+			"appdb": {Host: "127.0.0.1", Port: 5432,
+				Replicas: []ReplicaConfig{
+					{Host: "", Port: 70000},
+				}},
+		},
+	}
+	err := Validate(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "replicas[0].host")
+	require.Contains(t, err.Error(), "replicas[0].port")
+}
+
+func TestValidationReplicaDefaultsApply(t *testing.T) {
+	cfg := &Config{
+		Databases: map[string]DatabaseConfig{
+			"appdb": {Host: "127.0.0.1",
+				Replicas: []ReplicaConfig{{Host: "replica.local"}}},
+		},
+	}
+	applyDefaults(cfg)
+	require.Equal(t, 5432, cfg.Databases["appdb"].Replicas[0].Port)
+	require.Equal(t, 1, cfg.Databases["appdb"].Replicas[0].Weight)
+}
+
 func TestValidationPeerOKWithUnixSocketDir(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{ListenPort: 6432, MaxClientConn: 100,
