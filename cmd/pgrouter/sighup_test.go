@@ -128,7 +128,7 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, path, cfg, nil,
+		runSighupReloader(ctx, hupCh, path, cfg, nil, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
@@ -185,7 +185,7 @@ func TestSighupReloaderReloadsUserlist(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, cfgPath, cfg, ul,
+		runSighupReloader(ctx, hupCh, cfgPath, cfg, ul, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
@@ -230,7 +230,7 @@ func TestSighupReloaderUserlistSkipWhenNil(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSighupReloader(ctx, hupCh, cfgPath, cfg, nil,
+		runSighupReloader(ctx, hupCh, cfgPath, cfg, nil, nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
