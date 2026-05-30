@@ -96,6 +96,10 @@ type PooledHandler struct {
 	// Audit is the optional per-query audit-log sink. nil = off.
 	Audit *AuditWriter
 
+	// AdminReload, if non-nil, is the RELOAD admin-console handler. Same
+	// closure as the HTTP /api/v1/reload handler.
+	AdminReload func() error
+
 	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
 	// 0 disables rate-limiting for that tenant. Buckets are shared
 	// across all PooledConns of the same (db, user) so the cap is
@@ -210,6 +214,19 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 					log.Info("client auth failed", "err", err)
 					return
 				}
+			}
+
+			// Virtual admin database — PgBouncer convention.
+			if db == "pgbouncer" {
+				ac := &AdminConsole{
+					Log:     log,
+					Manager: h.Manager,
+					Reload:  h.AdminReload,
+				}
+				if err := ac.Serve(ctx, conn); err != nil {
+					log.Debug("admin console ended", "err", err)
+				}
+				return
 			}
 
 			p := h.Manager.Get(pool.Key{DB: db, User: user})
