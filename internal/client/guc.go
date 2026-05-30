@@ -48,16 +48,78 @@ var resetRe = regexp.MustCompile(`(?i)^\s*RESET\s+([a-zA-Z_][a-zA-Z0-9_]*|ALL)\s
 // discardRe matches DISCARD ALL (clears everything we track).
 var discardRe = regexp.MustCompile(`(?i)^\s*DISCARD\s+ALL\s*;?\s*$`)
 
-// GUCCache holds the (name, value) pairs a client has SET. Goroutine-
-// safe: a separate janitor / metrics goroutine may read snapshots.
-type GUCCache struct {
-	mu   sync.RWMutex
-	vars map[string]string
+// defaultReplayable is the default whitelist of GUC names we are willing
+// to replay on a fresh backend. Matches the safe-to-replay set the
+// PostgreSQL community + PgBouncer's varcache.c agree on: session-scoped,
+// idempotent, no side effects beyond setting state.
+//
+// Names are lowercase; comparison is case-insensitive on input. Keep this
+// list small and conservative: an unrecognized SET forces session-pin
+// (the client gets correct semantics at the cost of a held backend).
+//
+// MVP M.10 scope. Operators can extend via config (post-MVP knob;
+// PgBouncer's `track_extra_parameters`).
+var defaultReplayable = map[string]struct{}{
+	"search_path":                         {},
+	"application_name":                    {},
+	"timezone":                            {},
+	"datestyle":                           {},
+	"intervalstyle":                       {},
+	"extra_float_digits":                  {},
+	"statement_timeout":                   {},
+	"lock_timeout":                        {},
+	"idle_in_transaction_session_timeout": {},
+	"client_encoding":                     {},
+	"client_min_messages":                 {},
+	"default_transaction_isolation":       {},
+	"default_transaction_read_only":       {},
+	"default_transaction_deferrable":      {},
+	"transaction_isolation":               {},
+	"transaction_read_only":               {},
+	"transaction_deferrable":              {},
+	"row_security":                        {},
 }
 
-// NewGUCCache returns an empty cache.
+// GUCCache holds the (name, value) pairs a client has SET. Goroutine-
+// safe: a separate janitor / metrics goroutine may read snapshots.
+//
+// Only names in the `replayable` whitelist are remembered. SET of a name
+// outside the whitelist flips `unrecognized` to true — PooledConn watches
+// this flag and force-session-pins the client so backend state stays
+// consistent for the rest of the session.
+type GUCCache struct {
+	mu           sync.RWMutex
+	vars         map[string]string
+	replayable   map[string]struct{}
+	unrecognized bool
+}
+
+// NewGUCCache returns an empty cache using the default replayable
+// whitelist.
 func NewGUCCache() *GUCCache {
-	return &GUCCache{vars: map[string]string{}}
+	return &GUCCache{vars: map[string]string{}, replayable: defaultReplayable}
+}
+
+// NewGUCCacheWith returns a cache that uses `replayable` as the whitelist.
+// Names should be lowercase. Empty map = nothing replayable, every SET
+// triggers session-pin.
+func NewGUCCacheWith(replayable map[string]struct{}) *GUCCache {
+	if replayable == nil {
+		replayable = map[string]struct{}{}
+	}
+	return &GUCCache{vars: map[string]string{}, replayable: replayable}
+}
+
+// HasUnrecognizedSet reports whether the client has issued any SET for a
+// name outside the replayable whitelist since the last DISCARD ALL.
+//
+// PooledConn treats this as a session-pin trigger: PgBouncer-style
+// pool_mode=transaction can't safely re-apply unknown GUCs across backend
+// swaps, so we pin to the current backend for the rest of the session.
+func (c *GUCCache) HasUnrecognizedSet() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.unrecognized
 }
 
 // ObserveQuery inspects one client Query.String and updates the cache.
@@ -66,8 +128,9 @@ func NewGUCCache() *GUCCache {
 func (c *GUCCache) ObserveQuery(sql string) bool {
 	if discardRe.MatchString(sql) {
 		c.mu.Lock()
-		modified := len(c.vars) > 0
+		modified := len(c.vars) > 0 || c.unrecognized
 		c.vars = map[string]string{}
+		c.unrecognized = false
 		c.mu.Unlock()
 		return modified
 	}
@@ -75,8 +138,9 @@ func (c *GUCCache) ObserveQuery(sql string) bool {
 		name := strings.ToLower(m[1])
 		c.mu.Lock()
 		if name == "all" {
-			modified := len(c.vars) > 0
+			modified := len(c.vars) > 0 || c.unrecognized
 			c.vars = map[string]string{}
+			c.unrecognized = false
 			c.mu.Unlock()
 			return modified
 		}
@@ -93,11 +157,17 @@ func (c *GUCCache) ObserveQuery(sql string) bool {
 		name := strings.ToLower(m[2])
 		val := strings.TrimSpace(m[3])
 		c.mu.Lock()
+		defer c.mu.Unlock()
+		if _, ok := c.replayable[name]; !ok {
+			// Unknown GUC. Record the trigger so PooledConn pins the
+			// session, but DON'T store it — replaying an unknown name
+			// across backends would be incorrect.
+			c.unrecognized = true
+			return true
+		}
 		old, existed := c.vars[name]
 		c.vars[name] = val
-		modified := !existed || old != val
-		c.mu.Unlock()
-		return modified
+		return !existed || old != val
 	}
 	return false
 }

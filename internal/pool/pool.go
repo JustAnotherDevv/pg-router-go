@@ -57,11 +57,24 @@ type Dialer func(ctx context.Context) (*backend.Conn, error)
 // Callbacks lets callers observe Acquire wait time, dial events,
 // eviction counts without coupling Pool to the metrics package.
 // Any nil function is a no-op.
+//
+// PreAcquire fires once at the very start of every Acquire call, BEFORE
+// the pool mutex is taken. It blocks until the caller decides Acquire
+// may proceed (typically used to enforce global per-db/per-user caps
+// via a chan-backed semaphore). Returning a non-nil error aborts
+// Acquire with that error and PostRelease is NOT called.
+//
+// PostRelease fires exactly once per successful PreAcquire — either at
+// the next Release of the returned backend, OR when Acquire failed
+// internally AFTER PreAcquire succeeded. This invariant lets callers
+// use PreAcquire/PostRelease as a leak-free semaphore pair.
 type Callbacks struct {
 	OnAcquireWait func(pool string, d time.Duration)
 	OnDial        func(pool string)
 	OnDialError   func(pool string, err error)
 	OnEvict       func(pool string, n int)
+	PreAcquire    func(ctx context.Context) error
+	PostRelease   func()
 }
 
 // Config is the per-pool sizing + timeouts.
@@ -73,8 +86,12 @@ type Config struct {
 	QueryWait          time.Duration // total time Acquire may block
 	ServerIdle         time.Duration // idle backend eviction threshold
 	ServerLifetime     time.Duration // max age before recycle
-	Log                *slog.Logger
-	Callbacks          Callbacks
+	// ResetQuery is sent on Release to clear per-session state. Empty
+	// string means the backend's default (DISCARD ALL). Multi-statement
+	// queries are honoured (e.g. "DELETE FROM tmp; DISCARD ALL").
+	ResetQuery string
+	Log        *slog.Logger
+	Callbacks  Callbacks
 }
 
 // Pool manages backends for one (db, user) tuple.
@@ -159,7 +176,30 @@ func (p *Pool) Name() string { return p.name }
 
 // Acquire returns a backend ready for use, blocking until one is
 // available or ctx fires.
+//
+// If Callbacks.PreAcquire is set it fires first (outside the pool lock)
+// and may block — typically to enforce a global per-db/per-user cap. On
+// PreAcquire failure Acquire returns immediately and PostRelease is NOT
+// called. On every other Acquire failure path PostRelease IS called so
+// the caller's semaphore stays leak-free.
 func (p *Pool) Acquire(ctx context.Context) (*backend.Conn, error) {
+	if cb := p.cfg.Callbacks.PreAcquire; cb != nil {
+		if err := cb(ctx); err != nil {
+			return nil, err
+		}
+	}
+	c, err := p.acquireInternal(ctx)
+	if err != nil {
+		if cb := p.cfg.Callbacks.PostRelease; cb != nil {
+			cb()
+		}
+	}
+	return c, err
+}
+
+// acquireInternal is the original Acquire body. PreAcquire / PostRelease
+// orchestration is handled by the public Acquire wrapper above.
+func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
 	start := time.Now()
 	p.mu.Lock()
 	if p.closed {
@@ -372,16 +412,26 @@ func (p *Pool) emitWait(start time.Time) {
 }
 
 // Release returns a backend to the pool. If resetSession is true, the
-// backend is reset (DISCARD ALL) before being made available again.
-// Failed reset → backend is closed instead of pooled.
+// pool's configured ResetQuery is run before pooling (defaults to
+// DISCARD ALL). Failed reset → backend is closed instead of pooled.
+//
+// PostRelease is fired (if set) at end of Release regardless of whether
+// the backend was successfully returned to idle, closed due to drain, or
+// discarded due to a failed reset — the invariant is exactly one
+// PostRelease per successful PreAcquire.
 func (p *Pool) Release(c *backend.Conn, resetSession bool) {
 	if c == nil {
 		return
 	}
+	defer func() {
+		if cb := p.cfg.Callbacks.PostRelease; cb != nil {
+			cb()
+		}
+	}()
 
 	// Optional reset BEFORE the lock — it does I/O.
 	if resetSession {
-		if err := c.ResetState(); err != nil {
+		if err := c.ResetStateWith(p.cfg.ResetQuery); err != nil {
 			p.cfg.Log.Warn("backend reset failed; discarding", "err", err)
 			_ = c.Close()
 			p.mu.Lock()

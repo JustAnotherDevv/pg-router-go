@@ -30,7 +30,7 @@ func TestNewRegistersAllMetrics(t *testing.T) {
 	// Sanity-check by incrementing one of each major family.
 	m.ClientConnsTotal.Inc()
 	m.BackendDialsTotal.Inc()
-	m.QueriesTotal.Inc()
+	m.QueriesTotal.WithLabelValues("appdb", "alice").Inc()
 	m.AuthAttempts.Inc()
 	m.CancelsReceived.Inc()
 	m.PoolAcquireSeconds.WithLabelValues("appdb/alice").Observe(0.01)
@@ -62,7 +62,7 @@ func TestServeMetricsEndpoint(t *testing.T) {
 	resetReg(t)
 	m := New()
 	m.ClientConnsTotal.Inc()
-	m.QueriesTotal.Add(7)
+	m.QueriesTotal.WithLabelValues("appdb", "alice").Add(7)
 
 	// Pick a free port.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -90,7 +90,7 @@ func TestServeMetricsEndpoint(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	require.Contains(t, body, "pgrouter_client_connections_total 1")
-	require.Contains(t, body, "pgrouter_queries_total 7")
+	require.Contains(t, body, `pgrouter_queries_total{database="appdb",user="alice"} 7`)
 
 	cancel()
 	select {

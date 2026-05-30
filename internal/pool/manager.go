@@ -29,6 +29,10 @@ type DialerFor func(k Key) Dialer
 // value in the override are taken from the default.
 type ConfigFor func(k Key) *Config
 
+// LimitObserver reports global-cap rejections to a metrics surface.
+// `scope` is "db" or "user".
+type LimitObserver func(scope, name string)
+
 // Manager owns all per-(db, user) pools + the janitor goroutine that
 // sweeps idle / lifetime-expired backends.
 type Manager struct {
@@ -42,6 +46,14 @@ type Manager struct {
 
 	janitorStop chan struct{}
 	janitorDone chan struct{}
+
+	// Global per-(db | user) connection caps. 0 = unlimited.
+	maxDBConn    int
+	maxUserConn  int
+	limitObs     LimitObserver
+	limitMu      sync.Mutex
+	dbSemas      map[string]chan struct{} // db -> sema cap=maxDBConn
+	userSemas    map[string]chan struct{} // user -> sema cap=maxUserConn
 }
 
 // NewManager builds a registry. Janitor isn't started until Start is called.
@@ -54,6 +66,8 @@ func NewManager(defaultCfg Config, dialerFor DialerFor) *Manager {
 		dialerFor:  dialerFor,
 		log:        defaultCfg.Log,
 		pools:      map[Key]*Pool{},
+		dbSemas:    map[string]chan struct{}{},
+		userSemas:  map[string]chan struct{}{},
 	}
 }
 
@@ -63,6 +77,91 @@ func NewManager(defaultCfg Config, dialerFor DialerFor) *Manager {
 func (m *Manager) WithConfigFor(fn ConfigFor) *Manager {
 	m.configFor = fn
 	return m
+}
+
+// WithGlobalLimits enables PgBouncer-style global caps:
+//
+//	maxDBConn   — max concurrent checkouts across ALL pools sharing a db
+//	maxUserConn — max concurrent checkouts across ALL pools sharing a user
+//
+// 0 = unlimited. `obs`, if non-nil, fires on every rejection so callers
+// can wire a metric counter; pass nil to skip.
+//
+// Must be called BEFORE any pool is lazily created (i.e. before the first
+// Get/Acquire). Returns the Manager for chaining.
+func (m *Manager) WithGlobalLimits(maxDBConn, maxUserConn int, obs LimitObserver) *Manager {
+	m.maxDBConn = maxDBConn
+	m.maxUserConn = maxUserConn
+	m.limitObs = obs
+	return m
+}
+
+// limitersFor returns PreAcquire/PostRelease callbacks that gate Acquire
+// behind the global db + user semaphores. Returns (nil, nil) if no caps
+// are configured.
+//
+// The callbacks acquire in (db, user) order and release in reverse so
+// callers can't deadlock on cross-dependence (db then user is stable).
+func (m *Manager) limitersFor(k Key) (preAcquire func(context.Context) error, postRelease func()) {
+	if m.maxDBConn <= 0 && m.maxUserConn <= 0 {
+		return nil, nil
+	}
+	var dbSema, userSema chan struct{}
+	m.limitMu.Lock()
+	if m.maxDBConn > 0 {
+		s, ok := m.dbSemas[k.DB]
+		if !ok {
+			s = make(chan struct{}, m.maxDBConn)
+			m.dbSemas[k.DB] = s
+		}
+		dbSema = s
+	}
+	if m.maxUserConn > 0 {
+		s, ok := m.userSemas[k.User]
+		if !ok {
+			s = make(chan struct{}, m.maxUserConn)
+			m.userSemas[k.User] = s
+		}
+		userSema = s
+	}
+	m.limitMu.Unlock()
+
+	obs := m.limitObs
+	preAcquire = func(ctx context.Context) error {
+		if dbSema != nil {
+			select {
+			case dbSema <- struct{}{}:
+			case <-ctx.Done():
+				if obs != nil {
+					obs("db", k.DB)
+				}
+				return ctx.Err()
+			}
+		}
+		if userSema != nil {
+			select {
+			case userSema <- struct{}{}:
+			case <-ctx.Done():
+				if dbSema != nil {
+					<-dbSema
+				}
+				if obs != nil {
+					obs("user", k.User)
+				}
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	postRelease = func() {
+		if userSema != nil {
+			<-userSema
+		}
+		if dbSema != nil {
+			<-dbSema
+		}
+	}
+	return preAcquire, postRelease
 }
 
 // mergeConfig overlays `override` (non-zero fields only) on `base`.
@@ -91,6 +190,9 @@ func mergeConfig(base Config, override *Config) Config {
 	}
 	if override.ServerLifetime > 0 {
 		out.ServerLifetime = override.ServerLifetime
+	}
+	if override.ResetQuery != "" {
+		out.ResetQuery = override.ResetQuery
 	}
 	if override.Log != nil {
 		out.Log = override.Log
@@ -130,6 +232,11 @@ func (m *Manager) Get(k Key) *Pool {
 	cfg := m.defaultCfg
 	if m.configFor != nil {
 		cfg = mergeConfig(cfg, m.configFor(k))
+	}
+	// Inject global db/user semaphore limiters (no-op if no caps set).
+	if pre, post := m.limitersFor(k); pre != nil {
+		cfg.Callbacks.PreAcquire = pre
+		cfg.Callbacks.PostRelease = post
 	}
 	p = New(k.String(), m.dialerFor(k), cfg)
 	m.pools[k] = p

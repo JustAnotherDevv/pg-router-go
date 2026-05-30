@@ -59,6 +59,79 @@ func OnPoolEvict(_ string, n int) {
 	}
 }
 
+// OnQuery increments the per-(database, user) query counter. Fired from
+// PooledConn each time a Query or Parse is forwarded to a backend.
+func OnQuery(db, user string) {
+	if Active != nil {
+		Active.QueriesTotal.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnTxStart increments the per-(db, user) transaction-start counter.
+func OnTxStart(db, user string) {
+	if Active != nil {
+		Active.TxStarts.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnTxCommit increments the per-(db, user) commit counter.
+func OnTxCommit(db, user string) {
+	if Active != nil {
+		Active.TxCommits.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnTxRollback increments the per-(db, user) rollback counter.
+func OnTxRollback(db, user string) {
+	if Active != nil {
+		Active.TxRollbacks.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnQueryDuration observes a per-(db, user) query duration in seconds.
+func OnQueryDuration(db, user string, seconds float64) {
+	if Active != nil {
+		Active.QueryDurationSec.WithLabelValues(db, user).Observe(seconds)
+	}
+}
+
+// OnGlobalLimitReject counts Acquires denied by the global db/user cap.
+// `scope` is "db" or "user".
+func OnGlobalLimitReject(scope, name string) {
+	if Active != nil {
+		Active.GlobalLimitRejects.WithLabelValues(scope, name).Inc()
+	}
+}
+
+// OnQueryTimeout counts queries killed by query_timeout.
+func OnQueryTimeout(db, user string) {
+	if Active != nil {
+		Active.QueryTimeouts.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnClientIdleTimeout counts clients evicted by client_idle_timeout.
+func OnClientIdleTimeout(db, user string) {
+	if Active != nil {
+		Active.ClientIdleTimeouts.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnIdleTxTimeout counts clients killed by idle_transaction_timeout.
+func OnIdleTxTimeout(db, user string) {
+	if Active != nil {
+		Active.IdleTxTimeouts.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnSighupReload counts SIGHUP-driven config reloads.
+// `outcome` = "ok" | "fail".
+func OnSighupReload(outcome string) {
+	if Active != nil {
+		Active.SighupReloads.WithLabelValues(outcome).Inc()
+	}
+}
+
 // Reg is the *prometheus.Registry pgrouter writes to. Production main
 // passes this into the metrics HTTP handler.
 var Reg = prometheus.NewRegistry()
@@ -83,12 +156,13 @@ type Metrics struct {
 	PoolAcquireSeconds *prometheus.HistogramVec
 	PoolWaitersGauge   *prometheus.GaugeVec
 
-	// Wire-protocol.
-	QueriesTotal     prometheus.Counter
-	TxStarts         prometheus.Counter
-	TxCommits        prometheus.Counter
-	TxRollbacks      prometheus.Counter
-	QueryDurationSec prometheus.Histogram
+	// Wire-protocol — labeled by {database, user} so operators can slice
+	// by which pool is hot.
+	QueriesTotal     *prometheus.CounterVec
+	TxStarts         *prometheus.CounterVec
+	TxCommits        *prometheus.CounterVec
+	TxRollbacks      *prometheus.CounterVec
+	QueryDurationSec *prometheus.HistogramVec
 
 	// Auth.
 	AuthAttempts prometheus.Counter
@@ -98,6 +172,15 @@ type Metrics struct {
 	CancelsReceived  prometheus.Counter
 	CancelsForwarded prometheus.Counter
 	CancelsDropped   prometheus.Counter
+
+	// Enforcement counters.
+	GlobalLimitRejects *prometheus.CounterVec // {"scope": "db"|"user", "name": <db|user>}
+	QueryTimeouts      *prometheus.CounterVec // {database, user}
+	ClientIdleTimeouts *prometheus.CounterVec // {database, user}
+	IdleTxTimeouts     *prometheus.CounterVec // {database, user}
+
+	// Lifecycle.
+	SighupReloads *prometheus.CounterVec // {"outcome": "ok"|"fail"}
 }
 
 // New constructs + registers a Metrics. Process should hold ONE Metrics
@@ -156,27 +239,27 @@ func New() *Metrics {
 			Help: "Clients currently queued in a pool's wait queue.",
 		}, []string{"pool"}),
 
-		QueriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+		QueriesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_queries_total",
 			Help: "Total Query + Parse messages forwarded.",
-		}),
-		TxStarts: prometheus.NewCounter(prometheus.CounterOpts{
+		}, []string{"database", "user"}),
+		TxStarts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_tx_starts_total",
 			Help: "Transactions opened (BEGIN observed).",
-		}),
-		TxCommits: prometheus.NewCounter(prometheus.CounterOpts{
+		}, []string{"database", "user"}),
+		TxCommits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_tx_commits_total",
 			Help: "Transactions committed (T -> I via success).",
-		}),
-		TxRollbacks: prometheus.NewCounter(prometheus.CounterOpts{
+		}, []string{"database", "user"}),
+		TxRollbacks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_tx_rollbacks_total",
 			Help: "Transactions rolled back (E -> I, or explicit ROLLBACK).",
-		}),
-		QueryDurationSec: prometheus.NewHistogram(prometheus.HistogramOpts{
+		}, []string{"database", "user"}),
+		QueryDurationSec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "pgrouter_query_duration_seconds",
 			Help:    "Per-query duration, from first byte to ReadyForQuery.",
 			Buckets: defaultBuckets,
-		}),
+		}, []string{"database", "user"}),
 
 		AuthAttempts: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "pgrouter_auth_attempts_total",
@@ -199,6 +282,27 @@ func New() *Metrics {
 			Name: "pgrouter_cancels_dropped_total",
 			Help: "CancelRequest packets dropped (unknown PID/secret).",
 		}),
+
+		GlobalLimitRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_global_limit_rejects_total",
+			Help: "Acquires rejected by max_db_connections / max_user_connections.",
+		}, []string{"scope", "name"}),
+		QueryTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_query_timeouts_total",
+			Help: "Queries killed by query_timeout.",
+		}, []string{"database", "user"}),
+		ClientIdleTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_client_idle_timeouts_total",
+			Help: "Clients evicted by client_idle_timeout.",
+		}, []string{"database", "user"}),
+		IdleTxTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_idle_transaction_timeouts_total",
+			Help: "Clients killed by idle_transaction_timeout.",
+		}, []string{"database", "user"}),
+		SighupReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_sighup_reloads_total",
+			Help: "SIGHUP-driven config reloads.",
+		}, []string{"outcome"}),
 	}
 
 	// Add Go runtime + process collectors so the standard
@@ -215,6 +319,9 @@ func New() *Metrics {
 		m.QueryDurationSec,
 		m.AuthAttempts, m.AuthFailures,
 		m.CancelsReceived, m.CancelsForwarded, m.CancelsDropped,
+		m.GlobalLimitRejects, m.QueryTimeouts,
+		m.ClientIdleTimeouts, m.IdleTxTimeouts,
+		m.SighupReloads,
 	)
 	Active = m
 	return m
