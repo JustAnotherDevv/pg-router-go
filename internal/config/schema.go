@@ -106,10 +106,14 @@ const (
 	SSLVerifyFull SSLMode = "verify-full"
 )
 
-// MetricsConfig exposes the Prometheus endpoint.
+// MetricsConfig exposes the Prometheus endpoint + admin HTTP API.
 type MetricsConfig struct {
 	Listen string `yaml:"listen"` // host:port (default ":9090")
 	Path   string `yaml:"path"`   // default "/metrics"
+
+	// AdminToken gates state-changing /api/v1 POSTs (drain, reload).
+	// Empty = open (dev mode); production must set this.
+	AdminToken string `yaml:"admin_token,omitempty"`
 }
 
 // LoggingConfig configures the slog handler.
