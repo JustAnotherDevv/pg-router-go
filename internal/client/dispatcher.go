@@ -164,7 +164,9 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 			)
 
 			if h.Auth != nil {
-				if err := auth.PerformServerAuthConn(be, conn, *h.Auth, user); err != nil {
+				opts := *h.Auth
+				opts.DBName = db
+				if err := auth.PerformServerAuthConn(be, conn, opts, user); err != nil {
 					log.Info("client auth failed", "err", err)
 					return
 				}

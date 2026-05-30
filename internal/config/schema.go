@@ -72,6 +72,12 @@ type AuthConfig struct {
 	UserlistFile string   `yaml:"userlist_file,omitempty"` // pgbouncer-compat userlist.txt
 	AuthQuery    string   `yaml:"auth_query,omitempty"`    // SQL to fetch creds
 	AuthUser     string   `yaml:"auth_user,omitempty"`     // user for AuthQuery
+
+	// HBAFile is the path to a pg_hba.conf-style file consulted when
+	// type == "hba". Each connecting (db, user, ip) is matched against
+	// the rules top-to-bottom; the rule's method is then applied via
+	// the standard handlers (trust/md5/scram-sha-256/peer/cert/reject).
+	HBAFile string `yaml:"hba_file,omitempty"`
 }
 
 // AuthType is the client auth mechanism.

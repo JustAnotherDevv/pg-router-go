@@ -23,7 +23,11 @@ import (
 type ServerAuthOptions struct {
 	Type     config.AuthType
 	Userlist *Userlist // nil for trust mode
+	HBA      *HBAFile  // non-nil when Type == "hba"
 	Log      *slog.Logger
+
+	// DBName is the StartupMessage database; needed for HBA matching.
+	DBName string
 }
 
 // PerformServerAuth runs the server-side authentication phase against
@@ -91,8 +95,73 @@ func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthO
 		}
 		return doServerCert(be, conn, log, username)
 
+	case config.AuthHBA:
+		if opts.HBA == nil {
+			return sendAuthFailed(be, log, "hba auth requires hba_file")
+		}
+		return doServerHBA(be, conn, opts, log, username)
+
 	default:
 		return fmt.Errorf("auth type %q not supported in MVP", opts.Type)
+	}
+}
+
+// doServerHBA matches (db, user, peer-ip, tls?) against the HBA
+// ruleset and dispatches to the rule's method handler.
+func doServerHBA(be *pgproto3.Backend, conn net.Conn, opts ServerAuthOptions, log *slog.Logger, username string) error {
+	var (
+		peerIP net.IP
+		isTLS  bool
+	)
+	if conn != nil {
+		if a := conn.RemoteAddr(); a != nil {
+			if tcp, ok := a.(*net.TCPAddr); ok {
+				peerIP = tcp.IP
+			}
+		}
+		if _, ok := conn.(interface{ ConnectionState() any }); ok {
+			isTLS = true
+		}
+	}
+	rule, ok := opts.HBA.Match(opts.DBName, username, peerIP, isTLS)
+	if !ok {
+		return sendAuthFailed(be, log,
+			fmt.Sprintf("hba: no rule matches (db=%q user=%q ip=%v tls=%v)",
+				opts.DBName, username, peerIP, isTLS))
+	}
+	log.Debug("hba match", "rule_line", rule.LineNum, "method", rule.Method)
+
+	switch rule.Method {
+	case "trust":
+		return nil
+	case "reject":
+		return sendAuthFailed(be, log,
+			fmt.Sprintf("hba rule line %d rejects this conn", rule.LineNum))
+	case "md5":
+		if opts.Userlist == nil {
+			return sendAuthFailed(be, log, "hba md5 needs userlist")
+		}
+		entry, ok := opts.Userlist.Lookup(username)
+		if !ok {
+			return sendAuthFailed(be, log, fmt.Sprintf("user %q not found", username))
+		}
+		return doServerMD5(be, log, username, entry)
+	case "scram-sha-256":
+		if opts.Userlist == nil {
+			return sendAuthFailed(be, log, "hba scram needs userlist")
+		}
+		entry, ok := opts.Userlist.Lookup(username)
+		if !ok {
+			return sendAuthFailed(be, log, fmt.Sprintf("user %q not found", username))
+		}
+		return doServerSCRAM(be, log, username, entry)
+	case "peer":
+		return doServerPeer(be, conn, log, username)
+	case "cert":
+		return doServerCert(be, conn, log, username)
+	default:
+		return sendAuthFailed(be, log,
+			fmt.Sprintf("hba method %q not supported", rule.Method))
 	}
 }
 
