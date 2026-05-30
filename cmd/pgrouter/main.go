@@ -407,6 +407,23 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}()
 
+	// Primary failover monitors (per-db).
+	primaryMonitors := map[string]*replica.PrimaryMonitor{}
+	for dbName := range cfg.Databases {
+		// One Pool key per dbName — pick any user that opens the pool
+		// later. For monitoring we use a synthetic system-user key.
+		primaryPool := mgr.Get(pool.Key{DB: dbName, User: "_pgrouter_health_"})
+		pm := replica.NewPrimaryMonitor(dbName, primaryPool,
+			cfg.Pool.ServerCheckDelay, 3, cfg.Pool.ServerCheckQuery, log)
+		pm.Start()
+		primaryMonitors[dbName] = pm
+	}
+	defer func() {
+		for _, pm := range primaryMonitors {
+			pm.Stop()
+		}
+	}()
+
 	// adminReloadCh fires a synthetic SIGHUP into the same reloader
 	// goroutine the OS signal handler uses, so POST /api/v1/reload
 	// runs identical code.
@@ -528,6 +545,13 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 				return d.StickyReadWindow
 			}
 			return 0
+		},
+		PrimaryHealthyFor: func(db string) bool {
+			pm, ok := primaryMonitors[db]
+			if !ok {
+				return true
+			}
+			return pm.Healthy()
 		},
 		PoolMode:          string(cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
