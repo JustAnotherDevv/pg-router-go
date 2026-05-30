@@ -134,7 +134,17 @@ func (f *AuthQueryFetcher) Lookup(ctx context.Context, db, username string) (*Us
 		return nil, fmt.Errorf("auth_query send: %w", err)
 	}
 
-	var row []string
+	// We expect EXACTLY one row of (usename, passwd). Multiple rows
+	// indicate a misconfigured query (e.g. wildcard LIKE instead of
+	// '='); we reject rather than silently using the first because
+	// the wrong row could grant the wrong user's credential to the
+	// connecting client. Drain to RFQ either way so the conn stays
+	// usable (we Close it on return anyway, but RFQ is good hygiene).
+	var (
+		firstRow  []string
+		extraRows int
+		errResp   string
+	)
 	for {
 		msg, err := conn.Receive()
 		if err != nil {
@@ -142,20 +152,33 @@ func (f *AuthQueryFetcher) Lookup(ctx context.Context, db, username string) (*Us
 		}
 		switch m := msg.(type) {
 		case *pgproto3.DataRow:
-			for _, c := range m.Values {
-				row = append(row, string(c))
+			if firstRow == nil {
+				firstRow = make([]string, len(m.Values))
+				for i, c := range m.Values {
+					firstRow[i] = string(c)
+				}
+			} else {
+				extraRows++
 			}
 		case *pgproto3.ErrorResponse:
-			return nil, fmt.Errorf("auth_query error: %s", m.Message)
+			errResp = m.Message
 		case *pgproto3.ReadyForQuery:
 			goto done
 		}
 	}
 done:
-	if len(row) < 2 {
+	if errResp != "" {
+		return nil, fmt.Errorf("auth_query error: %s", errResp)
+	}
+	if firstRow == nil || len(firstRow) < 2 {
 		return nil, errors.New("auth_query returned no row")
 	}
-	entry := classifySecret(row[0], row[1])
+	if extraRows > 0 {
+		return nil, fmt.Errorf("auth_query returned %d rows (expected exactly 1); "+
+			"check the query uses '=' not LIKE/ILIKE for the username column",
+			extraRows+1)
+	}
+	entry := classifySecret(firstRow[0], firstRow[1])
 	f.mu.Lock()
 	f.cache[username] = cachedEntry{entry: entry, at: time.Now()}
 	f.mu.Unlock()
