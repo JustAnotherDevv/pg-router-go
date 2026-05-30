@@ -44,24 +44,23 @@ var explicitBeginRE = regexp.MustCompile(`(?i)^\s*(?:BEGIN|START\s+TRANSACTION)\
 
 // stripLeadingNoise drops leading whitespace, `-- ...` line comments,
 // and `/* ... */` block comments so we can match the first SQL keyword.
+//
+// Re-slices the input on every successful skip; the loop terminates
+// when sql is empty or the first byte is a real token.
 func stripLeadingNoise(sql string) string {
-	for i := 0; i < len(sql); {
-		c := sql[i]
+	for len(sql) > 0 {
+		c := sql[0]
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-			i++
 			sql = sql[1:]
-			continue
-		case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
-			j := i + 2
+		case c == '-' && len(sql) > 1 && sql[1] == '-':
+			j := 2
 			for j < len(sql) && sql[j] != '\n' {
 				j++
 			}
 			sql = sql[j:]
-			i = 0
-			continue
-		case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
-			j := i + 2
+		case c == '/' && len(sql) > 1 && sql[1] == '*':
+			j := 2
 			depth := 1
 			for j < len(sql) && depth > 0 {
 				if j+1 < len(sql) && sql[j] == '/' && sql[j+1] == '*' {
@@ -77,8 +76,6 @@ func stripLeadingNoise(sql string) string {
 				j++
 			}
 			sql = sql[j:]
-			i = 0
-			continue
 		default:
 			return sql
 		}
