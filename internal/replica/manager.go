@@ -71,11 +71,19 @@ type Manager struct {
 
 	// rr is the round-robin counter used by Pick.
 	rr atomic.Uint64
+
+	// snapshot is the precomputed Pick candidate set. Rebuilt on
+	// every health / lag / SetMaxLag transition; Pick reads it
+	// lock-free.
+	snapshot atomic.Pointer[pickSnapshot]
 }
 
 // SetMaxLag sets the per-Manager lag cap (units match Replica.lagBytes:
 // seconds-of-replay-staleness in MVP). 0 = unbounded.
-func (m *Manager) SetMaxLag(n int64) { m.maxLag.Store(n) }
+func (m *Manager) SetMaxLag(n int64) {
+	m.maxLag.Store(n)
+	m.rebuildSnapshot()
+}
 
 // NewManager builds a Manager. Caller passes pool.Pools (already
 // created via the standard backend.Dial flow) — this package doesn't
@@ -90,7 +98,7 @@ func NewManager(db string, replicas []*Replica, healthInterval time.Duration, ch
 	if checkQuery == "" {
 		checkQuery = "SELECT 1"
 	}
-	return &Manager{
+	m := &Manager{
 		db:               db,
 		log:              log,
 		replicas:         replicas,
@@ -98,13 +106,24 @@ func NewManager(db string, replicas []*Replica, healthInterval time.Duration, ch
 		checkQuery:       checkQuery,
 		stopCh:           make(chan struct{}),
 	}
+	// Seed the Pick snapshot from the initial healthy flags so unit
+	// tests that don't call Start (which would also seed) can still
+	// drive Pick directly.
+	m.rebuildSnapshot()
+	return m
 }
 
 // Replicas returns the live replica slice (read-only).
 func (m *Manager) Replicas() []*Replica { return m.replicas }
 
-// Start spawns the per-replica health-check goroutines.
+// Start spawns the per-replica health-check goroutines. Also seeds
+// the initial Pick snapshot (initially: every configured replica is
+// optimistically healthy — first probe will correct).
 func (m *Manager) Start() {
+	for _, r := range m.replicas {
+		r.healthy.Store(true)
+	}
+	m.rebuildSnapshot()
 	for _, r := range m.replicas {
 		r := r
 		m.wg.Add(1)
@@ -146,6 +165,7 @@ func (m *Manager) probe(r *Replica) {
 			m.log.Warn("replica unhealthy (acquire failed)",
 				"db", m.db, "host", r.Spec.Host, "port", r.Spec.Port,
 				"err", err)
+			m.rebuildSnapshot()
 		}
 		return
 	}
@@ -159,12 +179,14 @@ func (m *Manager) probe(r *Replica) {
 			m.log.Warn("replica unhealthy (ping failed)",
 				"db", m.db, "host", r.Spec.Host, "port", r.Spec.Port,
 				"err", err)
+			m.rebuildSnapshot()
 		}
 		return
 	}
 	if !r.healthy.Swap(true) {
 		m.log.Info("replica healthy",
 			"db", m.db, "host", r.Spec.Host, "port", r.Spec.Port)
+		m.rebuildSnapshot()
 	}
 }
 
@@ -172,14 +194,46 @@ func (m *Manager) probe(r *Replica) {
 // the health gate (or the lag gate, once #126 wires it).
 var ErrNoHealthyReplica = errors.New("replica: no healthy replica available")
 
+// pickSnapshot is the precomputed candidate set served by Pick. It's
+// cheap to atomic-swap on each health / lag transition so Pick can
+// read lock-free even at 100k QPS.
+type pickSnapshot struct {
+	// cands holds healthy replicas under the lag cap; nil when the
+	// snapshot is empty (Pick fast-returns ErrNoHealthyReplica).
+	cands       []*Replica
+	totalWeight int
+}
+
 // Pick returns the next replica to route a read to.
 //
-// Filters out: unhealthy replicas; replicas whose lagBytes is above
-// the configured maxLag (when > 0). Weighted RR over the survivors.
+// Reads a precomputed candidate snapshot (atomic.Pointer) so the hot
+// path doesn't allocate per call. Snapshots are rebuilt by the
+// probe loops on every transition (healthy flip / lag update / start).
 func (m *Manager) Pick() (*Replica, error) {
+	snap := m.snapshot.Load()
+	if snap == nil || len(snap.cands) == 0 {
+		return nil, ErrNoHealthyReplica
+	}
+	idx := int(m.rr.Add(1)-1) % snap.totalWeight
+	for _, r := range snap.cands {
+		if idx < r.Spec.Weight {
+			return r, nil
+		}
+		idx -= r.Spec.Weight
+	}
+	return snap.cands[0], nil
+}
+
+// rebuildSnapshot recomputes the candidate set + total weight under
+// the current health + lag state, and atomically swaps it in. Called
+// from probe success/failure transitions and lagProbe updates.
+//
+// Safe to call concurrently — atomic.Pointer.Store handles the
+// publish; readers see either the old or new snapshot, never a
+// torn one.
+func (m *Manager) rebuildSnapshot() {
 	maxLag := m.maxLag.Load()
-	var totalWeight int
-	cands := make([]*Replica, 0, len(m.replicas))
+	snap := &pickSnapshot{cands: make([]*Replica, 0, len(m.replicas))}
 	for _, r := range m.replicas {
 		if !r.Healthy() {
 			continue
@@ -187,19 +241,9 @@ func (m *Manager) Pick() (*Replica, error) {
 		if maxLag > 0 && r.LagBytes() > maxLag {
 			continue
 		}
-		cands = append(cands, r)
-		totalWeight += r.Spec.Weight
+		snap.cands = append(snap.cands, r)
+		snap.totalWeight += r.Spec.Weight
 	}
-	if len(cands) == 0 {
-		return nil, ErrNoHealthyReplica
-	}
-	idx := int(m.rr.Add(1)-1) % totalWeight
-	for _, r := range cands {
-		if idx < r.Spec.Weight {
-			return r, nil
-		}
-		idx -= r.Spec.Weight
-	}
-	return cands[0], nil
+	m.snapshot.Store(snap)
 }
 
