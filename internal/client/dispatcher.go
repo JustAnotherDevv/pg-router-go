@@ -107,6 +107,12 @@ type PooledHandler struct {
 	// internal/replica.Manager.Pick.
 	ReplicaPickerFor func(db string) *pool.Pool
 
+	// StickyReadWindowFor, if non-nil, returns the per-database
+	// read-your-own-writes window. A read on this db within the
+	// window of a preceding write on the SAME client conn is
+	// pinned to the primary.
+	StickyReadWindowFor func(db string) time.Duration
+
 	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
 	// 0 disables rate-limiting for that tenant. Buckets are shared
 	// across all PooledConns of the same (db, user) so the cap is
@@ -310,6 +316,12 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			}
 			return h.ReplicaPickerFor(db)
 		},
+		StickyReadWindow: func() time.Duration {
+			if h.StickyReadWindowFor == nil {
+				return 0
+			}
+			return h.StickyReadWindowFor(db)
+		}(),
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)

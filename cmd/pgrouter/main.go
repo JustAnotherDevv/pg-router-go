@@ -523,6 +523,12 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 			}
 			return r.Pool
 		},
+		StickyReadWindowFor: func(db string) time.Duration {
+			if d, ok := cfg.Databases[db]; ok {
+				return d.StickyReadWindow
+			}
+			return 0
+		},
 		PoolMode:          string(cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
 			if d, ok := cfg.Databases[db]; ok && d.PoolMode != "" {

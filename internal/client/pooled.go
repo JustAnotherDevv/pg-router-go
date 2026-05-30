@@ -124,6 +124,11 @@ type PooledConn struct {
 	// reads stay on the currently-attached backend).
 	ReplicaPicker func() *pool.Pool
 
+	// StickyReadWindow, if > 0, pins reads following a Write to the
+	// primary for this much wall-clock time (read-your-own-writes).
+	// 0 = always route reads to replicas.
+	StickyReadWindow time.Duration
+
 	// ReqID is the connection-scoped request ID (stamped into log lines
 	// + audit records). Set by the dispatcher.
 	ReqID string
@@ -198,6 +203,10 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	// curSpan is the active per-query OTel span (no-op when tracing
 	// isn't configured). Started on Query/Parse receipt, ended at RFQ.
 	var curSpan trace.Span
+	// lastWriteAt is the wall-clock timestamp of the most recent
+	// observed Write-classified message; used by StickyReadWindow to
+	// pin follow-up reads to the primary.
+	var lastWriteAt time.Time
 
 	// First synthetic RFQ → mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -311,6 +320,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.String, "query", ""
 			curSpan = h.startQuerySpan(ctx, "query", m.String, "")
+			if ClassifySQL(m.String) == SQLOpWrite {
+				lastWriteAt = time.Now()
+			}
 		case *pgproto3.Parse:
 			if !h.takeQPS() {
 				log.Info("qps_limit: rejected", "kind", "parse")
@@ -322,6 +334,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.Query, "parse", m.Name
 			curSpan = h.startQuerySpan(ctx, "parse", m.Query, m.Name)
+			if ClassifySQL(m.Query) == SQLOpWrite {
+				lastWriteAt = time.Now()
+			}
 		}
 
 		// Acquire a backend lazily on the first traffic-generating message.
@@ -329,14 +344,14 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if needsBackend && bConn == nil {
 			// Replica routing: at the start of a fresh tx, if the
 			// triggering message is a Read AND a replica is available
-			// AND no session-pin, route to the replica pool. Otherwise
-			// the primary pool wins.
+			// AND no session-pin AND we are NOT inside the
+			// read-your-own-writes sticky window, route to the replica
+			// pool. Otherwise the primary pool wins.
 			acquirePool := h.Pool
-			if !sessionPinned && h.ReplicaPicker != nil {
-				if isReadMessage(msg) {
-					if rp := h.ReplicaPicker(); rp != nil {
-						acquirePool = rp
-					}
+			if !sessionPinned && h.ReplicaPicker != nil &&
+				isReadMessage(msg) && !h.stickyToPrimary(lastWriteAt) {
+				if rp := h.ReplicaPicker(); rp != nil {
+					acquirePool = rp
 				}
 			}
 			bConn, err = acquirePool.Acquire(ctx)
@@ -765,6 +780,16 @@ func releasePool(p *pool.Pool, fallback *pool.Pool) *pool.Pool {
 		return p
 	}
 	return fallback
+}
+
+// stickyToPrimary returns true when we should route this client's read
+// to the PRIMARY because StickyReadWindow hasn't elapsed since the
+// last write. 0 lastWriteAt = no write seen = no stickiness.
+func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
+	if h.StickyReadWindow <= 0 || lastWrite.IsZero() {
+		return false
+	}
+	return time.Since(lastWrite) < h.StickyReadWindow
 }
 
 // isReadMessage classifies a fresh Query/Parse for replica-routing
