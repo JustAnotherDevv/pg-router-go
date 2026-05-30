@@ -1,7 +1,6 @@
-# basic.yaml — single primary, transaction-mode pooling, SCRAM auth.
+# basic.yaml - single primary, transaction-mode pooling.
 #
-# Drop-in start point for most users. Edit the database host, mount your
-# userlist.txt, and run:
+# Drop-in local start point. Edit the database host and run:
 #
 #   pgrouter run --config examples/configs/basic.yaml
 
@@ -22,8 +21,7 @@ pool:
   server_connect_timeout: 15s
 
 auth:
-  type: scram-sha-256
-  userlist_file: /etc/pgrouter/userlist.txt
+  type: trust
 
 tls:
   client_mode: disable
