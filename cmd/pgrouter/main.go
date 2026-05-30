@@ -448,6 +448,10 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		log.Error("listener init", "err", err)
 		return 1
 	}
+	if cfg.Server.ProxyProtocol {
+		ln.EnableProxyProtocol()
+		log.Info("PROXY protocol parsing enabled (v1+v2)")
+	}
 	log.Info("listening", "addr", ln.Addr().String())
 
 	// Optional Unix socket listener for PgBouncer-compat in-host clients
