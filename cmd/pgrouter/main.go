@@ -30,7 +30,10 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/auth"
 	"github.com/JustAnotherDevv/pgrouter/internal/backend"
 
+	"github.com/JustAnotherDevv/pgrouter/internal/replica"
 	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
+
+	"crypto/tls"
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/client"
 	"github.com/JustAnotherDevv/pgrouter/internal/config"
@@ -391,6 +394,19 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 			stats.OnGlobalLimitReject)
 	mgr.Start(cfg.Pool.ServerCheckDelay)
 
+	// Per-database replica managers (R/W split).
+	replicaMgrs := buildReplicaManagers(cfg, defaultCfg, backendTLS,
+		backendTLSRequired, log)
+	for _, rm := range replicaMgrs {
+		rm.Start()
+		rm.StartLagPolls(5 * time.Second)
+	}
+	defer func() {
+		for _, rm := range replicaMgrs {
+			rm.Stop()
+		}
+	}()
+
 	// adminReloadCh fires a synthetic SIGHUP into the same reloader
 	// goroutine the OS signal handler uses, so POST /api/v1/reload
 	// runs identical code.
@@ -495,6 +511,17 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 			default:
 				return fmt.Errorf("reload channel busy")
 			}
+		},
+		ReplicaPickerFor: func(db string) *pool.Pool {
+			rm, ok := replicaMgrs[db]
+			if !ok {
+				return nil
+			}
+			r, err := rm.Pick()
+			if err != nil {
+				return nil
+			}
+			return r.Pool
 		},
 		PoolMode:          string(cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
@@ -721,6 +748,55 @@ func reloadUserlist(ul *auth.Userlist, log *slog.Logger) {
 		"rotated", len(diff.Rotated),
 	)
 	stats.OnSighupUserlistReload("ok")
+}
+
+// buildReplicaManagers iterates cfg.Databases and constructs one
+// replica.Manager per database that has replicas configured. Each
+// replica gets its own pool.Pool dialed via backend.Dial.
+func buildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
+	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
+) map[string]*replica.Manager {
+	out := map[string]*replica.Manager{}
+	for dbName, db := range cfg.Databases {
+		if len(db.Replicas) == 0 {
+			continue
+		}
+		reps := make([]*replica.Replica, 0, len(db.Replicas))
+		for _, rspec := range db.Replicas {
+			addr := net.JoinHostPort(rspec.Host, strconv.Itoa(rspec.Port))
+			user := db.User
+			if user == "" {
+				user = cfg.Auth.AuthUser
+			}
+			dialer := func(ctx context.Context) (*backend.Conn, error) {
+				return backend.Dial(ctx, backend.DialOptions{
+					Addr:        addr,
+					User:        user,
+					Database:    db.DBName,
+					AppName:     "pgrouter-replica",
+					Password:    db.Password,
+					TLSConfig:   backendTLS,
+					TLSRequired: backendTLSRequired,
+					Log:         log,
+				})
+			}
+			p := pool.New(fmt.Sprintf("%s-replica-%s:%d", dbName, rspec.Host, rspec.Port),
+				dialer, defaultCfg)
+			reps = append(reps, &replica.Replica{
+				Spec: replica.ReplicaSpec{
+					Host:   rspec.Host,
+					Port:   rspec.Port,
+					Weight: rspec.Weight,
+				},
+				Pool: p,
+			})
+		}
+		rm := replica.NewManager(dbName, reps,
+			cfg.Pool.ServerCheckDelay, cfg.Pool.ServerCheckQuery, log)
+		rm.SetMaxLag(db.MaxReplicaLagBytes)
+		out[dbName] = rm
+	}
+	return out
 }
 
 // splitPoolName turns "db/user" into (db, user, true). Returns ("", name, false)

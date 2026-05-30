@@ -65,9 +65,17 @@ type Manager struct {
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
 
+	// MaxLag, when > 0, excludes replicas whose lagBytes is above
+	// this value from Pick's candidate set. Updated by SetMaxLag.
+	maxLag atomic.Int64
+
 	// rr is the round-robin counter used by Pick.
 	rr atomic.Uint64
 }
+
+// SetMaxLag sets the per-Manager lag cap (units match Replica.lagBytes:
+// seconds-of-replay-staleness in MVP). 0 = unbounded.
+func (m *Manager) SetMaxLag(n int64) { m.maxLag.Store(n) }
 
 // NewManager builds a Manager. Caller passes pool.Pools (already
 // created via the standard backend.Dial flow) — this package doesn't
@@ -164,16 +172,19 @@ func (m *Manager) probe(r *Replica) {
 // the health gate (or the lag gate, once #126 wires it).
 var ErrNoHealthyReplica = errors.New("replica: no healthy replica available")
 
-// Pick returns the next replica to route a read to. v1 is naive
-// weighted round-robin over healthy replicas; #126 adds lag-aware
-// scoring on top.
+// Pick returns the next replica to route a read to.
+//
+// Filters out: unhealthy replicas; replicas whose lagBytes is above
+// the configured maxLag (when > 0). Weighted RR over the survivors.
 func (m *Manager) Pick() (*Replica, error) {
-	// Build the candidate slice once per call — small N (typically 1-5),
-	// fine to allocate.
+	maxLag := m.maxLag.Load()
 	var totalWeight int
 	cands := make([]*Replica, 0, len(m.replicas))
 	for _, r := range m.replicas {
 		if !r.Healthy() {
+			continue
+		}
+		if maxLag > 0 && r.LagBytes() > maxLag {
 			continue
 		}
 		cands = append(cands, r)
@@ -182,7 +193,6 @@ func (m *Manager) Pick() (*Replica, error) {
 	if len(cands) == 0 {
 		return nil, ErrNoHealthyReplica
 	}
-	// Round-robin counter that survives Pick calls.
 	idx := int(m.rr.Add(1)-1) % totalWeight
 	for _, r := range cands {
 		if idx < r.Spec.Weight {
