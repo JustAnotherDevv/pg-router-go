@@ -28,6 +28,7 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
 	"github.com/JustAnotherDevv/pgrouter/internal/listener"
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pgrouter/internal/stats"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
 )
 
@@ -243,6 +244,13 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			h.CancelTracker.Release(cancelKey)
 		}
 	}()
+
+	// Per-tenant bandwidth metering: wrap the conn so every Read/Write
+	// adds to pgrouter_tenant_bytes_{in,out}_total{db, user}.
+	conn = util.NewCountingConn(conn,
+		func(n int) { stats.OnBytesIn(db, user, n) },
+		func(n int) { stats.OnBytesOut(db, user, n) },
+	)
 
 	mode := h.PoolMode
 	if h.PoolModeFor != nil {
