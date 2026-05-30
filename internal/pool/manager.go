@@ -23,11 +23,18 @@ func (k Key) String() string { return k.DB + "/" + k.User }
 // DialerFor is the per-(db, user) dialer factory.
 type DialerFor func(k Key) Dialer
 
+// ConfigFor optionally returns a per-key Config override. If nil, the
+// Manager applies its defaultCfg to every pool. Return a *Config that
+// the Manager will merge over the default. Fields set to their zero
+// value in the override are taken from the default.
+type ConfigFor func(k Key) *Config
+
 // Manager owns all per-(db, user) pools + the janitor goroutine that
 // sweeps idle / lifetime-expired backends.
 type Manager struct {
 	defaultCfg Config
 	dialerFor  DialerFor
+	configFor  ConfigFor // optional; nil → use defaultCfg verbatim
 	log        *slog.Logger
 
 	mu    sync.RWMutex
@@ -50,6 +57,62 @@ func NewManager(defaultCfg Config, dialerFor DialerFor) *Manager {
 	}
 }
 
+// WithConfigFor sets a per-key Config-override factory.
+//
+// Returns the Manager for builder-style chaining.
+func (m *Manager) WithConfigFor(fn ConfigFor) *Manager {
+	m.configFor = fn
+	return m
+}
+
+// mergeConfig overlays `override` (non-zero fields only) on `base`.
+func mergeConfig(base Config, override *Config) Config {
+	if override == nil {
+		return base
+	}
+	out := base
+	if override.DefaultPoolSize > 0 {
+		out.DefaultPoolSize = override.DefaultPoolSize
+	}
+	if override.MinPoolSize > 0 {
+		out.MinPoolSize = override.MinPoolSize
+	}
+	if override.ReservePoolSize > 0 {
+		out.ReservePoolSize = override.ReservePoolSize
+	}
+	if override.ReservePoolTimeout > 0 {
+		out.ReservePoolTimeout = override.ReservePoolTimeout
+	}
+	if override.QueryWait > 0 {
+		out.QueryWait = override.QueryWait
+	}
+	if override.ServerIdle > 0 {
+		out.ServerIdle = override.ServerIdle
+	}
+	if override.ServerLifetime > 0 {
+		out.ServerLifetime = override.ServerLifetime
+	}
+	if override.Log != nil {
+		out.Log = override.Log
+	}
+	// Callbacks are taken from the override only if non-empty (i.e. any
+	// non-nil field). We OR them by field rather than struct-compare
+	// because zero-valued callbacks are valid (just no-op).
+	if override.Callbacks.OnAcquireWait != nil {
+		out.Callbacks.OnAcquireWait = override.Callbacks.OnAcquireWait
+	}
+	if override.Callbacks.OnDial != nil {
+		out.Callbacks.OnDial = override.Callbacks.OnDial
+	}
+	if override.Callbacks.OnDialError != nil {
+		out.Callbacks.OnDialError = override.Callbacks.OnDialError
+	}
+	if override.Callbacks.OnEvict != nil {
+		out.Callbacks.OnEvict = override.Callbacks.OnEvict
+	}
+	return out
+}
+
 // Get returns the pool for k, lazily creating one on first request.
 func (m *Manager) Get(k Key) *Pool {
 	m.mu.RLock()
@@ -64,11 +127,17 @@ func (m *Manager) Get(k Key) *Pool {
 	if p, ok := m.pools[k]; ok {
 		return p
 	}
-	p = New(k.String(), m.dialerFor(k), m.defaultCfg)
+	cfg := m.defaultCfg
+	if m.configFor != nil {
+		cfg = mergeConfig(cfg, m.configFor(k))
+	}
+	p = New(k.String(), m.dialerFor(k), cfg)
 	m.pools[k] = p
 	m.log.Info("pool created", "key", k.String(),
-		"default_pool_size", m.defaultCfg.DefaultPoolSize,
-		"query_wait", m.defaultCfg.QueryWait,
+		"default_pool_size", cfg.DefaultPoolSize,
+		"min_pool_size", cfg.MinPoolSize,
+		"reserve_pool_size", cfg.ReservePoolSize,
+		"query_wait", cfg.QueryWait,
 	)
 	return p
 }
@@ -149,19 +218,56 @@ func (m *Manager) evictAll(now time.Time) {
 	}
 }
 
-// Close stops the janitor (if started) and closes all pools.
+// Close stops the janitor (if started) and closes all pools. Returns
+// after all pools have been Closed (no drain wait).
 func (m *Manager) Close() {
+	_ = m.CloseWithDeadline(time.Time{})
+}
+
+// CloseWithDeadline stops the janitor and drains all pools in
+// parallel, waiting until `deadline` (or zero for no wait). Returns
+// the first ErrDrainTimeout if any pool didn't drain.
+//
+// The pools map stays populated until drain completes so that
+// concurrent m.Release calls during shutdown still route to the right
+// pool. After drain, the map is cleared.
+func (m *Manager) CloseWithDeadline(deadline time.Time) error {
 	if m.janitorStop != nil {
 		close(m.janitorStop)
 		<-m.janitorDone
 		m.janitorStop = nil
 	}
-	m.mu.Lock()
+	m.mu.RLock()
+	pools := make([]*Pool, 0, len(m.pools))
 	for _, p := range m.pools {
-		p.Close()
+		pools = append(pools, p)
 	}
+	m.mu.RUnlock()
+
+	errCh := make(chan error, len(pools))
+	var wg sync.WaitGroup
+	for _, p := range pools {
+		p := p
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- p.CloseWithDeadline(deadline)
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	m.mu.Lock()
 	m.pools = nil
 	m.mu.Unlock()
+
+	var firstErr error
+	for e := range errCh {
+		if e != nil && firstErr == nil {
+			firstErr = e
+		}
+	}
+	return firstErr
 }
 
 // String returns a one-line summary suitable for log lines.

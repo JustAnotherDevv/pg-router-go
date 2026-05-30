@@ -190,11 +190,15 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 }
 
 // Close terminates the backend connection.
+//
+// We attempt a best-effort pgwire Terminate with a tight write deadline
+// so a dead / unresponsive upstream doesn't stall shutdown; the
+// underlying TCP socket is closed unconditionally.
 func (c *Conn) Close() error {
 	if c == nil || c.NetConn == nil {
 		return nil
 	}
-	// Best-effort Terminate, then close.
+	_ = c.NetConn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 	c.Frontend.Send(&pgproto3.Terminate{})
 	_ = c.Frontend.Flush()
 	return c.NetConn.Close()

@@ -141,7 +141,8 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	)
 
 	// Initialise the Prometheus registry once. (Each metric must only be
-	// registered once per process; New() panics on re-register.)
+	// registered once per process; New() panics on re-register.) stats.New()
+	// sets stats.Active so pool callbacks can find it.
 	_ = stats.New()
 
 	// Spawn the metrics endpoint.
