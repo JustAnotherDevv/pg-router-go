@@ -320,7 +320,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.String, "query", ""
 			curSpan = h.startQuerySpan(ctx, "query", m.String, "")
-			if ClassifySQL(m.String) == SQLOpWrite {
+			if ClassifySQL(m.String) == SQLOpWrite && !IsExplicitReadOnlyBeginSQL(m.String) {
 				lastWriteAt = time.Now()
 			}
 		case *pgproto3.Parse:
@@ -334,7 +334,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.Query, "parse", m.Name
 			curSpan = h.startQuerySpan(ctx, "parse", m.Query, m.Name)
-			if ClassifySQL(m.Query) == SQLOpWrite {
+			if ClassifySQL(m.Query) == SQLOpWrite && !IsExplicitReadOnlyBeginSQL(m.Query) {
 				lastWriteAt = time.Now()
 			}
 		}
@@ -795,11 +795,22 @@ func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
 // isReadMessage classifies a fresh Query/Parse for replica-routing
 // purposes. Bind/Execute/Sync/Describe/Close are NOT classified here —
 // they ride on a prior Parse's pool decision.
+//
+// Explicit `BEGIN READ ONLY` / `START TRANSACTION READ ONLY` /
+// `SET TRANSACTION READ ONLY` are treated as Read even though the
+// generic classifier sees them as Write, because the operator has
+// promised no writes will happen — perfect for replica routing.
 func isReadMessage(msg pgproto3.FrontendMessage) bool {
 	switch m := msg.(type) {
 	case *pgproto3.Query:
+		if IsExplicitReadOnlyBeginSQL(m.String) {
+			return true
+		}
 		return ClassifySQL(m.String) == SQLOpRead
 	case *pgproto3.Parse:
+		if IsExplicitReadOnlyBeginSQL(m.Query) {
+			return true
+		}
 		return ClassifySQL(m.Query) == SQLOpRead
 	}
 	return false

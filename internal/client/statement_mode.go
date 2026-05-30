@@ -88,3 +88,23 @@ func stripLeadingNoise(sql string) string {
 func IsExplicitBeginSQL(sql string) bool {
 	return explicitBeginRE.MatchString(stripLeadingNoise(sql))
 }
+
+// readOnlyBeginRE matches:
+//
+//	BEGIN [WORK|TRANSACTION] READ ONLY
+//	BEGIN [WORK|TRANSACTION] ISOLATION LEVEL ... READ ONLY [...]
+//	START TRANSACTION READ ONLY
+//	START TRANSACTION ISOLATION LEVEL ... READ ONLY [...]
+//	SET TRANSACTION READ ONLY
+//
+// We look for the "READ ONLY" tag anywhere after the BEGIN /
+// START TRANSACTION / SET TRANSACTION keyword — order of READ ONLY
+// vs ISOLATION LEVEL is operator-choice in PG syntax.
+var readOnlyBeginRE = regexp.MustCompile(`(?i)^\s*(?:BEGIN|START\s+TRANSACTION|SET\s+TRANSACTION)\b[^;]*\bREAD\s+ONLY\b`)
+
+// IsExplicitReadOnlyBeginSQL returns true when sql opens an explicit
+// READ ONLY transaction (or sets the current tx to READ ONLY). Used
+// by the replica router to pin the transaction to a replica.
+func IsExplicitReadOnlyBeginSQL(sql string) bool {
+	return readOnlyBeginRE.MatchString(stripLeadingNoise(sql))
+}
