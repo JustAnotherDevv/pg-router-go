@@ -114,7 +114,7 @@ cover:
 	@echo "open coverage.html"
 
 run: build
-	$(BIN_DIR)/$(BINARY) --config configs/pgrouter.yaml
+	$(BIN_DIR)/$(BINARY) run --config examples/configs/basic.yaml
 
 clean:
 	rm -rf $(BIN_DIR) coverage.out coverage.html
