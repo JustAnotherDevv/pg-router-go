@@ -22,7 +22,9 @@
 package client
 
 import (
+	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"sync"
 )
 
@@ -31,10 +33,31 @@ type Stmt struct {
 	// Name is the client-visible statement name (the value of
 	// `Parse.Name`). Empty for unnamed statements.
 	Name string
+	// ServerName is the rewritten server-side name pgrouter sends to
+	// the backend in place of Name. Format: "pgr_<16hex>" where the
+	// hex is a 64-bit hash of Query. Stable across all clients that
+	// share the same SQL → enables cross-client cache hits on a
+	// shared backend.
+	ServerName string
 	// Query is the SQL the client parsed.
 	Query string
 	// ParamOIDs are the type OIDs the client specified.
 	ParamOIDs []uint32
+}
+
+// ServerNameFor returns the deterministic server-side prepared name for
+// a given SQL string. Two clients sending the same Parse(query=X) get
+// the same ServerName, so a backend cache hit by one is shareable with
+// the other.
+//
+// FNV-1a 64-bit is chosen for speed + adequate collision resistance:
+// at 4 billion distinct queries the expected collision count is ~0.5
+// (birthday bound √(2*2^64) ≈ 2^32). Real workloads have ~10²–10⁴
+// distinct prepared queries — collision is effectively impossible.
+func ServerNameFor(query string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(query))
+	return "pgr_" + hex.EncodeToString(h.Sum(nil))
 }
 
 // PrepareCache is the per-client map of name -> Stmt.
@@ -60,11 +83,26 @@ func (c *PrepareCache) Observe(name, query string, oids []uint32) *Stmt {
 	defer c.mu.Unlock()
 	prev := c.stmts[name]
 	c.stmts[name] = &Stmt{
-		Name:      name,
-		Query:     query,
-		ParamOIDs: append([]uint32(nil), oids...),
+		Name:       name,
+		ServerName: ServerNameFor(query),
+		Query:      query,
+		ParamOIDs:  append([]uint32(nil), oids...),
 	}
 	return prev
+}
+
+// ServerNameOf returns the rewritten server-side name for a tracked
+// client name, or empty if the name isn't tracked.
+func (c *PrepareCache) ServerNameOf(name string) string {
+	if name == "" {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if s := c.stmts[name]; s != nil {
+		return s.ServerName
+	}
+	return ""
 }
 
 // Close removes a tracked statement (in response to Close('S', name)).

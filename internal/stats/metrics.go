@@ -132,6 +132,31 @@ func OnSighupReload(outcome string) {
 	}
 }
 
+// OnPreparedHit increments the per-(db, user) prepared-statement cache
+// hit counter (Parse for a SQL whose server-side name is already
+// cached on the backend → no extra Parse round trip).
+func OnPreparedHit(db, user string) {
+	if Active != nil {
+		Active.PreparedHits.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnPreparedMiss increments the per-(db, user) prepared-statement cache
+// miss counter (first Parse for this SQL on this backend).
+func OnPreparedMiss(db, user string) {
+	if Active != nil {
+		Active.PreparedMisses.WithLabelValues(db, user).Inc()
+	}
+}
+
+// OnPreparedEviction increments the per-(db, user) eviction counter
+// (LRU pushed out an entry, prompting an automatic DEALLOCATE).
+func OnPreparedEviction(db, user string) {
+	if Active != nil {
+		Active.PreparedEvictions.WithLabelValues(db, user).Inc()
+	}
+}
+
 // Reg is the *prometheus.Registry pgrouter writes to. Production main
 // passes this into the metrics HTTP handler.
 var Reg = prometheus.NewRegistry()
@@ -181,6 +206,11 @@ type Metrics struct {
 
 	// Lifecycle.
 	SighupReloads *prometheus.CounterVec // {"outcome": "ok"|"fail"}
+
+	// Prepared statement cross-backend cache (M.11.2).
+	PreparedHits      *prometheus.CounterVec // {database, user}
+	PreparedMisses    *prometheus.CounterVec // {database, user}
+	PreparedEvictions *prometheus.CounterVec // {database, user}
 }
 
 // New constructs + registers a Metrics. Process should hold ONE Metrics
@@ -303,6 +333,19 @@ func New() *Metrics {
 			Name: "pgrouter_sighup_reloads_total",
 			Help: "SIGHUP-driven config reloads.",
 		}, []string{"outcome"}),
+
+		PreparedHits: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_prepared_cache_hits_total",
+			Help: "Parse messages whose server-side name was already cached on the backend.",
+		}, []string{"database", "user"}),
+		PreparedMisses: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_prepared_cache_misses_total",
+			Help: "Parse messages requiring a backend round trip (first time on this backend).",
+		}, []string{"database", "user"}),
+		PreparedEvictions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_prepared_cache_evictions_total",
+			Help: "Prepared-statement LRU evictions (DEALLOCATE sent to backend).",
+		}, []string{"database", "user"}),
 	}
 
 	// Add Go runtime + process collectors so the standard
@@ -322,6 +365,7 @@ func New() *Metrics {
 		m.GlobalLimitRejects, m.QueryTimeouts,
 		m.ClientIdleTimeouts, m.IdleTxTimeouts,
 		m.SighupReloads,
+		m.PreparedHits, m.PreparedMisses, m.PreparedEvictions,
 	)
 	Active = m
 	return m

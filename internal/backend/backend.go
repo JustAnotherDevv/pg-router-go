@@ -37,6 +37,11 @@ type Conn struct {
 	SecretKey   []byte
 	Params      map[string]string
 	Log         *slog.Logger
+
+	// Prepared is the per-backend prepared-statement LRU. nil means the
+	// caller opted out (PreparedCacheSize == -1 in DialOptions);
+	// otherwise Dial initialises it. Cleared on ResetStateWith.
+	Prepared *PreparedCache
 }
 
 // DialOptions controls how a backend connection is established.
@@ -59,6 +64,12 @@ type DialOptions struct {
 	//   false  → fall back to plaintext (matches pgwire sslmode=prefer)
 	//   true   → error (matches sslmode=require / verify-ca / verify-full)
 	TLSRequired bool
+
+	// PreparedCacheSize controls the per-backend prepared-statement
+	// LRU. 0 = use DefaultPreparedCacheCapacity (production default).
+	// Negative = disable the cache entirely (PrepareCache stays nil on
+	// Conn; PooledConn falls back to plain pass-through).
+	PreparedCacheSize int
 }
 
 // Dial opens a TCP connection to the upstream and performs the startup
@@ -146,6 +157,9 @@ func Dial(ctx context.Context, opts DialOptions) (*Conn, error) {
 		Frontend: fe,
 		Params:   map[string]string{},
 		Log:      log,
+	}
+	if opts.PreparedCacheSize >= 0 {
+		conn.Prepared = NewPreparedCache(opts.PreparedCacheSize)
 	}
 
 	// Read until ReadyForQuery, running any auth handshake along the way.

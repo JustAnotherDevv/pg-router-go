@@ -153,6 +153,11 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	// rest of the client's session.
 	sessionPinned := false
 
+	// Pending CloseComplete frames we injected via prepared-cache
+	// evictions. The drain loop filters them out so the client never
+	// sees a CloseComplete it didn't ask for.
+	pendingEvictCloseCompletes := 0
+
 	defer func() {
 		if bConn != nil {
 			// On client disconnect we always release. Reset is best-effort
@@ -257,10 +262,40 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		}
 
 		if bConn != nil {
-			// Forward client → server.
-			bConn.Frontend.Send(msg.(pgproto3.FrontendMessage))
-			if err := bConn.Frontend.Flush(); err != nil {
-				return fmt.Errorf("server send: %w", err)
+			// Prepared-statement interception: cache-hit Parses are
+			// synthesized locally (no backend round trip), Bind/Describe/
+			// Close('S') get rewritten from client_name → pgr_<hash>.
+			// suppressForward=true means we already emitted the
+			// equivalent response to the client; skip forwarding.
+			//
+			// pendingEvictCloseCompletes counts CloseComplete frames the
+			// backend will emit in response to LRU-evictions we injected;
+			// we filter those out of the drain so the client doesn't see
+			// CloseComplete it never requested.
+			forwardMsg, suppressForward, err := h.prepareInterceptForward(
+				msg, prepCache, bConn, be, &pendingEvictCloseCompletes, log)
+			if err != nil {
+				return err
+			}
+
+			// Forward client → server (unless intercept synthesized the
+			// reply already).
+			if !suppressForward {
+				bConn.Frontend.Send(forwardMsg)
+				if err := bConn.Frontend.Flush(); err != nil {
+					return fmt.Errorf("server send: %w", err)
+				}
+			}
+
+			// In extended-protocol mode the backend only emits responses
+			// after Sync (or CopyDone/CopyFail at the end of a COPY) —
+			// so draining is ONLY safe to do then. For simple Query and
+			// these few sync-like messages we drain to the next stable
+			// state. Otherwise loop back to receive the next client
+			// message; backend responses are queued and drained when
+			// Sync arrives.
+			if !triggersBackendDrain(msg) {
+				continue
 			}
 
 			// query_timeout: arm a read deadline on the backend socket
@@ -270,7 +305,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				_ = bConn.NetConn.SetReadDeadline(time.Now().Add(h.QueryTimeout))
 			}
 
-			// Drain backend response up to ReadyForQuery, forwarding each.
+			// Drain backend response up to ReadyForQuery (or CopyInResponse
+			// — see drainReason).
 			queryTimedOut := false
 			for {
 				bmsg, err := bConn.Frontend.Receive()
@@ -284,6 +320,12 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 						break
 					}
 					return fmt.Errorf("server recv: %w", err)
+				}
+				// Filter out CloseComplete frames produced by our LRU
+				// evictions — the client never asked for them.
+				if _, isCC := bmsg.(*pgproto3.CloseComplete); isCC && pendingEvictCloseCompletes > 0 {
+					pendingEvictCloseCompletes--
+					continue
 				}
 				be.Send(bmsg.(pgproto3.BackendMessage))
 				if err := be.Flush(); err != nil {
@@ -301,6 +343,14 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					case prevTx == TxInBlock && newTx == TxIdle:
 						stats.OnTxCommit(h.Database, h.User)
 					}
+				}
+				// CopyInResponse — backend is now waiting for client
+				// CopyData. Stop draining; loop back to receive client.
+				if _, ok := bmsg.(*pgproto3.CopyInResponse); ok {
+					if h.QueryTimeout > 0 {
+						_ = bConn.NetConn.SetReadDeadline(time.Time{})
+					}
+					break
 				}
 				if _, ok := proto.IsReadyForQuery(bmsg); ok {
 					if h.QueryTimeout > 0 {
@@ -585,6 +635,149 @@ func isTimeoutErr(err error) bool {
 		return true
 	}
 	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// triggersBackendDrain returns true if `msg` is the kind of frontend
+// message that should cause us to read backend responses until we hit a
+// stable state (RFQ or CopyInResponse).
+//
+// In extended-protocol mode the backend buffers Parse/Bind/Describe/
+// Execute responses until Sync — only then does it flush. So draining
+// after a non-sync frontend message would block forever. Other code
+// paths (simple Query, end-of-COPY) DO trigger backend responses
+// immediately, so drain after those.
+func triggersBackendDrain(msg pgproto3.FrontendMessage) bool {
+	switch msg.(type) {
+	case *pgproto3.Query, *pgproto3.Sync,
+		*pgproto3.CopyDone, *pgproto3.CopyFail:
+		return true
+	}
+	return false
+}
+
+// prepareInterceptForward implements the cross-backend prepared-stmt
+// cache (M.11.2/M.11.3). It is called for every client frontend
+// message that has a backend attached.
+//
+// Returns (forwardMsg, suppress, err):
+//
+//   - suppress=true: the call has already emitted the equivalent response
+//     to the client; the Serve loop must NOT forward to the backend.
+//   - suppress=false + forwardMsg=msg: pass-through, forward as-is.
+//   - suppress=false + forwardMsg!=msg: rewritten variant, forward instead.
+//
+// Side effects:
+//   - Parse records {client-name → server-name=pgr_<hash(sql)>} in the
+//     per-client PrepareCache.
+//   - Bind, Describe('S'), Close('S') rewrite their statement-name
+//     field to the cached server-name.
+//   - Close('S') is SUPPRESSED — we keep the statement on the backend
+//     for the next client (pgcat-style cross-client reuse). The client
+//     gets a synthesized CloseComplete immediately.
+//   - On Parse cache hit we synthesize ParseComplete to the client.
+//   - On Parse cache miss with LRU pressure we inject Close('S',
+//     evictedName) into the backend stream; the resulting CloseComplete
+//     is filtered out by the drain loop via *pendingEvictCloseCompletes.
+//
+// Unnamed prepared statements (Name="") bypass the whole cache and
+// pass through unchanged — they're meant to be one-shot.
+//
+// If bConn.Prepared is nil the cache is disabled; all messages pass
+// through unmodified except Bind/Describe/Close which still get
+// rewritten (in case Parse was rewritten earlier on this client).
+func (h *PooledConn) prepareInterceptForward(
+	msg pgproto3.FrontendMessage,
+	clientPrep *PrepareCache,
+	bConn *backend.Conn,
+	be *pgproto3.Backend,
+	pendingEvictCloseCompletes *int,
+	log *slog.Logger,
+) (pgproto3.FrontendMessage, bool, error) {
+	switch m := msg.(type) {
+	case *pgproto3.Parse:
+		if m.Name == "" {
+			return msg, false, nil
+		}
+		// observeClientMessage already called Observe; that populates
+		// the ServerName field. We re-derive here defensively in case
+		// the caller bypassed observeClientMessage.
+		server := clientPrep.ServerNameOf(m.Name)
+		if server == "" {
+			server = ServerNameFor(m.Query)
+			clientPrep.Observe(m.Name, m.Query, m.ParameterOIDs)
+		}
+		if bConn.Prepared != nil && bConn.Prepared.Has(server) {
+			// CACHE HIT — backend already has this Parse; synthesize
+			// ParseComplete for the client and skip the round trip.
+			bConn.Prepared.Touch(server)
+			stats.OnPreparedHit(h.Database, h.User)
+			be.Send(&pgproto3.ParseComplete{})
+			return nil, true, nil
+		}
+		// CACHE MISS — rewrite Name and forward.
+		stats.OnPreparedMiss(h.Database, h.User)
+		if bConn.Prepared != nil {
+			if evicted := bConn.Prepared.Add(server); evicted != "" {
+				// LRU pushed an entry out. Tell the backend to drop the
+				// old prepared statement via an extended-protocol
+				// Close('S', evicted) so the planner reclaims memory.
+				// The CloseComplete that comes back is filtered out in
+				// the next drain via pendingEvictCloseCompletes.
+				bConn.Frontend.Send(&pgproto3.Close{
+					ObjectType: 'S',
+					Name:       evicted,
+				})
+				*pendingEvictCloseCompletes++
+				stats.OnPreparedEviction(h.Database, h.User)
+				log.Debug("prepared cache LRU eviction",
+					"evicted", evicted, "incoming", server)
+			}
+		}
+		// Shallow copy so we don't mutate the caller's struct (msg
+		// might still be referenced by the pgproto3 read buffer
+		// internals; pooled-buffer corruption is a known pitfall).
+		out := *m
+		out.Name = server
+		return &out, false, nil
+
+	case *pgproto3.Bind:
+		if m.PreparedStatement == "" {
+			return msg, false, nil
+		}
+		server := clientPrep.ServerNameOf(m.PreparedStatement)
+		if server == "" {
+			return msg, false, nil
+		}
+		out := *m
+		out.PreparedStatement = server
+		return &out, false, nil
+
+	case *pgproto3.Describe:
+		// Describe('S', name) inspects a prepared statement.
+		// Describe('P', name) inspects a portal — pass through.
+		if m.ObjectType != 'S' || m.Name == "" {
+			return msg, false, nil
+		}
+		server := clientPrep.ServerNameOf(m.Name)
+		if server == "" {
+			return msg, false, nil
+		}
+		out := *m
+		out.Name = server
+		return &out, false, nil
+
+	case *pgproto3.Close:
+		// Close('S', name) — suppress: keep statement on backend for
+		// the next client. Synthesize CloseComplete locally.
+		// Close('P', name) — closes a portal; pass through.
+		if m.ObjectType != 'S' || m.Name == "" {
+			return msg, false, nil
+		}
+		clientPrep.Close(m.Name)
+		be.Send(&pgproto3.CloseComplete{})
+		return nil, true, nil
+	}
+	return msg, false, nil
 }
 
 // randomBackendKey is a copy of the helper in conn.go; kept here so
