@@ -45,7 +45,12 @@ import (
 	"github.com/JustAnotherDevv/pgrouter/internal/pool"
 	"github.com/JustAnotherDevv/pgrouter/internal/proto"
 	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
 	"github.com/JustAnotherDevv/pgrouter/internal/util"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // PooledConn is a transaction-mode pooled handler for one client.
@@ -184,6 +189,9 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	// the drain loop can emit a slow_query WARN annotated with it.
 	// Reset on every received Query/Parse.
 	var lastSQL, lastKind, lastPrepName string
+	// curSpan is the active per-query OTel span (no-op when tracing
+	// isn't configured). Started on Query/Parse receipt, ended at RFQ.
+	var curSpan trace.Span
 
 	// First synthetic RFQ → mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -292,6 +300,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			}
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.String, "query", ""
+			curSpan = h.startQuerySpan(ctx, "query", m.String, "")
 		case *pgproto3.Parse:
 			if !h.takeQPS() {
 				log.Info("qps_limit: rejected", "kind", "parse")
@@ -302,6 +311,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			}
 			stats.OnQuery(h.Database, h.User, h.App)
 			lastSQL, lastKind, lastPrepName = m.Query, "parse", m.Name
+			curSpan = h.startQuerySpan(ctx, "parse", m.Query, m.Name)
 		}
 
 		// Acquire a backend lazily on the first traffic-generating message.
@@ -444,6 +454,13 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 							lastKind,
 							SQLForLog(h.LogSQL, lastSQL, 1024),
 							queryDur)
+					}
+					if curSpan != nil {
+						curSpan.SetAttributes(
+							attribute.Float64("pgrouter.duration_ms",
+								float64(queryDur.Microseconds())/1000.0))
+						curSpan.End()
+						curSpan = nil
 					}
 					// Release whenever the backend reports idle —
 					// covers explicit COMMIT/ROLLBACK boundaries AND
@@ -716,6 +733,41 @@ func (h *PooledConn) takeQPS() bool {
 
 // silence unused import linter when only ratelimit type is used via field
 var _ = util.NewTokenBucket
+
+// startQuerySpan opens an OTel span for one Query/Parse. Returns a
+// no-op span when tracing isn't configured. SQL is rendered through
+// LogSQL mode so PII doesn't leak to traces; trace exporters often
+// archive longer than logs.
+//
+// Cleanup happens in the drain loop's RFQ branch (curSpan.End()).
+// On error paths (timeout, backend close) the deferred SetStatus +
+// End in the surrounding goroutine handle it.
+func (h *PooledConn) startQuerySpan(ctx context.Context, kind, sql, prepName string) trace.Span {
+	_, span := tracing.Tracer().Start(ctx, "pgrouter."+kind,
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.name", h.Database),
+			attribute.String("db.user", h.User),
+			attribute.String("pgrouter.req_id", h.ReqID),
+			attribute.String("pgrouter.app", h.App),
+			attribute.String("pgrouter.kind", kind),
+			attribute.String("pgrouter.prepared_name", prepName),
+			attribute.String("db.statement", SQLForLog(h.LogSQL, sql, 512)),
+		),
+	)
+	return span
+}
+
+// markSpanFailed sets a span's status to error + an attribute and ends.
+// Defensive helper for query_timeout / connection_drop paths.
+func (h *PooledConn) markSpanFailed(span trace.Span, code, msg string) {
+	if span == nil {
+		return
+	}
+	span.SetStatus(codes.Error, msg)
+	span.SetAttributes(attribute.String("pgrouter.error_code", code))
+	span.End()
+}
 
 // clientExplicitBegin recognises an explicit transaction-open coming
 // from the client.
