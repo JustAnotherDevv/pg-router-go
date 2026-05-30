@@ -32,8 +32,17 @@ import (
 
 // AuditWriter is the process-wide audit log target. nil = audit off.
 type AuditWriter struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu     sync.Mutex
+	w      io.Writer
+	closer io.Closer // optional; set when the writer was opened from a file
+}
+
+// Close flushes + closes the underlying file (if any).
+func (a *AuditWriter) Close() error {
+	if a == nil || a.closer == nil {
+		return nil
+	}
+	return a.closer.Close()
 }
 
 // OpenAuditFile opens (creates if missing, appends if exists) the file
@@ -48,7 +57,7 @@ func OpenAuditFile(path string) (*AuditWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open audit file %s: %w", path, err)
 	}
-	return &AuditWriter{w: f}, nil
+	return &AuditWriter{w: f, closer: f}, nil
 }
 
 // NewAuditWriter is the in-memory variant for tests.

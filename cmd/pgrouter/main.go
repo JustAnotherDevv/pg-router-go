@@ -459,6 +459,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	}
 	if auditWriter != nil {
 		log.Info("audit log enabled", "path", cfg.Logging.AuditFile)
+		defer auditWriter.Close()
 	}
 	h := &client.PooledHandler{
 		Log:               log,
