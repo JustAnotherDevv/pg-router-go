@@ -472,6 +472,16 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 			}
 			return ""
 		},
+		QPSCapFor: func(db, user string) float64 {
+			// Per-user cap wins if set; else per-db; else 0 (disabled).
+			if u, ok := cfg.Users[user]; ok && u.MaxQPS > 0 {
+				return u.MaxQPS
+			}
+			if d, ok := cfg.Databases[db]; ok && d.MaxQPS > 0 {
+				return d.MaxQPS
+			}
+			return 0
+		},
 	}
 
 	// --- listener + signal-driven shutdown ---

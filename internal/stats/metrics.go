@@ -134,6 +134,14 @@ func OnSighupReload(outcome string) {
 	}
 }
 
+// OnQPSReject counts per-tenant token-bucket rejections.
+// `scope` is "db" or "user"; `name` is the db or user name.
+func OnQPSReject(scope, name string) {
+	if Active != nil {
+		Active.QPSRejects.WithLabelValues(scope, name).Inc()
+	}
+}
+
 // OnSighupUserlistReload counts SIGHUP-driven userlist.txt reloads.
 // `outcome` = "ok" | "fail" | "skip" (skip = no userlist configured).
 func OnSighupUserlistReload(outcome string) {
@@ -217,6 +225,9 @@ type Metrics struct {
 	// Lifecycle.
 	SighupReloads         *prometheus.CounterVec // {"outcome": "ok"|"fail"}
 	SighupUserlistReloads *prometheus.CounterVec // {"outcome": "ok"|"fail"|"skip"}
+
+	// QPS rate-limit rejections (#116).
+	QPSRejects *prometheus.CounterVec // {"scope": "db"|"user", "name": <db|user>}
 
 	// Prepared statement cross-backend cache (M.11.2).
 	PreparedHits      *prometheus.CounterVec // {database, user}
@@ -348,6 +359,10 @@ func New() *Metrics {
 			Name: "pgrouter_sighup_userlist_reloads_total",
 			Help: "SIGHUP-driven userlist.txt reloads.",
 		}, []string{"outcome"}),
+		QPSRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pgrouter_qps_rejects_total",
+			Help: "Queries rejected by per-tenant max_qps token bucket.",
+		}, []string{"scope", "name"}),
 
 		PreparedHits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pgrouter_prepared_cache_hits_total",
@@ -379,7 +394,7 @@ func New() *Metrics {
 		m.CancelsReceived, m.CancelsForwarded, m.CancelsDropped,
 		m.GlobalLimitRejects, m.QueryTimeouts,
 		m.ClientIdleTimeouts, m.IdleTxTimeouts,
-		m.SighupReloads, m.SighupUserlistReloads,
+		m.SighupReloads, m.SighupUserlistReloads, m.QPSRejects,
 		m.PreparedHits, m.PreparedMisses, m.PreparedEvictions,
 	)
 	Active = m

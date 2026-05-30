@@ -180,6 +180,10 @@ type DatabaseConfig struct {
 	PoolMode         PoolMode `yaml:"pool_mode,omitempty"`        // override Pool.Mode
 	PoolSize         int      `yaml:"pool_size,omitempty"`        // override Pool.DefaultPoolSize
 	ServerResetQuery string   `yaml:"server_reset_query,omitempty"` // override Pool.ServerResetQuery
+
+	// MaxQPS, if > 0, caps the per-tenant Query/Parse rate via a token
+	// bucket. Burst = MaxQPS (capacity equals refill-per-second).
+	MaxQPS float64 `yaml:"max_qps,omitempty"`
 }
 
 // UserConfig is a per-user override.
@@ -187,4 +191,5 @@ type UserConfig struct {
 	PoolMode PoolMode `yaml:"pool_mode,omitempty"`
 	PoolSize int      `yaml:"pool_size,omitempty"`
 	MaxConn  int      `yaml:"max_user_connections,omitempty"`
+	MaxQPS   float64  `yaml:"max_qps,omitempty"` // per-user QPS cap
 }
