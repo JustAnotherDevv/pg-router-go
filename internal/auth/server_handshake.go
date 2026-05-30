@@ -7,11 +7,13 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
@@ -22,11 +24,13 @@ import (
 // auth phase: which AuthType to enforce, which Userlist to query.
 type ServerAuthOptions struct {
 	Type     config.AuthType
-	Userlist *Userlist // nil for trust mode
-	HBA      *HBAFile  // non-nil when Type == "hba"
+	Userlist *Userlist         // nil for trust mode
+	HBA      *HBAFile          // non-nil when Type == "hba"
+	Fetcher  *AuthQueryFetcher // non-nil when auth_query is configured
 	Log      *slog.Logger
 
-	// DBName is the StartupMessage database; needed for HBA matching.
+	// DBName is the StartupMessage database; needed for HBA matching
+	// + auth_query bootstrap conn target.
 	DBName string
 }
 
@@ -62,22 +66,16 @@ func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthO
 		return nil
 
 	case config.AuthMD5:
-		if opts.Userlist == nil {
-			return errors.New("md5 auth requires a userlist")
-		}
-		entry, ok := opts.Userlist.Lookup(username)
-		if !ok {
-			return sendAuthFailed(be, log, fmt.Sprintf("user %q not found", username))
+		entry, err := resolveEntry(opts, username)
+		if err != nil {
+			return sendAuthFailed(be, log, err.Error())
 		}
 		return doServerMD5(be, log, username, entry)
 
 	case config.AuthSCRAM:
-		if opts.Userlist == nil {
-			return errors.New("scram auth requires a userlist")
-		}
-		entry, ok := opts.Userlist.Lookup(username)
-		if !ok {
-			return sendAuthFailed(be, log, fmt.Sprintf("user %q not found", username))
+		entry, err := resolveEntry(opts, username)
+		if err != nil {
+			return sendAuthFailed(be, log, err.Error())
 		}
 		return doServerSCRAM(be, log, username, entry)
 
@@ -279,6 +277,30 @@ func doServerSCRAM(be *pgproto3.Backend, log *slog.Logger, username string, entr
 		return fmt.Errorf("sasl final send: %w", err)
 	}
 	return nil
+}
+
+// resolveEntry returns the UserEntry for username. Tries Userlist
+// first; falls back to auth_query Fetcher if userlist misses (or is
+// nil). Returns an error suitable for sendAuthFailed.
+func resolveEntry(opts ServerAuthOptions, username string) (*UserEntry, error) {
+	if opts.Userlist != nil {
+		if e, ok := opts.Userlist.Lookup(username); ok {
+			return e, nil
+		}
+	}
+	if opts.Fetcher != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		e, err := opts.Fetcher.Lookup(ctx, opts.DBName, username)
+		if err != nil {
+			return nil, fmt.Errorf("auth_query: %w", err)
+		}
+		return e, nil
+	}
+	if opts.Userlist == nil {
+		return nil, errors.New("auth backend has no userlist or auth_query")
+	}
+	return nil, fmt.Errorf("user %q not found", username)
 }
 
 func sendAuthFailed(be *pgproto3.Backend, log *slog.Logger, reason string) error {
