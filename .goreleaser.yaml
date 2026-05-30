@@ -1,0 +1,207 @@
+# goreleaser config for pgrouter.
+#
+# Local dry run (no upload):
+#   goreleaser release --clean --snapshot --skip=sign,publish
+#
+# Real release (CI):
+#   git tag -s v0.5.0-mvp -m 'v0.5.0-mvp'
+#   git push --tags
+#   ↳ release.yml workflow runs goreleaser + cosign
+#
+# Outputs:
+#   - linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
+#     statically linked binaries (CGO_ENABLED=0)
+#   - SBOM (syft) per archive
+#   - SHA-256 checksums.txt, signed by cosign keyless (OIDC)
+#   - Container images:
+#       ghcr.io/justanotherdevv/pgrouter:{vX.Y.Z, X.Y, X, latest}
+#     built off deploy/Dockerfile, signed by cosign keyless
+#
+# Requires the GitHub Actions workflow to inject:
+#   - GITHUB_TOKEN (auto)
+#   - id-token: write permission (for cosign keyless)
+#   - packages: write permission (for ghcr.io)
+
+version: 2
+
+project_name: pgrouter
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: pgrouter
+    main: ./cmd/pgrouter
+    binary: pgrouter
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Windows arm64 is fine but rarely used; skip to keep matrix lean.
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: pgrouter
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE*
+      - README.md
+      - docs/architecture.md
+      - docs/migration-from-pgbouncer.md
+      - deploy/pgrouter.service
+      - deploy/Dockerfile
+      - sample-configs/*.yaml
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# SBOM per archive (Software Bill of Materials).
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Cosign keyless signing of the checksums file. GitHub Actions OIDC
+# acts as the identity; cosign uploads the bundle to Sigstore's
+# Rekor transparency log. Verifier:
+#
+#   cosign verify-blob \
+#     --certificate-identity-regexp 'https://github.com/JustAnotherDevv/pgrouter/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --signature checksums.txt.sig \
+#     --certificate checksums.txt.pem \
+#     checksums.txt
+signs:
+  - id: cosign
+    cmd: cosign
+    artifacts: checksum
+    output: true
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+
+# Container images. Built from deploy/Dockerfile; goreleaser injects
+# the prebuilt binary into a thin wrapper so the docker build doesn't
+# re-run `go build`.
+dockers:
+  - id: pgrouter-amd64
+    image_templates:
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-amd64"
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Major }}.{{ .Minor }}-amd64"
+    use: buildx
+    dockerfile: deploy/Dockerfile.release
+    goos: linux
+    goarch: amd64
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.source=https://github.com/JustAnotherDevv/pgrouter"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+  - id: pgrouter-arm64
+    image_templates:
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-arm64"
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Major }}.{{ .Minor }}-arm64"
+    use: buildx
+    dockerfile: deploy/Dockerfile.release
+    goos: linux
+    goarch: arm64
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+
+# Multi-arch manifests.
+docker_manifests:
+  - name_template: "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-amd64"
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/justanotherdevv/pgrouter:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-amd64"
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/justanotherdevv/pgrouter:latest"
+    image_templates:
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-amd64"
+      - "ghcr.io/justanotherdevv/pgrouter:{{ .Version }}-arm64"
+
+# Cosign keyless signing of container images.
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    output: true
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}@${digest}"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
+release:
+  github:
+    owner: JustAnotherDevv
+    name: pgrouter
+  header: |
+    ## pgrouter {{ .Version }}
+
+    {{ if .IsPrerelease }}⚠️ Pre-release — not for production use.{{ end }}
+
+    See `docs/migration-from-pgbouncer.md` for the drop-in PgBouncer
+    replacement guide and `docs/architecture.md` for the deep dive.
+  footer: |
+    ---
+    **Verifying release artefacts**
+
+    ```bash
+    cosign verify-blob \
+      --certificate-identity-regexp 'https://github.com/JustAnotherDevv/pgrouter/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      --signature checksums.txt.sig \
+      --certificate checksums.txt.pem \
+      checksums.txt
+    ```
+
+    **Verifying container images**
+
+    ```bash
+    cosign verify \
+      --certificate-identity-regexp 'https://github.com/JustAnotherDevv/pgrouter/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      ghcr.io/justanotherdevv/pgrouter:{{ .Version }}
+    ```
