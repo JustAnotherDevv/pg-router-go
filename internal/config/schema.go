@@ -122,6 +122,10 @@ type LoggingConfig struct {
 	//   redacted — replace literals with `?` before logging (default)
 	//   full     — log the raw SQL (dev only; emits a warning at boot)
 	LogSQL string `yaml:"log_sql"`
+
+	// SlowQuery is the duration above which a per-query WARN line is
+	// emitted (with redacted SQL). 0 disables.
+	SlowQuery time.Duration `yaml:"slow_query"`
 }
 
 // LogSQLMode normalises LoggingConfig.LogSQL into one of the three

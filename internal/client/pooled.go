@@ -104,6 +104,11 @@ type PooledConn struct {
 	// per-query log emission. Empty defaults to "redacted".
 	LogSQL string
 
+	// SlowQuery, if > 0, emits a WARN log line for every query whose
+	// duration exceeds this threshold. SQL is rendered through the
+	// LogSQL mode (off/redacted/full).
+	SlowQuery time.Duration
+
 	// PoolMode is one of: "session" | "transaction" | "statement". Empty
 	// defaults to "transaction" (MVP default). In statement mode the
 	// backend is released after EVERY ReadyForQuery — even ones with
@@ -160,6 +165,11 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	state := NewClientState()
 	gucCache := NewGUCCache()
 	prepCache := NewPrepareCache()
+
+	// lastSQL captures the SQL text of the most recent Query/Parse so
+	// the drain loop can emit a slow_query WARN annotated with it.
+	// Reset on every received Query/Parse.
+	var lastSQL, lastKind, lastPrepName string
 
 	// First synthetic RFQ → mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -256,10 +266,14 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				continue
 			}
 		}
-		// Per-(db, user) Query/Parse counter.
-		switch msg.(type) {
-		case *pgproto3.Query, *pgproto3.Parse:
+		// Per-(db, user) Query/Parse counter + slow-query stash.
+		switch m := msg.(type) {
+		case *pgproto3.Query:
 			stats.OnQuery(h.Database, h.User, h.App)
+			lastSQL, lastKind, lastPrepName = m.String, "query", ""
+		case *pgproto3.Parse:
+			stats.OnQuery(h.Database, h.User, h.App)
+			lastSQL, lastKind, lastPrepName = m.Query, "parse", m.Name
 		}
 
 		// Acquire a backend lazily on the first traffic-generating message.
@@ -385,8 +399,18 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					if h.QueryTimeout > 0 {
 						_ = bConn.NetConn.SetReadDeadline(time.Time{})
 					}
+					queryDur := time.Since(queryStart)
 					stats.OnQueryDuration(h.Database, h.User, h.App,
-						time.Since(queryStart).Seconds())
+						queryDur.Seconds())
+					if h.SlowQuery > 0 && queryDur >= h.SlowQuery {
+						log.Warn("slow_query",
+							"kind", lastKind,
+							"duration", queryDur,
+							"threshold", h.SlowQuery,
+							"prepared_name", lastPrepName,
+							"sql", SQLForLog(h.LogSQL, lastSQL, 512),
+						)
+					}
 					// Release whenever the backend reports idle —
 					// covers explicit COMMIT/ROLLBACK boundaries AND
 					// implicit-transaction queries (e.g. bare SELECT

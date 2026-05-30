@@ -66,6 +66,10 @@ type PooledHandler struct {
 	ClientIdleTimeout time.Duration
 	IdleTxTimeout     time.Duration
 
+	// SlowQuery is the duration above which a per-query WARN line is
+	// emitted. 0 disables. Forwarded to each PooledConn.
+	SlowQuery time.Duration
+
 	// LogSQL is one of: "off" | "redacted" | "full". Forwarded to each
 	// PooledConn for per-query logging. Empty string is equivalent to
 	// "redacted" — the safe default. "full" should only be used in dev
@@ -221,6 +225,7 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		QueryTimeout:      h.QueryTimeout,
 		ClientIdleTimeout: h.ClientIdleTimeout,
 		IdleTxTimeout:     h.IdleTxTimeout,
+		SlowQuery:         h.SlowQuery,
 		LogSQL:            h.LogSQL,
 		PoolMode:          mode,
 	}

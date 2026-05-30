@@ -372,6 +372,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 		QueryTimeout:      cfg.Pool.QueryTimeout,
 		ClientIdleTimeout: cfg.Server.ClientIdle,
 		IdleTxTimeout:     cfg.Server.IdleTx,
+		SlowQuery:         cfg.Logging.SlowQuery,
 		LogSQL:            logSQLMode,
 		PoolMode:          string(cfg.Pool.Mode),
 		PoolModeFor: func(db string) string {
