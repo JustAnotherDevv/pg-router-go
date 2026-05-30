@@ -93,6 +93,9 @@ type PooledHandler struct {
 	// without storing every override in every PooledHandler field.
 	PoolModeFor func(db string) string
 
+	// Audit is the optional per-query audit-log sink. nil = off.
+	Audit *AuditWriter
+
 	// QPSCapFor, if non-nil, returns the per-(db, user) max-QPS cap.
 	// 0 disables rate-limiting for that tenant. Buckets are shared
 	// across all PooledConns of the same (db, user) so the cap is
@@ -210,7 +213,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 			}
 
 			p := h.Manager.Get(pool.Key{DB: db, User: user})
-			h.servePooled(ctx, conn, p, db, user, app, log)
+			h.servePooled(ctx, conn, p, db, user, app, reqID, log)
 			return
 
 		default:
@@ -221,7 +224,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 }
 
 // servePooled is the hand-off from startup to PooledConn.Serve.
-func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.Pool, db, user, app string, log *slog.Logger) {
+func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.Pool, db, user, app, reqID string, log *slog.Logger) {
 	var (
 		welcomePID    uint32
 		welcomeSecret []byte
@@ -275,6 +278,8 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		LogSQL:            h.LogSQL,
 		PoolMode:          mode,
 		QPSLimiter:        h.qpsBucketFor(db, user),
+		Audit:             h.Audit,
+		ReqID:             reqID,
 	}
 	if err := pc.Serve(ctx, conn); err != nil {
 		log.Debug("pooled serve ended", "err", err)

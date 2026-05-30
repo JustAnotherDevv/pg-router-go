@@ -110,6 +110,13 @@ type PooledConn struct {
 	// LogSQL mode (off/redacted/full).
 	SlowQuery time.Duration
 
+	// Audit is the optional per-query audit log sink. nil = off.
+	Audit *AuditWriter
+
+	// ReqID is the connection-scoped request ID (stamped into log lines
+	// + audit records). Set by the dispatcher.
+	ReqID string
+
 	// QPSLimiter, if non-nil, is the shared per-(db, user) token bucket
 	// consulted before forwarding each Query/Parse. Empty bucket →
 	// reject with SQLSTATE 53300 ("too_many_connections" — closest
@@ -431,6 +438,12 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 							"prepared_name", lastPrepName,
 							"sql", SQLForLog(h.LogSQL, lastSQL, 512),
 						)
+					}
+					if h.Audit != nil && lastKind != "" {
+						h.Audit.Write(h.ReqID, h.Database, h.User, h.App,
+							lastKind,
+							SQLForLog(h.LogSQL, lastSQL, 1024),
+							queryDur)
 					}
 					// Release whenever the backend reports idle —
 					// covers explicit COMMIT/ROLLBACK boundaries AND
