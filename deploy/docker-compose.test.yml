@@ -3,7 +3,7 @@
 #   make deps-up    -> brings both up
 #   make deps-down  -> tears down + removes volumes
 #
-# Production deploy lives in deploy/Dockerfile (added in M.15).
+# Production deploy lives in deploy/Dockerfile.
 #
 # SECURITY: ports bound to 127.0.0.1 only. Trust auth is safe here
 # because the port is loopback-only. Do NOT change "127.0.0.1:PORT:5432"
