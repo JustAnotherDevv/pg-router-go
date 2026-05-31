@@ -1,6 +1,6 @@
 // Command poke is a tiny live-verification client for pgrouter.
-// It opens TCP, sends a SSLRequest (expects 'N'), then a StartupMessage,
-// then closes. Useful for P.2.2 verification without psql.
+// It opens TCP, sends a SSLRequest, then a StartupMessage, then prints
+// the first bytes returned by the server. Useful for smoke testing without psql.
 //
 // Usage: go run ./test/poke <addr>
 package main
@@ -61,14 +61,14 @@ func main() {
 	}
 	fmt.Println("startup sent")
 
-	// In PoC P.2.2: pgrouter logs + closes. Read until EOF.
+	// Print the first server response after startup.
 	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	out := make([]byte, 256)
 	n, _ := c.Read(out)
 	if n > 0 {
 		fmt.Printf("server bytes after startup: %x\n", out[:n])
 	} else {
-		fmt.Println("no further bytes (expected for PoC P.2.2)")
+		fmt.Println("no server bytes before deadline")
 	}
 }
 
