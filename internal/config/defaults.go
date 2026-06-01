@@ -22,7 +22,7 @@ func applyDefaults(cfg *Config) {
 
 	// Pool.
 	if cfg.Pool.Mode == "" {
-		cfg.Pool.Mode = PoolModeTransaction // MVP default
+		cfg.Pool.Mode = PoolModeTransaction
 	}
 	if cfg.Pool.DefaultPoolSize == 0 {
 		cfg.Pool.DefaultPoolSize = 20
