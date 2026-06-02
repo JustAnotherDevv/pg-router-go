@@ -1,6 +1,5 @@
-// Package listener accepts client TCP connections and dispatches one
-// goroutine per connection. PoC scope: TCP only; future tasks add Unix
-// sockets, TLS, and PROXY protocol.
+// Package listener accepts client connections and dispatches one goroutine
+// per connection.
 package listener
 
 import (
@@ -46,10 +45,10 @@ type Handler func(ctx context.Context, conn net.Conn)
 // Listener wraps a net.Listener with per-connection goroutine dispatch +
 // graceful shutdown semantics.
 type Listener struct {
-	addr   string
-	ln     net.Listener
-	log    *slog.Logger
-	wg     sync.WaitGroup
+	addr string
+	ln   net.Listener
+	log  *slog.Logger
+	wg   sync.WaitGroup
 
 	// proxyProtocol, when true, parses a PROXY v1/v2 preamble off every
 	// accepted conn and rewrites RemoteAddr to the real client. For use
@@ -156,10 +155,10 @@ func (l *Listener) Close() error {
 
 // parsePROXYOrWrap handles the 4-way PROXY-preamble outcome:
 //
-//	1. Valid PROXY header with real source addr → return proxyConn.
-//	2. Valid PROXY header without source (LOCAL/UNKNOWN) → return readerConn.
-//	3. No PROXY header (bare client during rollout) → return readerConn.
-//	4. Parse error → log + close + return ok=false.
+//  1. Valid PROXY header with real source addr → return proxyConn.
+//  2. Valid PROXY header without source (LOCAL/UNKNOWN) → return readerConn.
+//  3. No PROXY header (bare client during rollout) → return readerConn.
+//  4. Parse error → log + close + return ok=false.
 //
 // ok=false means the caller MUST return without invoking the handler;
 // the conn has already been closed.
