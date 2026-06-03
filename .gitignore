@@ -3,12 +3,22 @@ bin/
 *.exe
 *.test
 pgrouter-linux
+pgrouter-linux-*
+pgrouter-refactor.b64
 pgrouter-pgo-*
 pgrouter-phasea-b
+pgrouter-phase*
 {{.Destination}}
 
 # Bench artifacts
-heap.pprof
+bench_results.json
+default.pgo
+test/bench/compare/results/
+test/bench/baselines/
+*.pprof
+*.prof
+*.trace
+chunk_*.b64
 
 # Coverage
 coverage.out
