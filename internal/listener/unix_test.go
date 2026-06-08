@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +27,7 @@ func TestNewUnixRemovesStaleSocket(t *testing.T) {
 	// First listener.
 	ln1, err := NewUnix(dir, 16432, "", testutil.Discard)
 	require.NoError(t, err)
-	// Close → leaves the inode behind on disk.
+	// Close â†’ leaves the inode behind on disk.
 	require.NoError(t, ln1.Close())
 	// Second listener should succeed by removing the stale inode.
 	ln2, err := NewUnix(dir, 16432, "", testutil.Discard)

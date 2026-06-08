@@ -9,7 +9,7 @@
 //
 // The PoC's legacy positional flags (--listen, --backend, --log-format,
 // --log-level) still work without a subcommand to keep the demo scripts
-// from breaking â€” they implicitly run `pgrouter run` with synthesised
+// from breaking Ã¢â‚¬â€ they implicitly run `pgrouter run` with synthesised
 // in-memory config.
 package main
 
@@ -30,12 +30,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/listener"
-	"github.com/JustAnotherDevv/pgrouter/internal/multiproc"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
-	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/listener"
+	"github.com/JustAnotherDevv/pg-router-go/internal/multiproc"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/tracing"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire"
 )
 
 var (
@@ -127,7 +127,7 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdRun starts the pooler driven by a config file. Wires:
-//   - YAML config â†’ TLS, auth, pool sizing
+//   - YAML config Ã¢â€ â€™ TLS, auth, pool sizing
 //   - per-(db, user) pool routing via pool.Manager
 //   - Prometheus /metrics + /healthz endpoint
 //   - cancel.Tracker for per-client (PID, secret) routing
@@ -275,7 +275,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	// (servePooled defer) covers clean shutdowns; the sweeper catches
 	// the panic/crash path where Allocate() succeeds but the deferred
 	// Release never fires, leaving (PID, secret) entries pinned in the
-	// map forever. 5min tick + 1h ttl is generous â€” real cancels arrive
+	// map forever. 5min tick + 1h ttl is generous Ã¢â‚¬â€ real cancels arrive
 	// within seconds of the originating query.
 	rt.CancelTracker.StartSweeper(ctx, 5*time.Minute, time.Hour)
 
@@ -325,7 +325,7 @@ func cmdRun(args []string, _ io.Writer, stderr io.Writer) int {
 	log.Info("listening", "addr", ln.Addr().String())
 
 	// Optional Unix socket listener for PgBouncer-compat in-host clients
-	// + peer auth. unix_socket_dir empty â†’ skip.
+	// + peer auth. unix_socket_dir empty Ã¢â€ â€™ skip.
 	var unixLn *listener.Listener
 	if cfg.Server.UnixSocketDir != "" {
 		uln, err := listener.NewUnix(cfg.Server.UnixSocketDir,

@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // keyedMockDialer wraps a per-key counter so we can verify per-pool isolation.
@@ -102,4 +102,3 @@ func TestManagerJanitorEvicts(t *testing.T) {
 		return m.Get(k).Stats().Idle == 0
 	}, time.Second, 5*time.Millisecond)
 }
-

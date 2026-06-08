@@ -1,5 +1,5 @@
 // Phase A tests for PooledConn: query_timeout, client_idle_timeout,
-// idle_transaction_timeout, GUC whitelist → session-pin.
+// idle_transaction_timeout, GUC whitelist â†’ session-pin.
 
 package client
 
@@ -12,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil/statreset"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil/statreset"
 )
 
 // --- client_idle_timeout (M.6.4) ---
@@ -77,7 +77,7 @@ func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 	select {
 	case <-serveDone:
 		require.True(t, time.Now().Before(deadline.Add(500*time.Millisecond)),
-			"Serve exited too late — wrong timeout was applied")
+			"Serve exited too late â€” wrong timeout was applied")
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve did not exit after idle_transaction_timeout")
 	}
@@ -120,7 +120,7 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 	// Within the QueryTimeout + slack we should receive a FATAL
 	// ErrorResponse with code 57014 and connection should stay open
 	// long enough for us to assert. (PooledConn writes 57014 as FATAL
-	// + Severity=FATAL → client typically disconnects, but we look at
+	// + Severity=FATAL â†’ client typically disconnects, but we look at
 	// the wire only.)
 	_ = clt.SetReadDeadline(time.Now().Add(1 * time.Second))
 	for {
@@ -135,10 +135,10 @@ func TestPooledQueryTimeoutKillsBackendAndKeepsClientConn(t *testing.T) {
 	}
 }
 
-// --- unrecognized GUC → session-pin (M.10) ---
+// --- unrecognized GUC â†’ session-pin (M.10) ---
 
-// TestPooledTxMetricsIncrementOnBeginCommit: BEGIN → RFQ 'T' bumps
-// TxStarts; COMMIT → RFQ 'I' bumps TxCommits. ROLLBACK from RFQ 'E' →
+// TestPooledTxMetricsIncrementOnBeginCommit: BEGIN â†’ RFQ 'T' bumps
+// TxStarts; COMMIT â†’ RFQ 'I' bumps TxCommits. ROLLBACK from RFQ 'E' â†’
 // 'I' bumps TxRollbacks.
 func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 	// Reset the stats registry so the counters start at 0 for this test.
@@ -149,13 +149,13 @@ func TestPooledTxMetricsIncrementOnBeginCommit(t *testing.T) {
 		CannedParams: map[string]string{"server_version": "16.0"},
 	})
 
-	// BEGIN → backend replies RFQ 'T'.
+	// BEGIN â†’ backend replies RFQ 'T'.
 	fb.scriptReply("BEGIN", 'T')
 	fe.Send(&pgproto3.Query{String: "BEGIN"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
 
-	// COMMIT → backend replies RFQ 'I'.
+	// COMMIT â†’ backend replies RFQ 'I'.
 	fb.scriptReply("COMMIT", 'I')
 	fe.Send(&pgproto3.Query{String: "COMMIT"})
 	require.NoError(t, fe.Flush())
@@ -196,7 +196,7 @@ func TestPooledUnrecognizedSetPinsSession(t *testing.T) {
 	// Drain reply.
 	testutil.DrainToRFQ(t, clt, fe)
 
-	// Pool should now show active=1 idle=0 — backend pinned. (Without the
+	// Pool should now show active=1 idle=0 â€” backend pinned. (Without the
 	// pin it would be active=0 idle=1.) Give the Serve goroutine a beat
 	// to advance.
 	time.Sleep(20 * time.Millisecond)

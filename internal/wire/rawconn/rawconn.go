@@ -1,10 +1,10 @@
 // Package rawconn provides a zero-pgproto3 wire reader for the
-// client→backend hot path. It reads Postgres frontend messages as raw
+// clientâ†’backend hot path. It reads Postgres frontend messages as raw
 // bytes, bypassing pgproto3's decode/re-encode. This eliminates per-
 // message struct allocations and encoding overhead on the hot path.
 //
 // Only boring messages (Execute, Sync, Flush) benefit from raw
-// passthrough — they have no body or a trivially small body that
+// passthrough â€” they have no body or a trivially small body that
 // doesn't need inspection. Interesting messages (Query, Parse) still
 // need SQL extraction for GUC/pin/classification, but we do that
 // with minimal byte scanning instead of full pgproto3 decode.
@@ -15,7 +15,7 @@ import (
 	"io"
 	"net"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
 )
 
 // HeaderSize is the Postgres wire protocol message header size
@@ -51,11 +51,11 @@ var drainTriggerTags [256]bool
 func init() {
 	// Boring: forward raw, no inspection needed.
 	boring := []byte{
-		TagExecute,  // 'E' — 5-byte no-body
-		TagSync,     // 'H' — 5-byte no-body
-		TagFlush,    // 'f' — 5-byte no-body (note: same as CopyFail!)
-		TagCopyData, // 'd' — body is COPY data, forward raw
-		TagCopyDone, // 'c' — 5-byte no-body
+		TagExecute,  // 'E' â€” 5-byte no-body
+		TagSync,     // 'H' â€” 5-byte no-body
+		TagFlush,    // 'f' â€” 5-byte no-body (note: same as CopyFail!)
+		TagCopyData, // 'd' â€” body is COPY data, forward raw
+		TagCopyDone, // 'c' â€” 5-byte no-body
 	}
 	for _, b := range boring {
 		boringTags[b] = true
@@ -63,10 +63,10 @@ func init() {
 
 	// Drain triggers: message types that cause backend responses.
 	drainTrigger := []byte{
-		TagQuery,    // 'Q' — backend responds immediately
-		TagSync,     // 'H' — backend responds after batch
-		TagCopyDone, // 'c' — end of COPY
-		TagCopyFail, // 'f' — end of COPY (error)
+		TagQuery,    // 'Q' â€” backend responds immediately
+		TagSync,     // 'H' â€” backend responds after batch
+		TagCopyDone, // 'c' â€” end of COPY
+		TagCopyFail, // 'f' â€” end of COPY (error)
 	}
 	for _, b := range drainTrigger {
 		drainTriggerTags[b] = true
@@ -199,7 +199,7 @@ func ExtractQuerySQL(raw []byte) string {
 			return string(body[:i])
 		}
 	}
-	// No null found — whole body is SQL (malformed, but be lenient).
+	// No null found â€” whole body is SQL (malformed, but be lenient).
 	return string(body)
 }
 
@@ -346,7 +346,7 @@ func ExtractParseParamOIDs(raw []byte) []uint32 {
 
 // bufioReader is a minimal buffered reader optimized for the raw
 // message read pattern: small, frequent Peeks followed by Discards.
-// We don't need the full bufio.Reader API — just Peek, Discard,
+// We don't need the full bufio.Reader API â€” just Peek, Discard,
 // and Available.
 type bufioReader struct {
 	r   io.Reader

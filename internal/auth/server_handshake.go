@@ -1,6 +1,6 @@
 // Server-side auth handshakes: pgrouter authenticates clients via
-// userlist.txt-backed trust / MD5 / SCRAM-SHA-256, or — on Unix
-// socket conns — via SO_PEERCRED ("peer" auth).
+// userlist.txt-backed trust / MD5 / SCRAM-SHA-256, or â€” on Unix
+// socket conns â€” via SO_PEERCRED ("peer" auth).
 //
 // Called from internal/client during the startup phase.
 
@@ -17,7 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
 )
 
 // ServerAuthOptions carries the startup-auth decisions: which AuthType
@@ -60,7 +60,7 @@ func PerformServerAuthConn(be *pgproto3.Backend, conn net.Conn, opts ServerAuthO
 
 	switch opts.Type {
 	case "", config.AuthTrust:
-		// Nothing to do — caller sends AuthenticationOk itself.
+		// Nothing to do â€” caller sends AuthenticationOk itself.
 		return nil
 
 	case config.AuthMD5:
@@ -201,8 +201,8 @@ func hbaResolveUserlistEntry(opts ServerAuthOptions, username, method string) (*
 	return entry, nil
 }
 
-// doServerPeer authenticates via SO_PEERCRED — the OS uid on the far
-// side of the Unix socket. Match → accept, mismatch → FATAL 28P01.
+// doServerPeer authenticates via SO_PEERCRED â€” the OS uid on the far
+// side of the Unix socket. Match â†’ accept, mismatch â†’ FATAL 28P01.
 //
 // Caller is responsible for ensuring `conn` is a *net.UnixConn (the
 // peer subsystem returns a clean error otherwise).
@@ -248,7 +248,7 @@ func doServerMD5(be *pgproto3.Backend, log *slog.Logger, username string, entry 
 
 	stored := entry.MD5Hash
 	if stored == "" {
-		// Plaintext stored — VerifyMD5Password handles that path.
+		// Plaintext stored â€” VerifyMD5Password handles that path.
 		stored = entry.PlainPassword
 	}
 	if !VerifyMD5Password(username, stored, salt, pwd.Password) {

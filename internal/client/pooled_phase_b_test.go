@@ -12,14 +12,14 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // --- ServerNameFor ---
 
 // TestServerNameForShape verifies determinism, format, and
-// distinguishability of the SQL → server-name mapping. Collapses
+// distinguishability of the SQL â†’ server-name mapping. Collapses
 // what were 3 tiny tests (determinism, prefix+length, different SQL
 // yields different names) into one because each was 3 LOC.
 func TestServerNameForShape(t *testing.T) {
@@ -28,7 +28,7 @@ func TestServerNameForShape(t *testing.T) {
 	require.Equal(t, a, b, "deterministic: same SQL same name")
 	require.True(t, strings.HasPrefix(a, "pgr_"), "prefix is pgr_")
 	require.Equal(t, 4+16, len(a), "name is pgr_ + 16 hex chars")
-	require.NotEqual(t, a, ServerNameFor("SELECT 1"), "different SQL → different name")
+	require.NotEqual(t, a, ServerNameFor("SELECT 1"), "different SQL â†’ different name")
 }
 
 // --- PrepareCache.ServerNameOf ---
@@ -74,7 +74,7 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 
 	expectedServerName := ServerNameFor("SELECT $1::int")
 
-	// expect Parse — record + assertion; PG semantics: NO response until
+	// expect Parse â€” record + assertion; PG semantics: NO response until
 	// Sync arrives (response burst is buffered).
 	fb.expect(func(_ *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		m, ok := msg.(*pgproto3.Parse)
@@ -83,7 +83,7 @@ func TestPooledParseMissRewritesNameAndCachesIt(t *testing.T) {
 			"server name must be rewritten to pgr_<hash>")
 		require.Equal(t, "SELECT $1::int", m.Query)
 	})
-	// expect Sync — now the buffered ParseComplete + RFQ flush.
+	// expect Sync â€” now the buffered ParseComplete + RFQ flush.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		_, ok := msg.(*pgproto3.Sync)
 		require.True(t, ok, "expected Sync, got %T", msg)
@@ -105,7 +105,7 @@ func TestPooledParseHitSynthesizesNoBackendRoundTrip(t *testing.T) {
 	// Pre-warm the backend cache with our SQL's hash.
 	bConn.Prepared.Add(ServerNameFor("SELECT 1")) // simulate "previous client already Parsed this"
 
-	// Backend should ONLY receive Sync — Parse is suppressed by cache hit.
+	// Backend should ONLY receive Sync â€” Parse is suppressed by cache hit.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		_, ok := msg.(*pgproto3.Sync)
 		require.True(t, ok, "expected Sync (Parse should have been suppressed), got %T", msg)
@@ -167,7 +167,7 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T) {
 	fb, bConn, clt, fe := newCachedSession(t)
 
-	// First Parse so the client cache has stmt1 → server-name.
+	// First Parse so the client cache has stmt1 â†’ server-name.
 	fb.expect(func(_ *pgproto3.Backend, _ pgproto3.FrontendMessage) {})
 	fb.expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
 		be.Send(&pgproto3.ParseComplete{})
@@ -179,7 +179,7 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
 
-	// Now Close('S', stmt1) — should be SUPPRESSED on backend.
+	// Now Close('S', stmt1) â€” should be SUPPRESSED on backend.
 	// Only Sync should reach the backend.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		_, ok := msg.(*pgproto3.Sync)
@@ -211,7 +211,7 @@ func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T)
 
 func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	fb := newFakeBackend(t)
-	// Cap=1 → every new Parse evicts the previous.
+	// Cap=1 â†’ every new Parse evicts the previous.
 	bConn := connWithCache(fb, 1)
 	preCached := ServerNameFor("SELECT 'first'")
 	bConn.Prepared.Add(preCached) // capacity full
@@ -251,7 +251,7 @@ func TestPooledParseEvictionInjectsBackendCloseAndFiltersCC(t *testing.T) {
 	fe.Send(&pgproto3.Sync{})
 	require.NoError(t, fe.Flush())
 
-	// Client must NOT see the injected CloseComplete — only ParseComplete + RFQ.
+	// Client must NOT see the injected CloseComplete â€” only ParseComplete + RFQ.
 	_ = clt.SetReadDeadline(time.Now().Add(2 * time.Second))
 	seen := []string{}
 	for i := 0; i < 3; i++ {
@@ -291,7 +291,7 @@ func TestTriggersBackendDrain(t *testing.T) {
 // --- DISCARD ALL via reset clears backend Prepared cache ---
 
 func TestBackendResetClearsPreparedCache(t *testing.T) {
-	// This isn't a PooledConn test — it directly invokes ResetState on a
+	// This isn't a PooledConn test â€” it directly invokes ResetState on a
 	// fake backend.Conn that has a cache.
 	fb := newFakeBackend(t)
 	bConn := connWithCache(fb, 8)
@@ -299,7 +299,7 @@ func TestBackendResetClearsPreparedCache(t *testing.T) {
 	bConn.Prepared.Add("pgr_bbb")
 	require.Equal(t, 2, bConn.Prepared.Len())
 
-	// Script: receive DISCARD ALL → CommandComplete + RFQ 'I'.
+	// Script: receive DISCARD ALL â†’ CommandComplete + RFQ 'I'.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		_, ok := msg.(*pgproto3.Query)
 		require.True(t, ok)

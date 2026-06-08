@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // fakeBackendFleet is a dialer that mints a fresh fakeBackend per call.
@@ -98,7 +98,7 @@ func TestForceSessionPinningOnLISTEN(t *testing.T) {
 	// pinned it. Use Eventually because the Serve goroutine is racing.
 	requirePoolStats(t, p, 0, 1)
 
-	// Send another query — must hit the SAME backend (still pinned).
+	// Send another query â€” must hit the SAME backend (still pinned).
 	go fleet.Backend(0).expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
 		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
 		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -192,7 +192,7 @@ func TestGUCReplayFiresOnFreshAcquire(t *testing.T) {
 // dialed backend; pool.TotalSpawned should stay at 1.
 //
 // The fakeBackendFleet supports concurrent dials but each backend
-// processes scripts sequentially — that's fine since the pool only
+// processes scripts sequentially â€” that's fine since the pool only
 // holds one backend at a time anyway.
 func TestPooledMultipleClientsShareSingleBackend(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
@@ -223,7 +223,7 @@ func TestPooledMultipleClientsShareSingleBackend(t *testing.T) {
 
 	// Run client A.
 	runQuery()
-	// Run client B serially — backend released by A is reused.
+	// Run client B serially â€” backend released by A is reused.
 	runQuery()
 
 	require.Equal(t, 1, fleet.Count(), "pool should reuse single backend")
@@ -256,8 +256,8 @@ func TestGUCReplayPropagatesError(t *testing.T) {
 
 // TestPrepareCacheObservesParse: Parse messages populate the prepare
 // cache. PgRouter now buffers Parse on the backend (no drain) and only
-// drains on Sync — mirroring real Postgres extended-protocol semantics
-// — so the test fake responds to Parse with ParseComplete only, and to
+// drains on Sync â€” mirroring real Postgres extended-protocol semantics
+// â€” so the test fake responds to Parse with ParseComplete only, and to
 // Sync with RFQ.
 func TestPrepareCacheObservesParse(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
@@ -268,14 +268,14 @@ func TestPrepareCacheObservesParse(t *testing.T) {
 	go func() {
 		require.Eventually(t, func() bool { return fleet.Count() >= 1 },
 			2*time.Second, 5*time.Millisecond)
-		// expect#1: Parse → ParseComplete (no RFQ).
+		// expect#1: Parse â†’ ParseComplete (no RFQ).
 		fleet.Backend(0).expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 			_, ok := msg.(*pgproto3.Parse)
 			require.True(t, ok, "expected Parse, got %T", msg)
 			be.Send(&pgproto3.ParseComplete{})
 			_ = be.Flush()
 		})
-		// expect#2: Sync → RFQ.
+		// expect#2: Sync â†’ RFQ.
 		fleet.Backend(0).expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 			_, ok := msg.(*pgproto3.Sync)
 			require.True(t, ok, "expected Sync, got %T", msg)

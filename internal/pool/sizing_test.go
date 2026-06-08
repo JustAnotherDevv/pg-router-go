@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // --- MinPoolSize / EnsureWarm ---
@@ -64,7 +64,7 @@ func TestEvictRespectsMinPoolSize(t *testing.T) {
 		ServerIdle:      time.Millisecond,
 	})
 
-	// Acquire + release 4 backends → 4 idle.
+	// Acquire + release 4 backends â†’ 4 idle.
 	conns := make([]*backend.Conn, 4)
 	for i := range conns {
 		c, _ := p.Acquire(context.Background())
@@ -75,7 +75,7 @@ func TestEvictRespectsMinPoolSize(t *testing.T) {
 	}
 	require.Equal(t, 4, p.Stats().Idle)
 
-	// Past the idle threshold → eviction kicks in BUT MinPoolSize=2 must be honored.
+	// Past the idle threshold â†’ eviction kicks in BUT MinPoolSize=2 must be honored.
 	n := p.EvictIdleOnce(time.Now().Add(time.Second))
 	require.Equal(t, 2, n, "should evict 2, keep 2 to satisfy MinPoolSize")
 	require.Equal(t, 2, p.Stats().Idle)
@@ -150,7 +150,7 @@ func TestReservePoolCappedAtSize(t *testing.T) {
 	c1, _ := p.Acquire(context.Background())
 	c2, _ := p.Acquire(context.Background())
 
-	// Third Acquire should time out — reserve is also saturated.
+	// Third Acquire should time out â€” reserve is also saturated.
 	_, err := p.Acquire(context.Background())
 	require.ErrorIs(t, err, ErrAcquireTimeout)
 

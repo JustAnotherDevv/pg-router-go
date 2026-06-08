@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
 )
 
 // Key uniquely identifies one pool. Postgres conn semantics are (db,
@@ -38,7 +38,7 @@ type LimitObserver func(scope, name string)
 type Manager struct {
 	defaultCfg Config
 	dialerFor  DialerFor
-	configFor  ConfigFor // optional; nil → use defaultCfg verbatim
+	configFor  ConfigFor // optional; nil â†’ use defaultCfg verbatim
 	log        *slog.Logger
 
 	mu    sync.RWMutex
@@ -81,8 +81,8 @@ func (m *Manager) WithConfigFor(fn ConfigFor) *Manager {
 
 // WithGlobalLimits enables PgBouncer-style global caps:
 //
-//	maxDBConn   — max concurrent checkouts across ALL pools sharing a db
-//	maxUserConn — max concurrent checkouts across ALL pools sharing a user
+//	maxDBConn   â€” max concurrent checkouts across ALL pools sharing a db
+//	maxUserConn â€” max concurrent checkouts across ALL pools sharing a user
 //
 // 0 = unlimited. `obs`, if non-nil, fires on every rejection so callers
 // can wire a metric counter; pass nil to skip.
@@ -319,7 +319,7 @@ type ResizeRecord struct {
 	To   int
 }
 
-// SplitName reverses Key.String — splits "db/user" back into a Key.
+// SplitName reverses Key.String â€” splits "db/user" back into a Key.
 // Tolerant: a name without "/" goes into DB.
 //
 // Exported because admin_console + cmd both reverse pool names back

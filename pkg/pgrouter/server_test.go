@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 func freePort(t *testing.T) int {

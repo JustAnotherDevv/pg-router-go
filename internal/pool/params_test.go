@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 func TestCachedParamsEmptyBeforeAnyDial(t *testing.T) {
@@ -95,7 +95,7 @@ func TestCachedParamsConcurrentCapture(t *testing.T) {
 func TestCachedParamsEmptyParamsDoNotPopulate(t *testing.T) {
 	p := newPool(t, "empty-conn", func(_ context.Context) (*backend.Conn, error) {
 		// A dial that returns a Conn with no Params (defensive against
-		// upstreams that hand us none — e.g. our test stubs).
+		// upstreams that hand us none â€” e.g. our test stubs).
 		return &backend.Conn{}, nil
 	}, Config{DefaultPoolSize: 1})
 

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +15,7 @@ func TestClientSideReceiveStartup(t *testing.T) {
 
 	// Client encodes + writes a StartupMessage.
 	// NOTE: net.Pipe Write blocks until matching Read, so wrap in a
-	// goroutine — testutil.SendStartup's synchronous Write would
+	// goroutine â€” testutil.SendStartup's synchronous Write would
 	// deadlock here. Used inline for that reason.
 	startup := &pgproto3.StartupMessage{
 		ProtocolVersion: pgproto3.ProtocolVersionNumber,

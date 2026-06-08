@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +14,7 @@ import (
 // ClientSide/ServerSide wrappers. The wrappers are pure 1-line
 // passthroughs to pgproto3 (see client_side.go / server_side.go) and
 // own no encoding logic of their own, so testing every message type
-// was essentially testing pgproto3 itself — owned by the pgx team and
+// was essentially testing pgproto3 itself â€” owned by the pgx team and
 // covered by their suite.
 //
 // What remains: 6 representative tests, one per message-class branch:
@@ -27,7 +27,7 @@ import (
 //
 // If pgrouter's wrappers ever stop being pure passthroughs (e.g. add
 // instrumentation, buffering, or message rewriting), expand this file
-// to cover the new behavior at THAT layer — not by re-listing every
+// to cover the new behavior at THAT layer â€” not by re-listing every
 // pgproto3 message type.
 
 // roundTripFrontend writes a FrontendMessage from a pgproto3.Frontend
@@ -123,7 +123,7 @@ func TestBackendErrorResponse(t *testing.T) {
 }
 
 // TestBackendReadyForQuery is kept because IsReadyForQuery is a
-// pgrouter helper (see message.go) — this verifies it on a wire-decoded
+// pgrouter helper (see message.go) â€” this verifies it on a wire-decoded
 // message rather than a literal struct.
 func TestBackendReadyForQuery(t *testing.T) {
 	got := roundTripBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
@@ -145,7 +145,7 @@ func TestFrontendTerminate(t *testing.T) {
 }
 
 // TestStartupMessageRoundTrip exercises ClientSide.ReceiveStartup,
-// which dispatches to pgproto3.ReceiveStartupMessage — a different
+// which dispatches to pgproto3.ReceiveStartupMessage â€” a different
 // code path than Receive().
 func TestStartupMessageRoundTrip(t *testing.T) {
 	clt, srv := testutil.PipePair(t)

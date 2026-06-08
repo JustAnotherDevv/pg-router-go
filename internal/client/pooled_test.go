@@ -9,9 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // fakeBackend is a goroutine that speaks pgproto3.Backend on the server
@@ -109,7 +109,7 @@ func requirePoolStats(t *testing.T, p *pool.Pool, wantIdle, wantActive int) {
 }
 
 // newPoolWithFake returns a fakeBackend + a one-conn pool dialing into
-// it. Sugar over newDialPool — covers the most common client-test shape.
+// it. Sugar over newDialPool â€” covers the most common client-test shape.
 func newPoolWithFake(t *testing.T, size int) (*fakeBackend, *pool.Pool) {
 	t.Helper()
 	fb := newFakeBackend(t)
@@ -126,7 +126,7 @@ func startPooledDefault(t *testing.T, p *pool.Pool, cfg PooledConfig) (net.Conn,
 	if cfg.CannedParams == nil {
 		cfg.CannedParams = map[string]string{"server_version": "16.0"}
 	}
-	// Default the cross-backend prepared-statement cache to enabled —
+	// Default the cross-backend prepared-statement cache to enabled â€”
 	// most of the dispatch tests (Phase B suite especially) exercise
 	// the intercept path. Tests that need to assert pass-through
 	// behavior must NOT use this helper; they should construct the
@@ -279,7 +279,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	require.NoError(t, fe.Flush())
 
 	testutil.DrainToRFQ(t, nil, fe)
-	// Inside a transaction — pool should still hold the backend ACTIVE.
+	// Inside a transaction â€” pool should still hold the backend ACTIVE.
 	requirePoolStats(t, p, 0, 1)
 
 	// COMMIT.
@@ -288,7 +288,7 @@ func TestPooledReleasesAtTransactionBoundary(t *testing.T) {
 	require.NoError(t, fe.Flush())
 
 	testutil.DrainToRFQ(t, nil, fe)
-	// Boundary crossed — backend released.
+	// Boundary crossed â€” backend released.
 	requirePoolStats(t, p, 1, 0)
 }
 

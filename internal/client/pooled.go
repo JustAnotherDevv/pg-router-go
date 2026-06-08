@@ -15,7 +15,7 @@
 //     the client isn't session-pinned (LISTEN / advisory_lock / temp
 //     table / cursor), Release the backend back to the pool. The
 //     client sees the RFQ as usual.
-//  5. The next Query / Parse Acquires again — possibly a different
+//  5. The next Query / Parse Acquires again Ã¢â‚¬â€ possibly a different
 //     backend.
 //
 // MVP scope (M.9):
@@ -43,14 +43,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/proto"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
-	"github.com/JustAnotherDevv/pgrouter/internal/tracing"
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire/rawconn"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/proto"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/tracing"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire/rawconn"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire/splice"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -150,8 +150,8 @@ type PooledConfig struct {
 
 	// PoolMode is one of: "session" | "transaction" | "statement". Empty
 	// defaults to "transaction" (MVP default). In statement mode the
-	// backend is released after EVERY ReadyForQuery — even ones with
-	// TxStatus 'T' — and explicit BEGIN / START TRANSACTION statements
+	// backend is released after EVERY ReadyForQuery Ã¢â‚¬â€ even ones with
+	// TxStatus 'T' Ã¢â‚¬â€ and explicit BEGIN / START TRANSACTION statements
 	// are rejected with SQLSTATE 25001 before reaching a backend.
 	// "session" is treated as "force session-pin from the first message"
 	// for clients that need it; the existing session-pin path covers
@@ -167,7 +167,7 @@ type PooledConfig struct {
 	// elsewhere.
 	Hooks []QueryHook
 
-	// Splice tunes the splice forwarder for the backend→client drain
+	// Splice tunes the splice forwarder for the backendÃ¢â€ â€™client drain
 	// path. nil = disabled (use the pgproto3 decode/re-encode path for
 	// every message). When set with Enabled=true, the drain loop
 	// bypasses pgproto3 for "boring" messages (DataRow, RowDescription,
@@ -182,7 +182,7 @@ type PooledConfig struct {
 
 	// PreparedCache enables the cross-backend prepared-statement
 	// cache. When false, the per-client PrepareCache is left nil and
-	// the per-message interception + rewrite is skipped entirely —
+	// the per-message interception + rewrite is skipped entirely Ã¢â‚¬â€
 	// Parse/Bind/Close pass through to the backend with the client's
 	// original names. The per-backend LRU is also left unallocated.
 	//
@@ -192,15 +192,15 @@ type PooledConfig struct {
 	// savings. Mirrors cfg.Wire.PreparedCache.
 	PreparedCache bool
 
-	// RawPassthrough, when true, bypasses pgproto3 for client→backend
+	// RawPassthrough, when true, bypasses pgproto3 for clientÃ¢â€ â€™backend
 	// message reading. Instead of decoding each frontend message into a
 	// Go struct and re-encoding it for the backend, raw bytes are read
 	// directly from the client socket and forwarded to the backend. Only
 	// Query and Parse messages have their SQL extracted for GUC/pin/
-	// classification — everything else is pure passthrough.
+	// classification Ã¢â‚¬â€ everything else is pure passthrough.
 	//
 	// This eliminates per-message struct allocations and encode/decode
-	// overhead on the client→backend hot path. Backend→client splice
+	// overhead on the clientÃ¢â€ â€™backend hot path. BackendÃ¢â€ â€™client splice
 	// (Phase A) continues to work independently.
 	//
 	// Trade-off: prepared-cache interception is disabled when raw
@@ -209,7 +209,7 @@ type PooledConfig struct {
 
 	// GUCTracking, when true (default), enables per-query SQL extraction
 	// to track SET commands and GUC changes. When false, skips
-	// ExtractQuerySQL + AnalyzeSQL + ObserveQueryWithInfo entirely — the
+	// ExtractQuerySQL + AnalyzeSQL + ObserveQueryWithInfo entirely Ã¢â‚¬â€ the
 	// hot path just forwards raw bytes like pgcat. SET detection falls
 	// back to CommandComplete tag (less accurate but much faster).
 	GUCTracking bool
@@ -237,7 +237,7 @@ type PooledConn struct {
 	// Prometheus metrics. Production paths set these from the
 	// StartupMessage; tests may leave them empty (metrics simply emit
 	// empty labels). App is the StartupMessage `application_name`
-	// parameter — empty when the client didn't supply one.
+	// parameter Ã¢â‚¬â€ empty when the client didn't supply one.
 	Database string
 	User     string
 	App      string
@@ -267,7 +267,7 @@ type PooledConn struct {
 	// PrimaryHealthy reports the current health of the primary backing
 	// this conn's database. When false, new writes get 08006
 	// connection_failure (failover state). Reads route to replicas via
-	// ReplicaPicker. nil → always healthy.
+	// ReplicaPicker. nil Ã¢â€ â€™ always healthy.
 	PrimaryHealthy func() bool
 
 	// ReqID is the connection-scoped request ID (stamped into log lines
@@ -275,8 +275,8 @@ type PooledConn struct {
 	ReqID string
 
 	// QPSLimiter, if non-nil, is the shared per-(db, user) token bucket
-	// consulted before forwarding each Query/Parse. Empty bucket →
-	// reject with SQLSTATE 53300 ("too_many_connections" — closest
+	// consulted before forwarding each Query/Parse. Empty bucket Ã¢â€ â€™
+	// reject with SQLSTATE 53300 ("too_many_connections" Ã¢â‚¬â€ closest
 	// canonical code for transient overload).
 	QPSLimiter *util.TokenBucket
 
@@ -311,7 +311,7 @@ type PooledConn struct {
 // ResetOnRelease=true. Use this from cmd/pgrouter and any orchestration
 // code; direct struct literals are fine for tests that want to opt out.
 //
-// Database/User/timeouts are zero-valued — set them on the returned
+// Database/User/timeouts are zero-valued Ã¢â‚¬â€ set them on the returned
 // struct or use the dispatcher's wiring path (PooledHandler.servePooled)
 // which fills them from config + StartupMessage.
 func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]string) *PooledConn {
@@ -329,7 +329,7 @@ func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]strin
 // backend. The key insight: the splice drain loop and the caller's
 // bConn.Frontend.Receive() must SHARE the pgproto3 chunkReader so that
 // bytes the chunkReader over-reads into its 8KB buf are visible to both
-// readers — otherwise DrainSplice blocks on bytes that Frontend has
+// readers Ã¢â‚¬â€ otherwise DrainSplice blocks on bytes that Frontend has
 // already consumed.
 //
 // The wiring is:
@@ -344,7 +344,7 @@ func NewPooledConn(log *slog.Logger, p *pool.Pool, cannedParams map[string]strin
 //     DrainSplice or Frontend.Receive) flow through the putback buffer
 //     first, then through chunkReader.
 //
-// Safe to call when Splice is nil or disabled — it's a no-op in that
+// Safe to call when Splice is nil or disabled Ã¢â‚¬â€ it's a no-op in that
 // case (and clears any stale PutbackReader). The previous bConn.Frontend
 // is left intact for callers that still reference it.
 //
@@ -359,7 +359,7 @@ func (h *PooledConn) setupSplice(bConn *backend.Conn) {
 		return
 	}
 	// In raw passthrough mode, reuse the existing bConn.Frontend's
-	// chunkReader — do NOT create a new Frontend (that orphans the
+	// chunkReader Ã¢â‚¬â€ do NOT create a new Frontend (that orphans the
 	// old chunkReader's iobufpool buffer, leaking 8KB per query).
 	if h.RawPassthrough {
 		raw, err := splice.NewRawReader(bConn.Frontend)
@@ -420,7 +420,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			stats.SanitizeAppName(h.App))
 	}
 
-	// Raw passthrough: bypass pgproto3 for client→backend hot path.
+	// Raw passthrough: bypass pgproto3 for clientÃ¢â€ â€™backend hot path.
 	if h.RawPassthrough {
 		return h.serveRaw(ctx, conn)
 	}
@@ -441,10 +441,10 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 
 	state := NewClientState()
 	gucCache := NewGUCCache()
-	// prepCache is the per-client (clientName → serverName) map for the
+	// prepCache is the per-client (clientName Ã¢â€ â€™ serverName) map for the
 	// cross-backend prepared-statement cache. Starts nil and is lazy-
 	// allocated on the first Parse message. When PreparedCache=false,
-	// it stays nil permanently — the per-message intercept and the
+	// it stays nil permanently Ã¢â‚¬â€ the per-message intercept and the
 	// observeClientMessage prepCache calls then become no-ops, so the
 	// cache overhead (per-Parse hash + RWMutex + map) is paid zero.
 	//
@@ -468,15 +468,15 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	// pin follow-up reads to the primary.
 	var lastWriteAt time.Time
 
-	// First synthetic RFQ → mark client idle.
+	// First synthetic RFQ Ã¢â€ â€™ mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 
 	var bConn *backend.Conn
 	// bConnPool tracks which pool bConn was acquired from so Release
-	// goes back to the same pool (replica routing → replica's pool).
+	// goes back to the same pool (replica routing Ã¢â€ â€™ replica's pool).
 	var bConnPool *pool.Pool
 	// `sessionPinned` flips on once we see LISTEN / advisory_lock / temp
-	// table / cursor — after which the backend stays attached for the
+	// table / cursor Ã¢â‚¬â€ after which the backend stays attached for the
 	// rest of the client's session.
 	sessionPinned := false
 
@@ -632,11 +632,11 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// dial retries. Reads that already routed to a replica
 			// (acquirePool != h.Pool) bypass this.
 			if acquirePool == h.Pool && h.PrimaryHealthy != nil && !h.PrimaryHealthy() {
-				log.Info("failover: rejecting write — primary unhealthy",
+				log.Info("failover: rejecting write Ã¢â‚¬â€ primary unhealthy",
 					"db", h.Database)
 				proto.SendErrorRFQ(be, "08006",
 					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
-				// End the span we just opened for this rejected query —
+				// End the span we just opened for this rejected query Ã¢â‚¬â€
 				// otherwise sustained failover rejections leak spans.
 				if curSpan != nil {
 					h.markSpanFailed(curSpan, "08006", "primary unhealthy (failover)")
@@ -679,7 +679,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if bConn != nil {
 			// Prepared-statement interception: cache-hit Parses are
 			// synthesized locally (no backend round trip), Bind/Describe/
-			// Close('S') get rewritten from client_name → pgr_<hash>.
+			// Close('S') get rewritten from client_name Ã¢â€ â€™ pgr_<hash>.
 			// suppressForward=true means we already emitted the
 			// equivalent response to the client; skip forwarding.
 			//
@@ -689,7 +689,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			// CloseComplete it never requested.
 			//
 			// Skipped entirely when prepCache is nil (cfg.Wire.PreparedCache=false)
-			// — the message goes straight to the backend unchanged.
+			// Ã¢â‚¬â€ the message goes straight to the backend unchanged.
 			forwardMsg := msg
 			suppressForward := false
 			if prepCache != nil {
@@ -701,18 +701,18 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				}
 			}
 
-			// Forward client → server (unless intercept synthesized the
+			// Forward client Ã¢â€ â€™ server (unless intercept synthesized the
 			// reply already). Send() buffers; we only Flush() when
 			// triggersBackendDrain is true (Sync/Query/CopyDone/CopyFail)
 			// so Parse/Bind/Execute/Describe/Close are batched into a
-			// single write — reducing syscalls from 4 to 1 per extended
+			// single write Ã¢â‚¬â€ reducing syscalls from 4 to 1 per extended
 			// query.
 			if !suppressForward {
 				bConn.Frontend.Send(forwardMsg)
 			}
 
 			// In extended-protocol mode the backend only emits responses
-			// after Sync (or CopyDone/CopyFail at the end of a COPY) —
+			// after Sync (or CopyDone/CopyFail at the end of a COPY) Ã¢â‚¬â€
 			// so draining is ONLY safe to do then. For simple Query and
 			// these few sync-like messages we drain to the next stable
 			// state. Otherwise loop back to receive the next client
@@ -722,7 +722,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				continue
 			}
 
-			// Flush all buffered client→backend messages (Parse/Bind/Execute
+			// Flush all buffered clientÃ¢â€ â€™backend messages (Parse/Bind/Execute
 			// may have been buffered above) before draining backend responses.
 			if err := bConn.Frontend.Flush(); err != nil {
 				return fmt.Errorf("server send: %w", err)
@@ -763,7 +763,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			queryTimedOut := out.queryTimedOut
 			if queryTimedOut {
 				// PG aborts the in-flight query when the FE socket
-				// closes; that's sufficient — no separate CancelRequest
+				// closes; that's sufficient Ã¢â‚¬â€ no separate CancelRequest
 				// needed. The backend is now in an unknown state, so
 				// close + drop it; the next message will Acquire a
 				// fresh one.
@@ -778,7 +778,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 
-		// Backend not needed (e.g. Sync without prior Parse) — synthesize
+		// Backend not needed (e.g. Sync without prior Parse) Ã¢â‚¬â€ synthesize
 		// a no-op response.
 		if _, ok := msg.(*pgproto3.Sync); ok {
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -921,7 +921,7 @@ func (h *PooledConn) finalizeRFQ(in drainInput, out *drainOutcome, curSpan trace
 //   - If in.spliceReader is non-nil, the loop first calls
 //     splice.DrainSplice to forward "boring" messages (DataRow,
 //     RowDescription, CommandComplete, ParseComplete, BindComplete,
-//     NoData, EmptyQuery, PortalSuspended) as raw bytes — bypassing
+//     NoData, EmptyQuery, PortalSuspended) as raw bytes Ã¢â‚¬â€ bypassing
 //     pgproto3 decode/re-encode for the hot path.
 //   - DrainSplice stops when it hits a non-boring message and puts
 //     the 5-byte header back via the PutbackReader. The next
@@ -955,14 +955,14 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			}
 			return out, curSpan, fmt.Errorf("raw forward: %w", serr)
 		}
-		// Handle CopyInResponse — backend waiting for client CopyData.
+		// Handle CopyInResponse Ã¢â‚¬â€ backend waiting for client CopyData.
 		if res.CopyIn {
 			if h.QueryTimeout > 0 {
 				_ = in.bConn.NetConn.SetReadDeadline(time.Time{})
 			}
 			return out, curSpan, nil
 		}
-		// ReadyForQuery — update state machine directly from tx_status.
+		// ReadyForQuery Ã¢â‚¬â€ update state machine directly from tx_status.
 		if res.Tag == 'Z' {
 			prevTx := in.state.Tx()
 			boundary := in.state.ObserveTxStatus(res.TxStatus)
@@ -973,7 +973,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			curSpan = h.finalizeRFQ(in, &out, curSpan)
 			return out, curSpan, nil
 		}
-		// Unknown tag — shouldn't happen, but be safe.
+		// Unknown tag Ã¢â‚¬â€ shouldn't happen, but be safe.
 		return out, curSpan, nil
 	}
 
@@ -987,7 +987,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 			return out, curSpan, fmt.Errorf("server recv: %w", err)
 		}
 		// Filter out CloseComplete frames produced by our LRU
-		// evictions — the client never asked for them.
+		// evictions Ã¢â‚¬â€ the client never asked for them.
 		if _, isCC := bmsg.(*pgproto3.CloseComplete); isCC && *in.pendingEvictCC > 0 {
 			*in.pendingEvictCC--
 			continue
@@ -996,13 +996,13 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 		if err := in.be.Flush(); err != nil {
 			return out, curSpan, fmt.Errorf("client send: %w", err)
 		}
-		// Tx-state transitions → per-(db, user) counters.
+		// Tx-state transitions Ã¢â€ â€™ per-(db, user) counters.
 		prevTx := in.state.Tx()
 		if in.state.ObserveBackendMessage(bmsg) {
 			newTx := in.state.Tx()
 			h.observeTxTransition(in.state, prevTx, newTx)
 		}
-		// CopyInResponse — backend is now waiting for client
+		// CopyInResponse Ã¢â‚¬â€ backend is now waiting for client
 		// CopyData. Stop draining; outer loop will receive CopyData.
 		if _, ok := bmsg.(*pgproto3.CopyInResponse); ok {
 			if h.QueryTimeout > 0 {
@@ -1064,8 +1064,8 @@ func (h *PooledConn) observeClientMessage(
 // kind is "query" (simple) or "parse" (extended). prepName is the
 // client-supplied statement name for Parse, "" for Query.
 //
-// LogSQL=="off" still emits the line — so operators always see request
-// flow — but with no `sql` field.
+// LogSQL=="off" still emits the line Ã¢â‚¬â€ so operators always see request
+// flow Ã¢â‚¬â€ but with no `sql` field.
 func (h *PooledConn) logSQL(log *slog.Logger, kind, prepName, sql string) {
 	// Skip all allocs when Debug logging is disabled.
 	if !log.Enabled(context.Background(), slog.LevelDebug) {
@@ -1089,11 +1089,11 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return s[:n] + "..."
 }
 
 // fireReplay sends `sql` on the backend and drains the response up to
-// ReadyForQuery. Returns an error on backend ErrorResponse — the caller
+// ReadyForQuery. Returns an error on backend ErrorResponse; the caller
 // should treat the backend as poisoned and discard it.
 func (h *PooledConn) fireReplay(bConn *backend.Conn, sql string) error {
 	if err := proto.DrainSimpleQuery(bConn.Frontend, sql, nil); err != nil {
@@ -1156,7 +1156,7 @@ func (h *PooledConn) welcomeParams(ctx context.Context) map[string]string {
 //     succeeded and populated the cache, or the upstream emitted no
 //     ParameterStatus (in which case repeated warms wouldn't help).
 //
-// This caps the warm at one attempt per pool ever — keeps welcome
+// This caps the warm at one attempt per pool ever Ã¢â‚¬â€ keeps welcome
 // latency O(RTT) only on the very first client.
 func (h *PooledConn) cachedOrWarm(ctx context.Context) map[string]string {
 	if h.Pool == nil {
@@ -1199,7 +1199,7 @@ func (h *PooledConn) takeQPS() bool {
 }
 
 // releasePool returns p if non-nil else fallback. Used to pick the
-// pool to Release into (acquired-from pool — primary or replica).
+// pool to Release into (acquired-from pool Ã¢â‚¬â€ primary or replica).
 func releasePool(p *pool.Pool, fallback *pool.Pool) *pool.Pool {
 	if p != nil {
 		return p
@@ -1235,7 +1235,7 @@ func (h *PooledConn) stickyToPrimary(lastWrite time.Time) bool {
 //  4. OTel span end          (when curSpan != nil)
 //
 // The redacted SQL is rendered ONCE at the longest cap any sink needs
-// (1024 bytes for audit) and reused — previously slow_query + audit
+// (1024 bytes for audit) and reused Ã¢â‚¬â€ previously slow_query + audit
 // each ran SQLForLog independently, doing the regex/scan twice per
 // query at the cost of an extra allocation.
 func (h *PooledConn) onQueryComplete(log *slog.Logger, kind, sql, prepName string,
@@ -1294,7 +1294,7 @@ func (h *PooledConn) onQueryComplete(log *slog.Logger, kind, sql, prepName strin
 // and Parse messages. kind is "query" or "parse"; prepName is the
 // extended-protocol statement name (empty for simple Query).
 //
-// Other frontend messages → ok=false; Serve skips the per-query
+// Other frontend messages Ã¢â€ â€™ ok=false; Serve skips the per-query
 // bookkeeping path entirely.
 func extractClientQuery(msg pgproto3.FrontendMessage) (sql, kind, prepName string, ok bool) {
 	switch m := msg.(type) {
@@ -1413,10 +1413,10 @@ func messageNeedsBackend(msg pgproto3.FrontendMessage) bool {
 // applyIdleDeadline sets a SetReadDeadline on `conn` based on the
 // current tx state + the handler's two idle limits:
 //
-//	state.Tx() == 'I' → ClientIdleTimeout (PgBouncer client_idle_timeout)
-//	state.Tx() == 'T' or 'E' → IdleTxTimeout (idle_transaction_timeout)
+//	state.Tx() == 'I' Ã¢â€ â€™ ClientIdleTimeout (PgBouncer client_idle_timeout)
+//	state.Tx() == 'T' or 'E' Ã¢â€ â€™ IdleTxTimeout (idle_transaction_timeout)
 //
-// 0 (disabled) → clear any prior deadline. The deadline is re-armed on
+// 0 (disabled) Ã¢â€ â€™ clear any prior deadline. The deadline is re-armed on
 // every Serve-loop iteration so a fresh client message keeps the
 // connection alive.
 func (h *PooledConn) applyIdleDeadline(conn net.Conn, state *ClientState) {
@@ -1455,7 +1455,7 @@ func isTimeoutErr(err error) bool {
 // stable state (RFQ or CopyInResponse).
 //
 // In extended-protocol mode the backend buffers Parse/Bind/Describe/
-// Execute responses until Sync — only then does it flush. So draining
+// Execute responses until Sync Ã¢â‚¬â€ only then does it flush. So draining
 // after a non-sync frontend message would block forever. Other code
 // paths (simple Query, end-of-COPY) DO trigger backend responses
 // immediately, so drain after those.
@@ -1480,11 +1480,11 @@ func triggersBackendDrain(msg pgproto3.FrontendMessage) bool {
 //   - suppress=false + forwardMsg!=msg: rewritten variant, forward instead.
 //
 // Side effects:
-//   - Parse records {client-name → server-name=pgr_<hash(sql)>} in the
+//   - Parse records {client-name Ã¢â€ â€™ server-name=pgr_<hash(sql)>} in the
 //     per-client PrepareCache.
 //   - Bind, Describe('S'), Close('S') rewrite their statement-name
 //     field to the cached server-name.
-//   - Close('S') is SUPPRESSED — we keep the statement on the backend
+//   - Close('S') is SUPPRESSED Ã¢â‚¬â€ we keep the statement on the backend
 //     for the next client (pgcat-style cross-client reuse). The client
 //     gets a synthesized CloseComplete immediately.
 //   - On Parse cache hit we synthesize ParseComplete to the client.
@@ -1493,14 +1493,14 @@ func triggersBackendDrain(msg pgproto3.FrontendMessage) bool {
 //     is filtered out by the drain loop via *pendingEvictCloseCompletes.
 //
 // Unnamed prepared statements (Name="") bypass the whole cache and
-// pass through unchanged — they're meant to be one-shot.
+// pass through unchanged Ã¢â‚¬â€ they're meant to be one-shot.
 //
 // If bConn.Prepared is nil the cache is disabled; all messages pass
 // through unmodified except Bind/Describe/Close which still get
 // rewritten (in case Parse was rewritten earlier on this client).
 //
 // If clientPrep is nil (cfg.Wire.PreparedCache=false), the entire
-// interception is skipped — the message is forwarded as-is. This is
+// interception is skipped Ã¢â‚¬â€ the message is forwarded as-is. This is
 // the configured-disable path that recovers the regressions seen on
 // workloads with low cache-hit rates.
 func (h *PooledConn) prepareInterceptForward(
@@ -1528,14 +1528,14 @@ func (h *PooledConn) prepareInterceptForward(
 			clientPrep.Observe(m.Name, m.Query, m.ParameterOIDs)
 		}
 		if bConn.Prepared != nil && bConn.Prepared.Has(server) {
-			// CACHE HIT — backend already has this Parse; synthesize
+			// CACHE HIT Ã¢â‚¬â€ backend already has this Parse; synthesize
 			// ParseComplete for the client and skip the round trip.
 			bConn.Prepared.Touch(server)
 			h.counters.OnPreparedHit()
 			be.Send(&pgproto3.ParseComplete{})
 			return nil, true, nil
 		}
-		// CACHE MISS — rewrite Name and forward.
+		// CACHE MISS Ã¢â‚¬â€ rewrite Name and forward.
 		h.counters.OnPreparedMiss()
 		if bConn.Prepared != nil {
 			if evicted := bConn.Prepared.Add(server); evicted != "" {
@@ -1575,7 +1575,7 @@ func (h *PooledConn) prepareInterceptForward(
 
 	case *pgproto3.Describe:
 		// Describe('S', name) inspects a prepared statement.
-		// Describe('P', name) inspects a portal — pass through.
+		// Describe('P', name) inspects a portal Ã¢â‚¬â€ pass through.
 		if m.ObjectType != 'S' || m.Name == "" {
 			return msg, false, nil
 		}
@@ -1588,9 +1588,9 @@ func (h *PooledConn) prepareInterceptForward(
 		return &out, false, nil
 
 	case *pgproto3.Close:
-		// Close('S', name) — suppress: keep statement on backend for
+		// Close('S', name) Ã¢â‚¬â€ suppress: keep statement on backend for
 		// the next client. Synthesize CloseComplete locally.
-		// Close('P', name) — closes a portal; pass through.
+		// Close('P', name) Ã¢â‚¬â€ closes a portal; pass through.
 		if m.ObjectType != 'S' || m.Name == "" {
 			return msg, false, nil
 		}
@@ -1607,7 +1607,7 @@ func (h *PooledConn) prepareInterceptForward(
 // and forwarding them directly to the backend. Only Query and Parse
 // messages have their SQL extracted for GUC/pin/classification.
 //
-// Backend→client splice (Phase A) continues to work independently.
+// BackendÃ¢â€ â€™client splice (Phase A) continues to work independently.
 // Prepared-cache interception is NOT supported in raw mode (messages
 // can't be rewritten without decode).
 func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
@@ -1631,14 +1631,14 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 	var curSpan trace.Span
 	var lastWriteAt time.Time
 
-	// First synthetic RFQ → mark client idle.
+	// First synthetic RFQ Ã¢â€ â€™ mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 
 	var bConn *backend.Conn
 	var bConnPool *pool.Pool
 	sessionPinned := false
 
-	// Write buffer for batching client→backend messages. Messages are
+	// Write buffer for batching clientÃ¢â€ â€™backend messages. Messages are
 	// accumulated here and flushed to bConn.NetConn when a drain
 	// trigger (Sync/Query) arrives, coalescing multiple small writes
 	// into a single write syscall. Pre-allocated to 8KB from pool.
@@ -1707,7 +1707,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 		}
 
 		// Extract SQL + compute SQLInfo for Query/Parse.
-		// When GUCTracking is disabled, skip entirely — just forward raw bytes
+		// When GUCTracking is disabled, skip entirely Ã¢â‚¬â€ just forward raw bytes
 		// like pgcat. SET detection falls back to CommandComplete tag.
 		//
 		// Fast path: use zero-alloc keyword check on raw bytes. Only extract
@@ -1744,7 +1744,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					"incompatible feature", sql)
 			}
 
-			// Unrecognized SET → force session-pin.
+			// Unrecognized SET Ã¢â€ â€™ force session-pin.
 			pinSession(&sessionPinned, log, gucCache.HasUnrecognizedSet(),
 				"SET of GUC outside replayable whitelist", "")
 		}
@@ -1804,7 +1804,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			acquirePool := h.selectPoolForMsg(sessionPinned,
 				curSQLOp, curROBegin, lastWriteAt)
 			if acquirePool == h.Pool && h.PrimaryHealthy != nil && !h.PrimaryHealthy() {
-				log.Info("failover: rejecting write — primary unhealthy",
+				log.Info("failover: rejecting write Ã¢â‚¬â€ primary unhealthy",
 					"db", h.Database)
 				proto.SendErrorRFQ(be, "08006",
 					fmt.Sprintf("pgrouter: primary for %q is unhealthy (failover); retry later", h.Database))
@@ -1893,7 +1893,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 
-		// Backend not needed — synthesize no-op response.
+		// Backend not needed Ã¢â‚¬â€ synthesize no-op response.
 		if tag == rawconn.TagSync {
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 			_ = be.Flush()

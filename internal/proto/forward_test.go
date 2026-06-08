@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +44,7 @@ func TestForwardClientToServer(t *testing.T) {
 		upstreamRecvCh <- m
 	}()
 
-	// Test thread: forward client → server.
+	// Test thread: forward client â†’ server.
 	_ = cl2.SetReadDeadline(time.Now().Add(2 * time.Second))
 	msg, err := ForwardClientToServer(src, dst)
 	require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestForwardServerToClient(t *testing.T) {
 		clientRecvCh <- m
 	}()
 
-	// Test thread: forward server → client.
+	// Test thread: forward server â†’ client.
 	_ = sv1.SetReadDeadline(time.Now().Add(2 * time.Second))
 	msg, err := ForwardServerToClient(src, dst)
 	require.NoError(t, err)

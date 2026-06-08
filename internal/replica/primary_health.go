@@ -1,7 +1,7 @@
 // Per-database primary health monitor.
 //
 // PrimaryMonitor maintains its OWN dedicated backend conn for health
-// probing — it does NOT borrow from the client-facing pool. This
+// probing â€” it does NOT borrow from the client-facing pool. This
 // avoids two production hazards we hit in v1.0:
 //
 //   1. Under a client-traffic spike that exhausts the pool, the probe
@@ -9,12 +9,12 @@
 //      unhealthy. Failover would fire spuriously while the primary
 //      was in fact perfectly fine.
 //   2. Re-using pool.Manager.Get with a synthetic '_pgrouter_health_'
-//      user leaked the probe pool into mgr.AllStats() — visible in
-//      SHOW POOLS + Prometheus pgrouter_pool_* labels — confusing
+//      user leaked the probe pool into mgr.AllStats() â€” visible in
+//      SHOW POOLS + Prometheus pgrouter_pool_* labels â€” confusing
 //      operators with a fake tenant.
 //
 // The dedicated conn is opened on first probe and re-dialled if it
-// errors out. State transitions (healthy ↔ unhealthy) are guarded by
+// errors out. State transitions (healthy â†” unhealthy) are guarded by
 // a mutex so the failure counter + the flag flip are atomic together
 // (fixes the TOCTOU race in the original atomic.Bool/Int32 pair).
 
@@ -27,8 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
 )
 
 // PrimaryMonitor tracks health of one primary via a dedicated probe
@@ -46,7 +46,7 @@ type PrimaryMonitor struct {
 	// together so a concurrent recovery can't race with a failure
 	// transition. The mutex is held ONLY by record{Success,Failure}
 	// (rare write path). Healthy() reads `healthyAtomic` lock-free
-	// — it's set inside the mutex'd write path so observers see the
+	// â€” it's set inside the mutex'd write path so observers see the
 	// same value the writer just committed.
 	state struct {
 		mu      sync.Mutex
@@ -66,7 +66,7 @@ type PrimaryMonitor struct {
 }
 
 // NewPrimaryMonitor builds a monitor. `dial` is invoked to open the
-// dedicated probe conn — pass the same backend.Dial-derived closure
+// dedicated probe conn â€” pass the same backend.Dial-derived closure
 // that the primary pool uses, so probes hit the same upstream.
 //
 // `maxFailures` is the consecutive failure count above which the
@@ -94,7 +94,7 @@ func NewPrimaryMonitor(db string, dial func(context.Context) (*backend.Conn, err
 		probeEvery:  every,
 		maxFailures: maxFailures,
 	}
-	pm.state.healthy = true // optimistic — first probe will correct
+	pm.state.healthy = true // optimistic â€” first probe will correct
 	pm.healthyAtomic.Store(true)
 	return pm
 }
@@ -105,7 +105,7 @@ func (pm *PrimaryMonitor) Healthy() bool {
 	return pm.healthyAtomic.Load()
 }
 
-// Start spawns the probe goroutine. Idempotent — subsequent calls
+// Start spawns the probe goroutine. Idempotent â€” subsequent calls
 // are no-ops. Without this guard a double-Start would spawn duplicate
 // probe goroutines that both read/write probeConn under probeMu.
 func (pm *PrimaryMonitor) Start() {

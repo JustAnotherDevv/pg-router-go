@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // TestWireSCRAMHandshake runs PerformServerAuth on one end of a net.Pipe

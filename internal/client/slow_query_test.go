@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 func TestSlowQueryEmitsWarn(t *testing.T) {
@@ -35,7 +35,7 @@ func TestSlowQueryEmitsWarn(t *testing.T) {
 		User:     "alice",
 	})
 
-	// Backend sleeps before responding → query crosses 5ms threshold.
+	// Backend sleeps before responding â†’ query crosses 5ms threshold.
 	fb.expect(func(be *pgproto3.Backend, msg pgproto3.FrontendMessage) {
 		time.Sleep(20 * time.Millisecond)
 		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})

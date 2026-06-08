@@ -1,5 +1,5 @@
 // Package splice is the Phase A splice forwarder: a low-allocation
-// hot path for backend→client message forwarding that bypasses
+// hot path for backendâ†’client message forwarding that bypasses
 // pgproto3's decode/re-encode for messages that don't carry any
 // observation the proxy needs to perform.
 //
@@ -15,7 +15,7 @@ import (
 	"reflect"
 	"unsafe"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
 )
 
 // TagClass classifies a Postgres backend message tag byte for the
@@ -120,7 +120,7 @@ func init() {
 	tagClassTable['Z'] = ClassTerminator
 
 	// CopyIn: Backend signals it's ready to receive CopyData; we stop
-	// the drain loop and let the outer loop consume client→backend
+	// the drain loop and let the outer loop consume clientâ†’backend
 	// CopyData.
 	tagClassTable['G'] = ClassCopyIn
 
@@ -222,7 +222,7 @@ type ChunkReaderNext interface {
 //	    minBufSize int
 //	}
 //
-// This file asserts the layout at init() — if pgproto3 changes, the
+// This file asserts the layout at init() â€” if pgproto3 changes, the
 // assert fails loudly at startup rather than silently corrupting
 // memory.
 type chunkReaderMirror struct {
@@ -238,7 +238,7 @@ type chunkReaderMirror struct {
 func (m *chunkReaderMirror) Next(n int) ([]byte, error) {
 	if m.rp == m.wp {
 		if len(*m.buf) != m.minBufSize {
-			// pgproto3 uses an internal pool; we don't bother —
+			// pgproto3 uses an internal pool; we don't bother â€”
 			// the buf is allocated once at NewFrontend and lives
 			// for the lifetime of the Frontend, so dropping the
 			// pool-resize optimization is safe.
@@ -282,7 +282,7 @@ func (m *chunkReaderMirror) Next(n int) ([]byte, error) {
 
 // RawReader is the io.Reader adapter returned by NewRawReader. It
 // reads through the pgproto3.Frontend's internal chunkReader so it
-// shares the buffer with Frontend.Receive — critical for the splice
+// shares the buffer with Frontend.Receive â€” critical for the splice
 // forwarder, where over-reads in the chunkReader must stay accessible
 // to the next Receive call.
 //
@@ -315,7 +315,7 @@ func NewRawReader(fe any) (*RawReader, error) {
 		return nil, errors.New("splice: Frontend.cr is not a non-nil pointer (pgproto3 layout changed?)")
 	}
 	// crField is *pgproto3.chunkReader. We reinterpret it as
-	// *chunkReaderMirror. The cast is sound iff the layouts match —
+	// *chunkReaderMirror. The cast is sound iff the layouts match â€”
 	// assertChunkReaderLayout enforces this at init().
 	crPtr := unsafe.Pointer(crField.Pointer())
 	mirror := (*chunkReaderMirror)(crPtr)
@@ -333,11 +333,11 @@ func NewRawReader(fe any) (*RawReader, error) {
 // DrainSplice + Frontend.Receive path and would fail immediately
 // on any layout mismatch (corrupted data, deadlocks, or panics).
 // If pgproto3 ever changes its chunkReader layout, these tests
-// will fail loudly — the fix is to update chunkReaderMirror to
+// will fail loudly â€” the fix is to update chunkReaderMirror to
 // match the new layout.
 
 // Read reads exactly len(p) bytes from the chunkReader. It does NOT
-// return early on short reads — it loops until the buffer is full or
+// return early on short reads â€” it loops until the buffer is full or
 // the underlying io.Reader reports EOF/error. The returned slice is
 // only valid until the next Next call (per pgproto3's contract).
 func (r *RawReader) Read(p []byte) (int, error) {
@@ -368,7 +368,7 @@ func (r *RawReader) Read(p []byte) (int, error) {
 // Rewind moves the chunkReader read position back by len(buf) bytes.
 // Used by DrainSplice to "unread" a 5-byte message header so the
 // next pgproto3.Frontend.Receive() call sees it. buf's contents
-// are ignored — only len(buf) matters (the chunkReader's buf
+// are ignored â€” only len(buf) matters (the chunkReader's buf
 // already holds the right bytes from the prior Read). The caller
 // MUST pass a slice of length <= the number of bytes consumed since
 // the last refill; DrainSplice always passes hdr (5 bytes) right
@@ -395,7 +395,7 @@ type RawForwardResult struct {
 // writes them directly to dst, bypassing pgproto3 decode/re-encode.
 // This eliminates heap allocations for every backend message.
 //
-// Classification is done by tag byte only — no body inspection except
+// Classification is done by tag byte only â€” no body inspection except
 // for ReadyForQuery (byte 5 = tx_status).
 //
 // Returns when:
@@ -492,7 +492,7 @@ func RawForwardAll(dst io.Writer, src SpliceReader, buf []byte) (RawForwardResul
 
 // Putback pushes bytes back so the next Read returns them first.
 // If buf is longer than HeaderSize, only the last HeaderSize bytes
-// are kept (earlier bytes are silently dropped — we never need to
+// are kept (earlier bytes are silently dropped â€” we never need to
 // put back more than a header).
 func (p *PutbackReader) Putback(buf []byte) {
 	if len(buf) == 0 {

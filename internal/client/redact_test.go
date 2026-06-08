@@ -94,7 +94,7 @@ func TestSQLForLogModes(t *testing.T) {
 func TestSQLForLogTruncates(t *testing.T) {
 	long := strings.Repeat("x", 1000)
 	out := SQLForLog("full", long, 50)
-	// 50 chars + "…" (3 bytes UTF-8) = 53.
+	// 50 chars + "..." = 53.
 	require.LessOrEqual(t, len(out), 53)
 	require.Less(t, len(out), len(long))
 }

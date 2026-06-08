@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 // readerConn drains a pre-peeked bufio reader before falling through to
 // the underlying conn. Used when PROXY parsing peeked bytes that
-// weren't a PROXY header — those bytes have to feed pgwire startup.
+// weren't a PROXY header â€” those bytes have to feed pgwire startup.
 //
-// Does NOT embed net.Conn — same rationale as proxyConn: a downstream
+// Does NOT embed net.Conn â€” same rationale as proxyConn: a downstream
 // type-assertion to the underlying TCPConn would drain raw bytes and
 // skip the bufio reader holding the peeked preamble bytes.
 type readerConn struct {
@@ -38,7 +38,7 @@ func (rc *readerConn) SetDeadline(t time.Time) error      { return rc.conn.SetDe
 
 // Handler is called once per accepted connection. The implementation owns
 // the connection's lifetime; it MUST Close the conn before returning.
-// ctx is cancelled when the listener is shutting down — handlers should
+// ctx is cancelled when the listener is shutting down â€” handlers should
 // honor cancellation for graceful shutdown.
 type Handler func(ctx context.Context, conn net.Conn)
 
@@ -155,17 +155,17 @@ func (l *Listener) Close() error {
 
 // parsePROXYOrWrap handles the 4-way PROXY-preamble outcome:
 //
-//  1. Valid PROXY header with real source addr → return proxyConn.
-//  2. Valid PROXY header without source (LOCAL/UNKNOWN) → return readerConn.
-//  3. No PROXY header (bare client during rollout) → return readerConn.
-//  4. Parse error → log + close + return ok=false.
+//  1. Valid PROXY header with real source addr â†’ return proxyConn.
+//  2. Valid PROXY header without source (LOCAL/UNKNOWN) â†’ return readerConn.
+//  3. No PROXY header (bare client during rollout) â†’ return readerConn.
+//  4. Parse error â†’ log + close + return ok=false.
 //
 // ok=false means the caller MUST return without invoking the handler;
 // the conn has already been closed.
 //
-// Tight deadline: PROXY preambles are ≤108 bytes (v1) or ≤16+~36 (v2);
+// Tight deadline: PROXY preambles are â‰¤108 bytes (v1) or â‰¤16+~36 (v2);
 // a healthy LB ships them in one TCP segment. 1s is generous;
-// 5s gave slow-read attackers ~max_client_conn × 5s goroutine pin.
+// 5s gave slow-read attackers ~max_client_conn Ã— 5s goroutine pin.
 func (l *Listener) parsePROXYOrWrap(c net.Conn) (net.Conn, bool) {
 	_ = c.SetReadDeadline(time.Now().Add(1 * time.Second))
 	info, br, err := ReadProxyHeader(c)
@@ -185,7 +185,7 @@ func (l *Listener) parsePROXYOrWrap(c net.Conn) (net.Conn, bool) {
 		}
 		return &readerConn{conn: c, r: br}, true
 	case err == nil:
-		// LOCAL/UNKNOWN PROXY command — keep underlying addr.
+		// LOCAL/UNKNOWN PROXY command â€” keep underlying addr.
 		return &readerConn{conn: c, r: br}, true
 	default:
 		l.log.Warn("PROXY header parse failed; closing",

@@ -17,9 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire/splice"
 )
 
 // startPooledWithSplice is sugar over startPooled that enables the
@@ -100,7 +100,7 @@ func TestPooledSpliceHandlesInterestingMidStream(t *testing.T) {
 			{Name: []byte("?column?"), DataTypeOID: 23, DataTypeSize: 4},
 		}})
 		be.Send(&pgproto3.DataRow{Values: [][]byte{[]byte("1")}})
-		// ParameterStatus is "interesting" → splice must put back
+		// ParameterStatus is "interesting" â†’ splice must put back
 		// its 5-byte header so the decoded path can run
 		// ObserveBackendMessage.
 		be.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
@@ -143,7 +143,7 @@ func TestPooledSpliceHandlesInterestingMidStream(t *testing.T) {
 //
 // Each subtest builds its own fakeBackend + pool + PooledConn so the
 // two scenarios don't share state (a single fakeBackend can't serve
-// two PooledConns — both would read from the same net.Pipe and the
+// two PooledConns â€” both would read from the same net.Pipe and the
 // fake's script queue would interleave).
 func TestPooledSpliceEquivalentToNoSplice(t *testing.T) {
 	cases := []struct {

@@ -2,19 +2,19 @@
 //
 // Clients connecting to the virtual database name "pgbouncer" land in
 // this handler instead of the regular pool. We synthesise pgwire v3
-// responses to a small SQL surface — no real Postgres involved.
+// responses to a small SQL surface â€” no real Postgres involved.
 //
 // Supported commands (case-insensitive):
 //
-//   SHOW STATS        — per-(db, user) query + transaction totals
-//   SHOW POOLS        — per-pool size/idle/active/waiters snapshot
-//   SHOW DATABASES    — configured database list
-//   SHOW LISTS        — global counters (databases, pools, conns)
-//   SHOW VERSION      — pgrouter version + commit
-//   SHOW HELP         — quick command list
-//   PAUSE / RESUME    — accept/log; live drain is post-v1
-//   RELOAD            — fires the synthetic SIGHUP via AdminAPI.Reload
-//   <anything else>   — ERROR "unknown command"
+//   SHOW STATS        â€” per-(db, user) query + transaction totals
+//   SHOW POOLS        â€” per-pool size/idle/active/waiters snapshot
+//   SHOW DATABASES    â€” configured database list
+//   SHOW LISTS        â€” global counters (databases, pools, conns)
+//   SHOW VERSION      â€” pgrouter version + commit
+//   SHOW HELP         â€” quick command list
+//   PAUSE / RESUME    â€” accept/log; live drain is post-v1
+//   RELOAD            â€” fires the synthetic SIGHUP via AdminAPI.Reload
+//   <anything else>   â€” ERROR "unknown command"
 //
 // This matches the conventions of PgBouncer's admin console closely
 // enough that tools like pgcli + Grafana sidecars + ops scripts work.
@@ -31,9 +31,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/proto"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/proto"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 // AdminConsole is the handler invoked when a client connects to the
@@ -43,7 +43,7 @@ type AdminConsole struct {
 	Manager *pool.Manager
 
 	// Reload, if non-nil, is fired by RELOAD. Same closure as the HTTP
-	// admin API's Reload — pushes a synthetic SIGHUP into the reloader.
+	// admin API's Reload â€” pushes a synthetic SIGHUP into the reloader.
 	Reload func() error
 }
 
@@ -55,7 +55,7 @@ const adminReceiveDeadline = 30 * time.Second
 // Serve runs the admin protocol on an already-authenticated client.
 // Emits the AuthOK welcome itself; no upstream backend touched.
 //
-// Honors ctx — when the parent context is cancelled (SIGTERM / Stop),
+// Honors ctx â€” when the parent context is cancelled (SIGTERM / Stop),
 // the conn is closed and Serve returns. Without this an idle admin
 // client blocks on be.Receive() forever and gracefulshutdown stalls
 // past the drain deadline.
@@ -63,7 +63,7 @@ func (a *AdminConsole) Serve(ctx context.Context, conn net.Conn) error {
 	defer conn.Close()
 	be := pgproto3.NewBackend(conn, conn)
 
-	// Close the conn when ctx fires — unblocks the Receive() loop.
+	// Close the conn when ctx fires â€” unblocks the Receive() loop.
 	// done channel guards the goroutine from outliving Serve.
 	done := make(chan struct{})
 	defer close(done)
@@ -113,11 +113,11 @@ func (a *AdminConsole) Serve(ctx context.Context, conn net.Conn) error {
 // adminHandler is one entry in the dispatch table.
 type adminHandler func(a *AdminConsole, be *pgproto3.Backend, upper string)
 
-// adminHandlers is the prefix → handler dispatch table. Replaces the
+// adminHandlers is the prefix â†’ handler dispatch table. Replaces the
 // previous HasPrefix cascade. Adding a new SHOW command is now a
 // single-line registration.
 //
-// Lookup is linear (≤10 entries) so the lack of a real trie is fine;
+// Lookup is linear (â‰¤10 entries) so the lack of a real trie is fine;
 // HasPrefix on a small map beats nesting more if-else branches.
 var adminHandlers = []struct {
 	prefix string
@@ -158,8 +158,8 @@ func (a *AdminConsole) handleQuery(be *pgproto3.Backend, sql string) {
 		fmt.Sprintf("admin console: unknown command: %s", trimmed))
 }
 
-// emitTable is the canonical SHOW emit pattern: row descriptor → row
-// stream → CommandComplete + RFQ. `colNames` defines the column shape;
+// emitTable is the canonical SHOW emit pattern: row descriptor â†’ row
+// stream â†’ CommandComplete + RFQ. `colNames` defines the column shape;
 // `rowsFn` yields one row at a time as a slice of stringified cells
 // (length must match colNames).
 func (a *AdminConsole) emitTable(be *pgproto3.Backend, colNames []string, rowsFn func(emit func(...string))) {

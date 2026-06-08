@@ -1,7 +1,7 @@
 // SQL read/write classifier.
 //
 // Scans the first SQL keyword (after stripping leading whitespace +
-// comments + CTE prefixes) and returns Read / Write. Pure lexical —
+// comments + CTE prefixes) and returns Read / Write. Pure lexical â€”
 // no real parser; false positives (treat-as-write) are preferred to
 // false negatives (let a write hit a replica).
 //
@@ -15,10 +15,10 @@
 //                  CHECKPOINT, DO, IMPORT, SECURITY
 //
 // WITH .. is parsed enough to peek the inner statement:
-//   WITH foo AS (...) SELECT ...   → Read
-//   WITH foo AS (...) UPDATE ...   → Write
+//   WITH foo AS (...) SELECT ...   â†’ Read
+//   WITH foo AS (...) UPDATE ...   â†’ Write
 //
-// EXPLAIN ANALYZE <stmt> is Write because ANALYZE writes — we look
+// EXPLAIN ANALYZE <stmt> is Write because ANALYZE writes â€” we look
 // at the inner statement for non-ANALYZE EXPLAIN.
 
 package client
@@ -26,7 +26,7 @@ package client
 import (
 	"strings"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
 )
 
 // SQLOp is the classification verdict.
@@ -43,14 +43,14 @@ const (
 // and regex evaluation across GUC cache, session pin, classifier, and
 // statement-mode checks.
 type SQLInfo struct {
-	Keyword    string // first keyword uppercased (e.g. "SELECT")
-	Op         SQLOp  // Read / Write / Unknown
-	IsROBegin  bool   // read-only BEGIN variant
-	NeedsPin   bool   // session-pin trigger detected
-	NeedsGUC   bool   // DISCARD / RESET / SET detected
-	HasPgAdv   bool   // pg_advisory* function call present
-	Stripped   string // SQL with leading whitespace+comments stripped
-	HasSQL     bool   // true if sql was non-empty
+	Keyword   string // first keyword uppercased (e.g. "SELECT")
+	Op        SQLOp  // Read / Write / Unknown
+	IsROBegin bool   // read-only BEGIN variant
+	NeedsPin  bool   // session-pin trigger detected
+	NeedsGUC  bool   // DISCARD / RESET / SET detected
+	HasPgAdv  bool   // pg_advisory* function call present
+	Stripped  string // SQL with leading whitespace+comments stripped
+	HasSQL    bool   // true if sql was non-empty
 }
 
 // AnalyzeSQL computes all per-message SQL results in one pass:
@@ -86,16 +86,16 @@ func AnalyzeSQL(sql string) SQLInfo {
 		op = SQLOpWrite
 	}
 
-	// readOnly BEGIN check — only run for BEGIN-like keywords.
+	// readOnly BEGIN check â€” only run for BEGIN-like keywords.
 	isROBegin := false
 	if kw == "BEGIN" || kw == "START" {
 		isROBegin = readOnlyBeginRE.MatchString(s)
 	}
 
-	// GUC check — keyword is DISCARD, RESET, or SET.
+	// GUC check â€” keyword is DISCARD, RESET, or SET.
 	needsGUC := kw == "DISCARD" || kw == "RESET" || kw == "SET"
 
-	// Session-pin check — keyword-based fast-path + pg_advisory scan.
+	// Session-pin check â€” keyword-based fast-path + pg_advisory scan.
 	needsPin := false
 	hasPgAdv := false
 	for i := 0; i+10 <= len(sql); i++ {
@@ -115,19 +115,19 @@ func AnalyzeSQL(sql string) SQLInfo {
 	}
 
 	return SQLInfo{
-		Keyword:  kw,
-		Op:       op,
+		Keyword:   kw,
+		Op:        op,
 		IsROBegin: isROBegin,
-		NeedsPin: needsPin,
-		NeedsGUC: needsGUC,
-		HasPgAdv: hasPgAdv,
-		Stripped: s,
-		HasSQL:   true,
+		NeedsPin:  needsPin,
+		NeedsGUC:  needsGUC,
+		HasPgAdv:  hasPgAdv,
+		Stripped:  s,
+		HasSQL:    true,
 	}
 }
 
 // ClassifySQL returns Read / Write / Unknown for sql.
-// Empty / whitespace-only input → Unknown.
+// Empty / whitespace-only input â†’ Unknown.
 func ClassifySQL(sql string) SQLOp {
 	s := stripLeadingNoise(sql) // reused from statement_mode.go
 	return classifyStripped(s)
@@ -182,7 +182,7 @@ func firstKeyword(s string) string {
 	if i == 0 {
 		return ""
 	}
-	// Direct byte comparisons — no allocation, no ToUpper.
+	// Direct byte comparisons â€” no allocation, no ToUpper.
 	// Only check keywords used by AnalyzeSQL + classifier switches.
 	switch i {
 	case 2:

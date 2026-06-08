@@ -18,8 +18,8 @@
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin pgrouter
 
 [Unit]
-Description=pgrouter — Modern PostgreSQL connection pooler
-Documentation=https://github.com/JustAnotherDevv/pgrouter
+Description=pgrouter â€” Modern PostgreSQL connection pooler
+Documentation=https://github.com/JustAnotherDevv/pg-router-go
 After=network-online.target
 Wants=network-online.target
 
@@ -47,7 +47,7 @@ TimeoutStopSec=30s
 KillSignal=SIGTERM
 KillMode=mixed
 
-# Hardening. distroless equivalents — strict by default.
+# Hardening. distroless equivalents â€” strict by default.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -83,7 +83,7 @@ LimitNPROC=4096
 # we rely on healthcheck via the metrics endpoint instead. A
 # /healthz probe is exposed on the same listener as /metrics.
 
-# Logging — slog text/json output goes to stderr → captured by journald.
+# Logging â€” slog text/json output goes to stderr â†’ captured by journald.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pgrouter

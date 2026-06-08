@@ -1,11 +1,11 @@
-// Package pool implements (db, user) → backend-conn pools.
+// Package pool implements (db, user) â†’ backend-conn pools.
 //
 // Sizing model (PgBouncer-compatible):
 //
-//	default_pool_size   N — regular checkout slots per pool
-//	min_pool_size       M — backends kept warm even when idle (M <= N)
-//	reserve_pool_size   R — emergency slots for traffic spikes
-//	reserve_pool_timeout T — how long a client may wait for a regular
+//	default_pool_size   N â€” regular checkout slots per pool
+//	min_pool_size       M â€” backends kept warm even when idle (M <= N)
+//	reserve_pool_size   R â€” emergency slots for traffic spikes
+//	reserve_pool_timeout T â€” how long a client may wait for a regular
 //	                        slot before the reserve becomes spendable.
 //
 // Acquire path:
@@ -15,7 +15,7 @@
 //     and active < N+R, dial a reserve backend (counted against R).
 //  4. Else keep waiting until a Release fires or ctx/timeout fires.
 //
-// Release path: optional reset (DISCARD ALL) → push to idle channel OR
+// Release path: optional reset (DISCARD ALL) â†’ push to idle channel OR
 // hand off to next waiter, preserving FIFO and the active-slot invariant.
 //
 // Concurrency model:
@@ -27,7 +27,7 @@
 // Eviction (janitor):
 //   - Drop idle backends past ServerIdle threshold, BUT never below
 //     MinPoolSize backends total (active + idle).
-//   - Drop any backend past ServerLifetime unconditionally — that's the
+//   - Drop any backend past ServerLifetime unconditionally â€” that's the
 //     hard recycle cap.
 
 package pool
@@ -41,7 +41,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
 )
 
 // Sentinel errors.
@@ -70,7 +70,7 @@ type Dialer func(ctx context.Context) (*backend.Conn, error)
 // via a chan-backed semaphore). Returning a non-nil error aborts
 // Acquire with that error and PostRelease is NOT called.
 //
-// PostRelease fires exactly once per successful PreAcquire — either at
+// PostRelease fires exactly once per successful PreAcquire â€” either at
 // the next Release of the returned backend, OR when Acquire failed
 // internally AFTER PreAcquire succeeded. This invariant lets callers
 // use PreAcquire/PostRelease as a leak-free semaphore pair.
@@ -111,17 +111,17 @@ type Pool struct {
 	dial Dialer
 	name string
 
-	// Hot-path fields — accessed atomically, no lock needed.
+	// Hot-path fields â€” accessed atomically, no lock needed.
 	idle   chan *pooledConn // buffered chan, cap = DefaultPoolSize
 	active atomic.Int64     // currently checked-out backends
 	closed atomic.Bool      // set by Close, checked on Acquire/Release
 
-	// Slow-path fields — guarded by wmu.
-	wmu     sync.Mutex  // protects waiters, eviction, resize, close
-	waiters []*waiter   // FIFO queue
-	cond    *sync.Cond  // for drain coordination in CloseWithDeadline
+	// Slow-path fields â€” guarded by wmu.
+	wmu     sync.Mutex // protects waiters, eviction, resize, close
+	waiters []*waiter  // FIFO queue
+	cond    *sync.Cond // for drain coordination in CloseWithDeadline
 
-	// Metrics-friendly counters — accessed atomically.
+	// Metrics-friendly counters â€” accessed atomically.
 	totalAcquired atomic.Uint64
 	totalReleased atomic.Uint64
 	totalSpawned  atomic.Uint64
@@ -207,7 +207,7 @@ loop:
 // blocked waiters; shrinking lets the janitor's next sweep evict
 // excess idle backends. Returns the previous size.
 //
-// Active checkouts above the new cap are NOT yanked — they finish
+// Active checkouts above the new cap are NOT yanked â€” they finish
 // normally and just don't return to the idle stack on Release.
 func (p *Pool) Resize(newSize int) int {
 	if newSize < 1 {
@@ -250,7 +250,7 @@ func (p *Pool) Size() int {
 // available or ctx fires.
 //
 // If Callbacks.PreAcquire is set it fires first (outside the pool lock)
-// and may block — typically to enforce a global per-db/per-user cap. On
+// and may block â€” typically to enforce a global per-db/per-user cap. On
 // PreAcquire failure Acquire returns immediately and PostRelease is NOT
 // called. On every other Acquire failure path PostRelease IS called so
 // the caller's semaphore stays leak-free.
@@ -272,8 +272,8 @@ func (p *Pool) Acquire(ctx context.Context) (*backend.Conn, error) {
 // acquireInternal is the Acquire body. PreAcquire / PostRelease
 // orchestration is handled by the public Acquire wrapper above.
 //
-// Three paths, in order of fast→slow:
-//  1. Idle channel pop (no dial, no wait) — lock-free.
+// Three paths, in order of fastâ†’slow:
+//  1. Idle channel pop (no dial, no wait) â€” lock-free.
 //  2. Dial under DefaultPoolSize cap (dial, no wait).
 //  3. Park in wait queue with QueryWait timeout + reserve-pool kick.
 func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
@@ -317,7 +317,7 @@ func (p *Pool) acquireInternal(ctx context.Context) (*backend.Conn, error) {
 				p.emitWait(start)
 				return c, nil
 			}
-			// Lost the CAS race — loop back and try idle again.
+			// Lost the CAS race â€” loop back and try idle again.
 			continue
 		}
 
@@ -341,10 +341,10 @@ func (p *Pool) parkWaiter() *waiter {
 }
 
 // waitForBackend blocks on the waiter channel until one of:
-//   - Release hands us a backend → return it.
-//   - ctx fires → cancel + return ctx.Err.
-//   - QueryWait elapses → cancel + ErrAcquireTimeout.
-//   - ReservePoolTimeout elapses → attempt a reserve dial, return on
+//   - Release hands us a backend â†’ return it.
+//   - ctx fires â†’ cancel + return ctx.Err.
+//   - QueryWait elapses â†’ cancel + ErrAcquireTimeout.
+//   - ReservePoolTimeout elapses â†’ attempt a reserve dial, return on
 //     success, otherwise resume waiting.
 func (p *Pool) waitForBackend(ctx context.Context, w *waiter, start time.Time) (*backend.Conn, error) {
 	totalCh, stopTotal := p.timerCh(p.cfg.QueryWait)
@@ -391,14 +391,14 @@ func (p *Pool) waitForBackend(ctx context.Context, w *waiter, start time.Time) (
 				p.waitersCount.Add(-1)
 				return c, nil
 			}
-			// Else continue blocking — the reserve was already maxed out;
+			// Else continue blocking â€” the reserve was already maxed out;
 			// keep waiting for a regular Release.
 		}
 	}
 }
 
 // timerCh returns a channel that fires after d, plus a stop fn. When
-// d ≤ 0 the channel is nil (never fires) + stop is a no-op.
+// d â‰¤ 0 the channel is nil (never fires) + stop is a no-op.
 func (p *Pool) timerCh(d time.Duration) (<-chan time.Time, func()) {
 	if d <= 0 {
 		return nil, func() {}
@@ -422,7 +422,7 @@ func (p *Pool) tryDialReserve(ctx context.Context, w *waiter, start time.Time) (
 		p.wmu.Unlock()
 		return nil, false, nil
 	}
-	// Remove ourselves from the waiter queue — we're satisfying ourselves.
+	// Remove ourselves from the waiter queue â€” we're satisfying ourselves.
 	for i, ww := range p.waiters {
 		if ww == w {
 			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
@@ -458,11 +458,11 @@ func (p *Pool) emitWait(start time.Time) {
 
 // Release returns a backend to the pool. If resetSession is true, the
 // pool's configured ResetQuery is run before pooling (defaults to
-// DISCARD ALL). Failed reset → backend is closed instead of pooled.
+// DISCARD ALL). Failed reset â†’ backend is closed instead of pooled.
 //
 // PostRelease is fired (if set) at end of Release regardless of whether
 // the backend was successfully returned to idle, closed due to drain, or
-// discarded due to a failed reset — the invariant is exactly one
+// discarded due to a failed reset â€” the invariant is exactly one
 // PostRelease per successful PreAcquire.
 func (p *Pool) Release(c *backend.Conn, resetSession bool) {
 	if c == nil {
@@ -474,7 +474,7 @@ func (p *Pool) Release(c *backend.Conn, resetSession bool) {
 		}
 	}()
 
-	// Optional reset BEFORE returning to pool — it does I/O.
+	// Optional reset BEFORE returning to pool â€” it does I/O.
 	if resetSession {
 		if err := c.ResetStateWith(p.cfg.ResetQuery); err != nil {
 			p.cfg.Log.Warn("backend reset failed; discarding", "err", err)
@@ -579,7 +579,7 @@ type Stats struct {
 	TotalEvicted  uint64
 }
 
-// Stats returns a snapshot. All fields are read atomically — no lock
+// Stats returns a snapshot. All fields are read atomically â€” no lock
 // needed for the common case.
 func (p *Pool) Stats() Stats {
 	return Stats{
@@ -646,7 +646,7 @@ func (p *Pool) CloseWithDeadline(deadline time.Time) error {
 		p.wmu.Unlock()
 		close(done)
 	}()
-	// Clamp negative wait to 0 — time.After(negative) fires
+	// Clamp negative wait to 0 â€” time.After(negative) fires
 	// immediately, which would return ErrDrainTimeout even on a
 	// healthy pool. Callers passing deadline_seconds=0 (or a typo'd
 	// past timestamp) get "immediate drain attempt" semantics rather
@@ -723,7 +723,7 @@ func (p *Pool) EvictIdleOnce(now time.Time) int {
 // the number of backends dialed. Call once per janitor sweep (alongside
 // EvictIdleOnce) to keep the warm floor populated.
 //
-// Dial failures stop the warming but are not returned as errors —
+// Dial failures stop the warming but are not returned as errors â€”
 // they'd be repeated on every sweep otherwise. They're emitted via the
 // OnDialError callback.
 func (p *Pool) EnsureWarm(ctx context.Context) int {

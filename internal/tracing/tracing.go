@@ -27,23 +27,23 @@ import (
 )
 
 // TracerName is the instrumentation name used for all pgrouter spans.
-const TracerName = "github.com/JustAnotherDevv/pgrouter"
+const TracerName = "github.com/JustAnotherDevv/pg-router-go"
 
 // Init wires the global TracerProvider when OTel env is present.
 // Returns a shutdown closure (no-op if tracing was not configured).
 //
 // Honoured env (standard OTel):
-//   OTEL_EXPORTER_OTLP_ENDPOINT       — e.g. http://collector:4318
-//   OTEL_EXPORTER_OTLP_PROTOCOL       — currently only "http/protobuf" supported
-//   OTEL_SERVICE_NAME                 — defaults to "pgrouter"
-//   OTEL_TRACES_SAMPLER               — parentbased_always_on |
+//   OTEL_EXPORTER_OTLP_ENDPOINT       â€” e.g. http://collector:4318
+//   OTEL_EXPORTER_OTLP_PROTOCOL       â€” currently only "http/protobuf" supported
+//   OTEL_SERVICE_NAME                 â€” defaults to "pgrouter"
+//   OTEL_TRACES_SAMPLER               â€” parentbased_always_on |
 //                                       parentbased_traceidratio | always_on |
 //                                       always_off | traceidratio
 //                                       (default: parentbased_traceidratio)
-//   OTEL_TRACES_SAMPLER_ARG           — float ratio for ratio samplers
+//   OTEL_TRACES_SAMPLER_ARG           â€” float ratio for ratio samplers
 //                                       (default: 0.01 = 1%)
 //
-// Empty endpoint → no-op TracerProvider stays in place.
+// Empty endpoint â†’ no-op TracerProvider stays in place.
 func Init(ctx context.Context, version, commit string) (func(context.Context) error, error) {
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
@@ -89,7 +89,7 @@ func Init(ctx context.Context, version, commit string) (func(context.Context) er
 // samplerFromEnv honours the standard OTEL_TRACES_SAMPLER /
 // OTEL_TRACES_SAMPLER_ARG variables. Default: 1% ratio under a
 // parent-based wrapper so an upstream service's sampling decision is
-// respected. 100% sampling at 10k QPS overwhelms collectors — see
+// respected. 100% sampling at 10k QPS overwhelms collectors â€” see
 // SB7 review.
 func samplerFromEnv() sdktrace.Sampler {
 	ratio := 0.01

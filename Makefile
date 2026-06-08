@@ -15,7 +15,7 @@ help:
 	@echo "  build-all          compile all command + tool binaries"
 	@echo "  build-linux        cross-compile linux/amd64 binary (for Docker/deploy)"
 	@echo "  build-pgo          build with PGO profile (default.pgo, requires prior profile)"
-	@echo "  pgo-profile        full PGO cycle: build base → run under load → rebuild with profile"
+	@echo "  pgo-profile        full PGO cycle: build base â†’ run under load â†’ rebuild with profile"
 	@echo "  test               run unit + race tests"
 	@echo "  test-unit          run unit tests (short, no integration)"
 	@echo "  test-integration   run integration tests (needs Postgres on PGROUTER_DSN)"
@@ -50,7 +50,7 @@ build-pgo: default.pgo
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) ./cmd/pgrouter
 
-# Full PGO cycle: build base → profile under load → rebuild with profile.
+# Full PGO cycle: build base â†’ profile under load â†’ rebuild with profile.
 # Requires PGROUTER_DSN pointing to a running pgrouter instance, or runs
 # the binary directly if PGROUTER_BIN is set.
 pgo-profile: build-linux
@@ -106,7 +106,7 @@ lint-compose:
 
 fmt:
 	gofmt -w -s .
-	@command -v goimports >/dev/null 2>&1 && goimports -w -local github.com/JustAnotherDevv/pgrouter . || true
+	@command -v goimports >/dev/null 2>&1 && goimports -w -local github.com/JustAnotherDevv/pg-router-go . || true
 
 cover:
 	$(GO) test -race -coverprofile=coverage.out -covermode=atomic $(PKG)
@@ -119,7 +119,7 @@ run: build
 clean:
 	rm -rf $(BIN_DIR) coverage.out coverage.html
 
-# Profile file — stale profiles hurt more than no profile.
+# Profile file â€” stale profiles hurt more than no profile.
 # Re-capture after significant code changes.
 default.pgo:
 	@echo "No default.pgo found. Run 'make pgo-profile' to generate one."

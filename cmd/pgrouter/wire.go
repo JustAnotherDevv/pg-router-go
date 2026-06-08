@@ -1,7 +1,7 @@
 // cmd-only wiring helpers. Most builders (TLS, auth, pool, replica,
 // primary monitors, PooledHandler) moved to internal/wire and are
-// shared with pkg/pgrouter (library mode). Only the admin HTTP API —
-// which exists in cmd-mode and binds to the SIGHUP reload channel —
+// shared with pkg/pgrouter (library mode). Only the admin HTTP API â€”
+// which exists in cmd-mode and binds to the SIGHUP reload channel â€”
 // stays here.
 
 package main
@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 // buildAdminAPI wires the HTTP admin endpoint to the live pool

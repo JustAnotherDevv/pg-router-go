@@ -24,8 +24,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/listener"
+	"github.com/JustAnotherDevv/pg-router-go/internal/auth"
+	"github.com/JustAnotherDevv/pg-router-go/internal/listener"
 )
 
 // Conn is a ready upstream Postgres backend connection.
@@ -46,7 +46,7 @@ type Conn struct {
 
 	// closeOnce makes Close idempotent. Janitor eviction + Serve error
 	// paths can both call Close on the same conn; without this guard the
-	// second SetWriteDeadline → Send(Terminate) → Flush sequence on an
+	// second SetWriteDeadline â†’ Send(Terminate) â†’ Flush sequence on an
 	// already-closed net.Conn races + can panic on some platforms.
 	closeOnce sync.Once
 	closeErr  error
@@ -69,8 +69,8 @@ type DialOptions struct {
 
 	// TLSRequired controls how a backend's 'N' response to our
 	// SSLRequest is handled.
-	//   false  → fall back to plaintext (matches pgwire sslmode=prefer)
-	//   true   → error (matches sslmode=require / verify-ca / verify-full)
+	//   false  â†’ fall back to plaintext (matches pgwire sslmode=prefer)
+	//   true   â†’ error (matches sslmode=require / verify-ca / verify-full)
 	TLSRequired bool
 
 	// PreparedCacheSize controls the per-backend prepared-statement

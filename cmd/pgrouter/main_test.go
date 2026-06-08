@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
 	"github.com/stretchr/testify/require"
 )
 

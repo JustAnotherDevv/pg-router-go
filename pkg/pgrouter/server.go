@@ -2,7 +2,7 @@
 // from a parsed *config.Config, drive its lifecycle via Run (blocks)
 // or Start/Stop (async).
 //
-// Library mode is a thin wrapper around the internal/wire builders —
+// Library mode is a thin wrapper around the internal/wire builders â€”
 // the same code cmd/pgrouter uses. cmd-mode adds signal handling +
 // SIGHUP reload + the admin HTTP API on top.
 package pgrouter
@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/listener"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/listener"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire"
 )
 
 // Server is one embedded pgrouter instance. Build with New, drive
@@ -40,7 +40,7 @@ type Server struct {
 
 // New builds a Server from cfg. Returns an error if config validation
 // fails or any listener / pool can't be set up. Does NOT start
-// accepting yet — call Start or Run.
+// accepting yet â€” call Start or Run.
 //
 // log may be nil; defaults to slog.Default().
 func New(cfg *config.Config, log *slog.Logger) (*Server, error) {

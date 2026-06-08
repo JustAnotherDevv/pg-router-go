@@ -8,16 +8,16 @@
 //            pg_last_wal_replay_lsn() AS replayed
 //   ) t
 //
-// Wait — that's the wrong primary/replica relationship. The accurate
+// Wait â€” that's the wrong primary/replica relationship. The accurate
 // per-replica lag is the replica's pg_last_wal_replay_lsn() vs the
 // PRIMARY's pg_current_wal_lsn(). We approximate by querying the
 // replica only:
 //
 //   SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::bigint
 //
-// returns seconds-of-staleness as an int — close enough for the
+// returns seconds-of-staleness as an int â€” close enough for the
 // lag-aware routing threshold (operators set max_replica_lag_bytes
-// but we treat it as bytes ≈ seconds for the v1 cut; full
+// but we treat it as bytes â‰ˆ seconds for the v1 cut; full
 // bytes-via-pg_wal_lsn_diff with a primary cross-query is post-v1).
 //
 // Lag updates Replica.lagBytes (we keep the name for forward-compat
@@ -33,8 +33,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/proto"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/proto"
 )
 
 // lagQuery is the per-replica probe. seconds-of-replay-lag.

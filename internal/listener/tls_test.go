@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil/testcerts"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil/testcerts"
 )
 
 func TestWriteSSLAcceptAndDecline(t *testing.T) {
@@ -59,7 +59,7 @@ func TestCertStoreCorruptedReloadRetainsCurrent(t *testing.T) {
 	good, err := cs.GetCertificate(&tls.ClientHelloInfo{})
 	require.NoError(t, err)
 
-	// Overwrite cert file with garbage and reload — must error.
+	// Overwrite cert file with garbage and reload â€” must error.
 	require.NoError(t, os.WriteFile(certs.ServerCert, []byte("not a cert"), 0o600))
 	require.Error(t, cs.Reload())
 

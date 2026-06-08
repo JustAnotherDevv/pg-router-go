@@ -1,4 +1,4 @@
-module github.com/JustAnotherDevv/pgrouter
+module github.com/JustAnotherDevv/pg-router-go
 
 go 1.26.3
 

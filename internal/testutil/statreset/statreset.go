@@ -11,7 +11,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 // ResetStats swaps stats.Reg for a fresh registry and re-runs stats.New

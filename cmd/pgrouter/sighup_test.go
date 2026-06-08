@@ -1,7 +1,7 @@
 // Phase A test for SIGHUP reload: the reloader must NOT shut down the
 // process; it must re-read the config and log a diff.
 //
-// We test the goroutine in isolation (no real signal needed — the
+// We test the goroutine in isolation (no real signal needed â€” the
 // channel is just a chan os.Signal and we send syscall.SIGHUP into it
 // directly).
 
@@ -19,15 +19,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil/statreset"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil/statreset"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/auth"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 func newTestRegistry() *prometheus.Registry {
@@ -91,7 +91,7 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.Equal(t, float64(1), statreset.GetCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "ok"}))
 
-	// Mutate the file: pool size goes from 10 → 25.
+	// Mutate the file: pool size goes from 10 â†’ 25.
 	require.NoError(t, os.WriteFile(path,
 		[]byte(strings.Replace(readFile(t, path), "default_pool_size: 10",
 			"default_pool_size: 25", 1)), 0o644))
@@ -106,7 +106,7 @@ func TestSighupReloaderRereadsAndDoesNotExitOnSignal(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.Equal(t, float64(1), statreset.GetCounter(t, "pgrouter_sighup_reloads_total", map[string]string{"outcome": "fail"}))
 
-	// Cancel → reloader exits cleanly.
+	// Cancel â†’ reloader exits cleanly.
 	cancel()
 	select {
 	case <-done:

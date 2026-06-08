@@ -26,20 +26,20 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
-	"github.com/JustAnotherDevv/pgrouter/internal/listener"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
+	"github.com/JustAnotherDevv/pg-router-go/internal/auth"
+	"github.com/JustAnotherDevv/pg-router-go/internal/cancel"
+	"github.com/JustAnotherDevv/pg-router-go/internal/listener"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire/splice"
 )
 
 // PooledHandler is the production dispatcher. Fields can be nil for
 // "feature disabled":
-//   - TLSConfig nil → SSLRequest is declined with 'N'
-//   - Auth nil → trust (no client auth)
-//   - CancelTracker nil → random per-welcome PID/secret with no
+//   - TLSConfig nil â†’ SSLRequest is declined with 'N'
+//   - Auth nil â†’ trust (no client auth)
+//   - CancelTracker nil â†’ random per-welcome PID/secret with no
 //     routing (cancel still parsed, just dropped)
 type PooledHandler struct {
 	Log *slog.Logger
@@ -47,7 +47,7 @@ type PooledHandler struct {
 	// Manager owns the per-(db, user) pools.
 	Manager *pool.Manager
 
-	// TLSConfig is the client-side TLS config (nil → SSLRequest declined).
+	// TLSConfig is the client-side TLS config (nil â†’ SSLRequest declined).
 	TLSConfig *tls.Config
 
 	// Auth gates the post-StartupMessage auth handshake.
@@ -78,7 +78,7 @@ type PooledHandler struct {
 
 	// LogSQL is one of: "off" | "redacted" | "full". Forwarded to each
 	// PooledConn for per-query logging. Empty string is equivalent to
-	// "redacted" — the safe default. "full" should only be used in dev
+	// "redacted" â€” the safe default. "full" should only be used in dev
 	// because it lets PII reach the log handler.
 	LogSQL string
 
@@ -104,7 +104,7 @@ type PooledHandler struct {
 	AdminReload func() error
 
 	// Splice configures the Phase A splice forwarder for the
-	// backend→client drain path. nil = splice disabled (the original
+	// backendâ†’client drain path. nil = splice disabled (the original
 	// pgproto3 decode/re-encode is used for every message). When set
 	// with Enabled=true, the drain loop bypasses pgproto3 for "boring"
 	// messages. See internal/wire/splice for the classification.
@@ -113,13 +113,13 @@ type PooledHandler struct {
 	// PreparedCache enables the cross-backend prepared-statement
 	// cache for connections served by this handler. When false, the
 	// per-client PrepareCache is left nil and the per-message
-	// interception + rewrite is skipped — Parse/Bind/Close pass
+	// interception + rewrite is skipped â€” Parse/Bind/Close pass
 	// through to the backend with the client's original names.
 	//
 	// Default true. Mirrors cfg.Wire.PreparedCache.
 	PreparedCache bool
 
-	// RawPassthrough bypasses pgproto3 for client→backend message
+	// RawPassthrough bypasses pgproto3 for clientâ†’backend message
 	// reading. Raw bytes are read from the client socket and forwarded
 	// directly to the backend. Default false. Mirrors cfg.Wire.RawPassthrough.
 	RawPassthrough bool
@@ -130,7 +130,7 @@ type PooledHandler struct {
 	GUCTracking bool
 
 	// Router answers per-tenant routing questions (replica pick,
-	// sticky-read window, primary health, QPS cap). nil → routing
+	// sticky-read window, primary health, QPS cap). nil â†’ routing
 	// disabled (always primary; healthy; no rate limit). Replaces
 	// the four separate callbacks (ReplicaPickerFor,
 	// StickyReadWindowFor, PrimaryHealthyFor, QPSCapFor) the
@@ -268,7 +268,7 @@ func (h *PooledHandler) Handle(ctx context.Context, conn net.Conn) {
 				}
 			}
 
-			// Virtual admin database — PgBouncer convention.
+			// Virtual admin database â€” PgBouncer convention.
 			if db == "pgbouncer" {
 				ac := &AdminConsole{
 					Log:     log,
@@ -327,8 +327,16 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 		bytesOut = stats.Active.BytesOutPerTenant.WithLabelValues(db, user)
 	}
 	conn = util.NewCountingConn(conn,
-		func(n int) { if n > 0 && bytesIn != nil { bytesIn.Add(float64(n)) } },
-		func(n int) { if n > 0 && bytesOut != nil { bytesOut.Add(float64(n)) } },
+		func(n int) {
+			if n > 0 && bytesIn != nil {
+				bytesIn.Add(float64(n))
+			}
+		},
+		func(n int) {
+			if n > 0 && bytesOut != nil {
+				bytesOut.Add(float64(n))
+			}
+		},
 	)
 
 	mode := h.PoolMode
@@ -354,15 +362,15 @@ func (h *PooledHandler) servePooled(ctx context.Context, conn net.Conn, p *pool.
 			RawPassthrough:    h.RawPassthrough,
 			GUCTracking:       h.GUCTracking,
 		},
-		Log:           log,
-		Pool:          p,
-		Database:      db,
-		User:          user,
-		App:           app,
-		WelcomePID:    welcomePID,
-		WelcomeSecret: welcomeSecret,
-		QPSLimiter:    h.qpsBucketFor(db, user),
-		ReqID:         reqID,
+		Log:                log,
+		Pool:               p,
+		Database:           db,
+		User:               user,
+		App:                app,
+		WelcomePID:         welcomePID,
+		WelcomeSecret:      welcomeSecret,
+		QPSLimiter:         h.qpsBucketFor(db, user),
+		ReqID:              reqID,
 		ReplicaPicker:      func() *pool.Pool { return routerOr(h.Router).ReplicaPool(db) },
 		StickyReadWindowFn: func() time.Duration { return routerOr(h.Router).StickyReadWindow(db) },
 		PrimaryHealthy:     func() bool { return routerOr(h.Router).PrimaryHealthy(db) },
@@ -410,4 +418,3 @@ func (h *PooledHandler) handleCancel(ctx context.Context, m *pgproto3.CancelRequ
 		"backend_pid", target.BackendProcessID,
 	)
 }
-

@@ -13,10 +13,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/auth"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 // FanInSignals merges N source channels into dst until ctx fires. Used
@@ -24,7 +24,7 @@ import (
 // signal stream.
 //
 // Non-blocking on dst: if dst is full, the signal is dropped. Pair with
-// a `chan os.Signal` of capacity ≥ 1 in the caller.
+// a `chan os.Signal` of capacity â‰¥ 1 in the caller.
 func FanInSignals(ctx context.Context, dst chan<- os.Signal, sources ...<-chan os.Signal) {
 	for _, src := range sources {
 		go func(c <-chan os.Signal) {
@@ -51,7 +51,7 @@ func FanInSignals(ctx context.Context, dst chan<- os.Signal, sources ...<-chan o
 // reloads the userlist file (if configured). Returns when ctx fires.
 //
 // `current` is the live *config.Config that will be UPDATED IN PLACE
-// to point at the new tree on success — callers holding a *Config
+// to point at the new tree on success â€” callers holding a *Config
 // reference (e.g. the cfgRouter) see the new values without restart.
 func RunSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 	path string, current *config.Config, userlist *auth.Userlist,
@@ -70,7 +70,7 @@ func RunSighupReloader(ctx context.Context, hupCh <-chan os.Signal,
 				log.Error("SIGHUP reload failed", "path", path, "err", err)
 				stats.OnSighupReload("fail")
 				// Even if the YAML failed, still attempt the userlist
-				// reload — its file is independent and may be valid.
+				// reload â€” its file is independent and may be valid.
 				reloadUserlist(userlist, log)
 				continue
 			}

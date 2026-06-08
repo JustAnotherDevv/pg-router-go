@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -72,7 +72,7 @@ func TestAdminVersionEndpoint(t *testing.T) {
 	base, stop := startTestServer(t, AdminServerOptions{})
 	defer stop()
 	var v VersionInfo
-	require.NoError(t, json.NewDecoder(requireGet(t, base + "/api/v1/version", 200)).Decode(&v))
+	require.NoError(t, json.NewDecoder(requireGet(t, base+"/api/v1/version", 200)).Decode(&v))
 	require.Equal(t, "0.5.0-test", v.Version)
 	require.Equal(t, "abc123", v.Commit)
 }
@@ -88,7 +88,7 @@ func TestAdminPoolsEndpoint(t *testing.T) {
 	base, stop := startTestServer(t, AdminServerOptions{Admin: admin})
 	defer stop()
 	var pools []PoolSnapshot
-	require.NoError(t, json.NewDecoder(requireGet(t, base + "/api/v1/pools", 200)).Decode(&pools))
+	require.NoError(t, json.NewDecoder(requireGet(t, base+"/api/v1/pools", 200)).Decode(&pools))
 	require.Len(t, pools, 1)
 	require.Equal(t, "alice", pools[0].User)
 }
@@ -102,7 +102,7 @@ func TestAdminStatsEndpoint(t *testing.T) {
 	base, stop := startTestServer(t, AdminServerOptions{Admin: admin})
 	defer stop()
 	var s StatsSnapshot
-	require.NoError(t, json.NewDecoder(requireGet(t, base + "/api/v1/stats", 200)).Decode(&s))
+	require.NoError(t, json.NewDecoder(requireGet(t, base+"/api/v1/stats", 200)).Decode(&s))
 	require.Equal(t, 42.0, s.UptimeSeconds)
 	require.Equal(t, 100.0, s.QueriesTotal)
 }
@@ -113,7 +113,7 @@ func TestAdminDrainRequiresPost(t *testing.T) {
 	}
 	base, stop := startTestServer(t, AdminServerOptions{Admin: admin})
 	defer stop()
-	_ = requireGet(t, base + "/api/v1/drain", 405)
+	_ = requireGet(t, base+"/api/v1/drain", 405)
 }
 
 func TestAdminDrainOK(t *testing.T) {
@@ -150,7 +150,7 @@ func TestAdminTokenRejectsUnauth(t *testing.T) {
 		Admin: admin, AuthToken: "secret-pw",
 	})
 	defer stop()
-	// No header → 401.
+	// No header â†’ 401.
 	_ = requirePost(t, base+"/api/v1/drain", "application/json", nil, 401)
 }
 

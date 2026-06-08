@@ -1,4 +1,4 @@
-// Package wire collects the shared cfg→component builders used by
+// Package wire collects the shared cfgâ†’component builders used by
 // both cmd/pgrouter (binary mode) and pkg/pgrouter (library mode).
 //
 // Before this package existed, TLS configs, userlist+hba+auth_query
@@ -26,16 +26,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
-	"github.com/JustAnotherDevv/pgrouter/internal/client"
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/listener"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/replica"
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
-	"github.com/JustAnotherDevv/pgrouter/internal/wire/splice"
+	"github.com/JustAnotherDevv/pg-router-go/internal/auth"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/cancel"
+	"github.com/JustAnotherDevv/pg-router-go/internal/client"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/listener"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/replica"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/wire/splice"
 )
 
 // dialEnv carries the per-process TLS + log defaults every backend
@@ -155,7 +155,7 @@ func BuildAuthOpts(cfg *config.Config, backendTLS *tls.Config,
 
 // BuildPoolDialer returns the dialerFor closure pool.NewManager expects.
 // Always wraps the raw dial in DialWithRetry so a flapping backend gets
-// the M.7.6 backoff schedule (in both cmd and lib mode — earlier
+// the M.7.6 backoff schedule (in both cmd and lib mode â€” earlier
 // versions of pkg/pgrouter forgot the retry wrapper).
 //
 // `appName` is the application_name reported on each upstream dial;
@@ -252,7 +252,7 @@ func BuildPoolManager(cfg *config.Config, cancelTracker *cancel.Tracker,
 
 // DefaultPoolConfig returns the pool.Config the replica builders use
 // for their per-replica pools. Mirrors what BuildPoolManager would
-// build internally — exported so replica.BuildManagersFromConfig
+// build internally â€” exported so replica.BuildManagersFromConfig
 // can be called from outside.
 func DefaultPoolConfig(cfg *config.Config, log *slog.Logger) pool.Config {
 	return pool.Config{
@@ -302,8 +302,8 @@ func BuildReplicaManagers(cfg *config.Config, defaultCfg pool.Config,
 }
 
 // PrimaryProbeDialer returns the dedicated-conn dialer used by
-// PrimaryMonitor. Owns its own *backend.Conn — does NOT go through
-// the client pool — so a client traffic spike can't starve the probe.
+// PrimaryMonitor. Owns its own *backend.Conn â€” does NOT go through
+// the client pool â€” so a client traffic spike can't starve the probe.
 func PrimaryProbeDialer(cfg *config.Config, dbName string,
 	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,
 ) func(context.Context) (*backend.Conn, error) {
@@ -542,7 +542,7 @@ type cfgRouter struct {
 }
 
 // db looks up a config.DatabaseConfig by alias. Returns nil when the db is
-// unknown — callers should use the zero value for the field they want.
+// unknown â€” callers should use the zero value for the field they want.
 func (r *cfgRouter) db(name string) *config.DatabaseConfig {
 	d, ok := r.cfg.Databases[name]
 	if !ok {
@@ -592,14 +592,14 @@ func (r *cfgRouter) QPSCap(db, user string) float64 {
 // Preflight dials each configured database once + closes immediately.
 // Returns nil when all dials succeed OR cfg has no databases; returns
 // an aggregated error when ALL dials fail (boot should abort).
-// Per-DB failures are logged but don't abort if at least one succeeds —
+// Per-DB failures are logged but don't abort if at least one succeeds â€”
 // rolling upgrades + lagging warm-up of some backends shouldn't ground
 // the pooler.
 //
 // `appName` is the application_name reported on each probe dial. cmd
 // passes "pgrouter-preflight"; lib mode passes the same.
 //
-// Honour `cfg.Pool.SkipPreflight` — operators can opt out for staged
+// Honour `cfg.Pool.SkipPreflight` â€” operators can opt out for staged
 // rollouts where backends warm later than the pooler.
 func Preflight(ctx context.Context, cfg *config.Config,
 	backendTLS *tls.Config, backendTLSRequired bool, log *slog.Logger,

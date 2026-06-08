@@ -12,12 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/auth"
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/cancel"
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/auth"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/cancel"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 func writeUserlist(t *testing.T, user, secret string) string {
@@ -34,7 +34,7 @@ func writeUserlist(t *testing.T, user, secret string) string {
 func TestDispatcherTrustAuthAndPoolRoute(t *testing.T) {
 	fleet := newFakeBackendFleet(t)
 
-	// Manager wires one dialer for any key — the fleet doesn't care
+	// Manager wires one dialer for any key â€” the fleet doesn't care
 	// which (db, user) it serves.
 	mgr := newDispatcherMgr(t, fleet.Dial, 2, time.Second)
 
@@ -126,7 +126,7 @@ func TestDispatcherCancelRequestForwarded(t *testing.T) {
 		BackendSecretKey: []byte{0xDE, 0xAD, 0xBE, 0xEF},
 	})
 
-	// Dummy manager — we don't go through the StartupMessage path.
+	// Dummy manager â€” we don't go through the StartupMessage path.
 	mgr := newDispatcherMgr(t, func(_ context.Context) (*backend.Conn, error) {
 		return &backend.Conn{}, nil
 	}, 1, 0)
@@ -198,7 +198,7 @@ func TestDispatcherUnknownDatabaseFails(t *testing.T) {
 	// Drain welcome up to RFQ.
 	testutil.DrainToRFQ(t, cli, fe)
 
-	// Now send a Query — Acquire should fail, ErrorResponse arrives.
+	// Now send a Query â€” Acquire should fail, ErrorResponse arrives.
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
 

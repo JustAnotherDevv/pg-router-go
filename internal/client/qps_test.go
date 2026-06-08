@@ -6,8 +6,8 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
 )
 
 func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
@@ -17,13 +17,13 @@ func TestQPSLimiterRejectsAfterBurst(t *testing.T) {
 		QPSLimiter: util.NewTokenBucket(1, 0.1), // 1 burst, 0.1/s refill
 	})
 
-	// First Query succeeds → backend responds.
+	// First Query succeeds â†’ backend responds.
 	fb.scriptReply("SELECT 1", 'I')
 	fe.Send(&pgproto3.Query{String: "SELECT 1"})
 	require.NoError(t, fe.Flush())
 	testutil.DrainToRFQ(t, clt, fe)
 
-	// Second Query immediately → bucket empty → pgrouter rejects locally.
+	// Second Query immediately â†’ bucket empty â†’ pgrouter rejects locally.
 	fe.Send(&pgproto3.Query{String: "SELECT 2"})
 	require.NoError(t, fe.Flush())
 

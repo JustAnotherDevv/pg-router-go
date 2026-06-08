@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // TestWelcomeUsesUpstreamParamsAfterFirstDial verifies that a client
@@ -93,9 +93,9 @@ func TestWelcomeUsesUpstreamParamsAfterFirstDial(t *testing.T) {
 
 // TestWelcomeFallsBackToCannedWhenPoolEmpty verifies the cold-start
 // path: pool has never been dialed AND eager-warm fails (no usable
-// dialer) → welcome uses CannedParams.
+// dialer) â†’ welcome uses CannedParams.
 func TestWelcomeFallsBackToCannedWhenPoolEmpty(t *testing.T) {
-	// A dialer that always errors — Pool will fail to warm.
+	// A dialer that always errors â€” Pool will fail to warm.
 	dialErr := func(_ context.Context) (*backend.Conn, error) {
 		return nil, errFailDial
 	}

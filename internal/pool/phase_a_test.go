@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // --- PreAcquire / PostRelease callback invariants ---
@@ -110,13 +110,13 @@ func TestReleaseUsesConfiguredResetQueryCustomMerge(t *testing.T) {
 		DefaultPoolSize: 5,
 		ResetQuery:      "DISCARD ALL",
 	}
-	// Override per-pool to a custom query — mimics what Manager.Get does
+	// Override per-pool to a custom query â€” mimics what Manager.Get does
 	// when configFor returns a *Config with non-empty ResetQuery.
 	override := &Config{ResetQuery: "DELETE FROM tmp; DISCARD ALL"}
 	merged := mergeConfig(base, override)
 	require.Equal(t, "DELETE FROM tmp; DISCARD ALL", merged.ResetQuery)
 
-	// Empty ResetQuery in override → base wins.
+	// Empty ResetQuery in override â†’ base wins.
 	override2 := &Config{DefaultPoolSize: 10}
 	merged2 := mergeConfig(base, override2)
 	require.Equal(t, "DISCARD ALL", merged2.ResetQuery,
@@ -158,7 +158,7 @@ func TestGlobalDBLimitCapsConcurrentCheckouts(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, c2)
 
-	// Release the first → second now succeeds.
+	// Release the first â†’ second now succeeds.
 	m.Release(ka, c1, false)
 	c2, err = m.Acquire(context.Background(), kb)
 	require.NoError(t, err)
@@ -212,7 +212,7 @@ func TestGlobalLimitObserverFiresOnReject(t *testing.T) {
 	require.Equal(t, int64(1), v.(*atomic.Int64).Load())
 }
 
-// TestGlobalLimitNoOpWhenDisabled: 0/0 → no semaphore, no PreAcquire,
+// TestGlobalLimitNoOpWhenDisabled: 0/0 â†’ no semaphore, no PreAcquire,
 // concurrent acquires from same db succeed.
 func TestGlobalLimitNoOpWhenDisabled(t *testing.T) {
 	m := newGlobalLimitManager(t, 50*time.Millisecond, 0, 0, nil)

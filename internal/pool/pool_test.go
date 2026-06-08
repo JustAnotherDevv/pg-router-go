@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // mockDialer is a no-op dialer that returns a stubbed backend.Conn.
@@ -26,7 +26,7 @@ func (m *mockDialer) Dial(ctx context.Context) (*backend.Conn, error) {
 		return nil, errors.New("mock dial fail")
 	}
 	m.spawned.Add(1)
-	// A pure-stub Conn (no NetConn / Frontend) — fine for pool tests
+	// A pure-stub Conn (no NetConn / Frontend) â€” fine for pool tests
 	// that don't actually drive query traffic.
 	return &backend.Conn{}, nil
 }

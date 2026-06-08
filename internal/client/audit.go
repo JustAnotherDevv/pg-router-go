@@ -1,7 +1,7 @@
 // Per-tenant audit log.
 //
 // When logging.audit_file is set, pgrouter opens an append-only file
-// and writes one JSON line per executed Query/Parse — separate from
+// and writes one JSON line per executed Query/Parse â€” separate from
 // the main slog stream. Schema (stable for downstream pipelines):
 //
 //	{
@@ -33,7 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/stats"
+	"github.com/JustAnotherDevv/pg-router-go/internal/stats"
 )
 
 // AuditWriter is the process-wide audit log target. nil = audit off.
@@ -43,7 +43,7 @@ type AuditWriter struct {
 	closer io.Closer // optional; set when the writer was opened from a file
 
 	// errored is a sticky flag: once a Write fails, subsequent
-	// failures don't spam slog — the operator already saw the first
+	// failures don't spam slog â€” the operator already saw the first
 	// one and pgrouter_audit_write_errors_total ticks for each
 	// failure. Cleared when a Write succeeds.
 	errored atomic.Bool
@@ -89,7 +89,7 @@ var bufPool = sync.Pool{
 // concurrently from many goroutines.
 //
 // Hand-formats the JSON instead of going through reflect-based
-// encoding/json — the schema is tiny + stable, so the saved
+// encoding/json â€” the schema is tiny + stable, so the saved
 // reflection cost matters under load. Output is identical byte-for-
 // byte (well, modulo float trailing zeros which we suppress).
 //
@@ -106,7 +106,7 @@ func (a *AuditWriter) Write(reqID, db, user, app, kind, sql string, dur time.Dur
 	buf.Reset()
 	defer bufPool.Put(buf)
 
-	// Hand-built object — all values are JSON-quoted via json.Marshal
+	// Hand-built object â€” all values are JSON-quoted via json.Marshal
 	// (handles UTF-8 + escape sequences) but skipping reflect on the
 	// struct itself.
 	buf.WriteByte('{')
@@ -164,7 +164,7 @@ func (a *AuditWriter) logger() *slog.Logger {
 //
 // Falls back to json.Marshal for the value so we handle escapes +
 // non-ASCII UTF-8 the same way encoding/json would. On Marshal err
-// (rare — non-UTF-8 bytes), writes `"<key>":"<err marker>"` so the
+// (rare â€” non-UTF-8 bytes), writes `"<key>":"<err marker>"` so the
 // operator sees a per-field gap instead of a silent drop.
 func writeKV(buf *bytes.Buffer, key, value string, last bool) {
 	buf.WriteByte('"')

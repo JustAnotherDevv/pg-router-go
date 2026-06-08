@@ -7,8 +7,8 @@
 package replica
 
 import (
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/proto"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/proto"
 )
 
 func pingConn(c *backend.Conn, sql string) error {

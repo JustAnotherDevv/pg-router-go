@@ -24,8 +24,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
 )
 
 // ReplicaDef is the per-replica config the caller projects from its
@@ -40,7 +40,7 @@ type ReplicaDef struct {
 // DBDef is the per-database projection: primary upstream + replica
 // list + the dbname + auth bits needed to dial.
 type DBDef struct {
-	Name               string // the YAML map key — what clients see
+	Name               string // the YAML map key â€” what clients see
 	DBName             string // the upstream PG database name
 	User               string
 	Password           string

@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/backend"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/backend"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // TestManagerPerPoolConfigOverride: ConfigFor lets one pool get bigger
@@ -132,11 +132,11 @@ func TestStrictFIFOSerialWaiters(t *testing.T) {
 	require.Equal(t, len(started), len(got), "all waiters served")
 	// The order in `got` follows release order. With sequential releases
 	// inside the workers (each releases before the next can pop), FIFO
-	// is fully strict — `got` must equal `started`.
+	// is fully strict â€” `got` must equal `started`.
 	require.Equal(t, started, got, "FIFO order violated")
 }
 
-// TestStressLargeFleet: 200 workers × 50 iters × pool-size-8 = 10k
+// TestStressLargeFleet: 200 workers Ã— 50 iters Ã— pool-size-8 = 10k
 // acquires. Larger than the basic stress; verifies no leak.
 func TestStressLargeFleet(t *testing.T) {
 	const (

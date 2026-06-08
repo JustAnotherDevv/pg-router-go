@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,7 +58,7 @@ func TestPick(t *testing.T) {
 			wantErr: ErrNoHealthyReplica,
 		},
 		{
-			name: "max_lag=0 means unbounded — huge lag still picked",
+			name: "max_lag=0 means unbounded â€” huge lag still picked",
 			replicas: []replicaSpec{
 				{"a", 5432, 1, 9999, true},
 			},

@@ -15,12 +15,12 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 )
 
 // TestPerformServerAuthConnPeerOK runs a real peer-auth handshake over
-// a Unix socket. We supply our own OS username — match → success.
+// a Unix socket. We supply our own OS username â€” match â†’ success.
 func TestPerformServerAuthConnPeerOK(t *testing.T) {
 	me, err := user.LookupId(strconv.Itoa(os.Getuid()))
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestPerformServerAuthConnPeerMismatch(t *testing.T) {
 }
 
 func TestPerformServerAuthConnPeerRequiresUnixConn(t *testing.T) {
-	// net.Pipe — not a Unix socket; peer subsystem rejects.
+	// net.Pipe â€” not a Unix socket; peer subsystem rejects.
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()

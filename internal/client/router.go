@@ -1,7 +1,7 @@
 // Per-tenant routing decisions consolidated behind one interface.
 //
-// PooledHandler used to ship four separate callbacks — ReplicaPickerFor,
-// StickyReadWindowFor, PrimaryHealthyFor, QPSCapFor — each binding
+// PooledHandler used to ship four separate callbacks â€” ReplicaPickerFor,
+// StickyReadWindowFor, PrimaryHealthyFor, QPSCapFor â€” each binding
 // independently to the same cfg + replica/primary maps. Adding a new
 // per-tenant decision (e.g. multi-region routing, blue/green pinning)
 // meant another callback + another wiring path through cmd + pkg +
@@ -17,7 +17,7 @@ package client
 import (
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/pool"
+	"github.com/JustAnotherDevv/pg-router-go/internal/pool"
 )
 
 // Router answers per-tenant routing questions for one connection's
@@ -51,15 +51,15 @@ type Router interface {
 	QPSCap(db, user string) float64
 }
 
-// defaultRouter is consulted when PooledHandler.Router is nil — every
+// defaultRouter is consulted when PooledHandler.Router is nil â€” every
 // method returns the "no-op" answer (primary always wins; sticky-read
 // disabled; primary healthy; no QPS cap).
 type defaultRouter struct{}
 
-func (defaultRouter) ReplicaPool(string) *pool.Pool          { return nil }
-func (defaultRouter) StickyReadWindow(string) time.Duration  { return 0 }
-func (defaultRouter) PrimaryHealthy(string) bool             { return true }
-func (defaultRouter) QPSCap(string, string) float64          { return 0 }
+func (defaultRouter) ReplicaPool(string) *pool.Pool         { return nil }
+func (defaultRouter) StickyReadWindow(string) time.Duration { return 0 }
+func (defaultRouter) PrimaryHealthy(string) bool            { return true }
+func (defaultRouter) QPSCap(string, string) float64         { return 0 }
 
 // routerOr returns r if non-nil, else the default no-op router.
 func routerOr(r Router) Router {

@@ -1,13 +1,13 @@
 // SQL literal redaction for safe logging.
 //
-// Pgrouter never persists SQL — but we DO emit a debug-friendly
+// Pgrouter never persists SQL, but we do emit a debug-friendly
 // `sql=...` field on every Query / Parse log line. Real workloads
 // embed PII inside literals (`WHERE email='alice@example.com'`,
 // `INSERT ... VALUES (..., '4111111111111111')`), so the default
 // LogSQL mode is "redacted": we replace literals with `?` before
 // the SQL ever reaches the log writer.
 //
-// This is a SCAN-style redactor — it does not try to parse the SQL.
+// This is a scan-style redactor; it does not try to parse the SQL.
 // The goal is "no literal bytes leak into the log", not a perfectly
 // reformatted statement. False positives (over-redaction) are OK,
 // false negatives (a literal that escapes redaction) are not.
@@ -20,7 +20,7 @@
 //   - bind-parameter placeholders      $1, $42 (kept verbatim)
 //
 // SQL identifiers ("col_name", schema.table) and double-quoted
-// identifiers ("My Col") are KEPT verbatim — they're rarely PII.
+// identifiers ("My Col") are kept verbatim because they're rarely PII.
 // Comments (-- ... and /* ... */) are also kept; operators sometimes
 // embed query hints there and they shouldn't carry secrets.
 
@@ -29,12 +29,12 @@ package client
 import (
 	"strings"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/util"
+	"github.com/JustAnotherDevv/pg-router-go/internal/util"
 )
 
 // RedactSQL returns sql with every recognised literal replaced by `?`.
 // Bind parameters ($1, $42) are kept verbatim because they don't carry
-// data — only the placeholder slot index.
+// data, only the placeholder slot index.
 func RedactSQL(sql string) string {
 	if sql == "" {
 		return ""
@@ -106,7 +106,7 @@ func RedactSQL(sql string) string {
 				tagEnd++
 			}
 			if tagEnd >= n {
-				// Unclosed tag — preserve to make the bug visible.
+				// Unclosed tag: preserve to make the bug visible.
 				b.WriteString(sql[i:])
 				i = n
 				continue
@@ -114,7 +114,7 @@ func RedactSQL(sql string) string {
 			tag := sql[i : tagEnd+1] // includes both $'s
 			closeIdx := strings.Index(sql[tagEnd+1:], tag)
 			if closeIdx < 0 {
-				// No matching close — preserve to make the bug visible.
+				// No matching close: preserve to make the bug visible.
 				b.WriteString(sql[i:])
 				i = n
 				continue
@@ -151,7 +151,7 @@ func RedactSQL(sql string) string {
 		case isDigit(c) || (c == '.' && i+1 < n && isDigit(sql[i+1])):
 			// Numeric literal: int, float, hex, e-notation.
 			// If preceding byte was an identifier byte (so this `1` is the
-			// `1` in `user1`), this is identifier-tail not a literal —
+			// `1` in `user1`), this is identifier-tail not a literal;
 			// keep verbatim.
 			if i > 0 && isIdentByte(sql[i-1]) {
 				j := i
@@ -185,7 +185,7 @@ func RedactSQL(sql string) string {
 			b.WriteByte('?')
 			i = j
 		case c == '"':
-			// Double-quoted identifier — kept verbatim.
+			// Double-quoted identifier kept verbatim.
 			j := i + 1
 			for j < n {
 				if sql[j] == '"' {
@@ -215,7 +215,7 @@ func isHex(c byte) bool {
 func isIdentByte(c byte) bool { return util.IsIdentByte(c) }
 
 // SQLForLog returns the SQL string to log under the given mode.
-// Truncated to maxLen with a trailing '…' so a 10 MB INSERT can't blow
+// Truncated to maxLen with a trailing "..." so a 10 MB INSERT can't blow
 // up a structured-log line.
 func SQLForLog(mode string, sql string, maxLen int) string {
 	if maxLen <= 0 {

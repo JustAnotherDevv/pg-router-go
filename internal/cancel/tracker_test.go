@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/testutil"
+	"github.com/JustAnotherDevv/pg-router-go/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -182,7 +182,7 @@ func TestForwardCancelMissingAddr(t *testing.T) {
 }
 
 func TestForwardCancelDialError(t *testing.T) {
-	// Connect to a closed port — should error fast.
+	// Connect to a closed port â€” should error fast.
 	err := ForwardCancel(context.Background(),
 		Target{BackendAddr: "127.0.0.1:1"}, 200*time.Millisecond)
 	require.Error(t, err)

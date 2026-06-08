@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 
-	"github.com/JustAnotherDevv/pgrouter/internal/config"
+	"github.com/JustAnotherDevv/pg-router-go/internal/config"
 )
 
 // CertStore loads + holds a TLS cert + key from disk, with an atomic
@@ -75,7 +75,7 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 // BuildServerTLSConfig assembles a *tls.Config for the client-facing
 // listener from the user's config.TLSConfig.
 //
-// Returns (nil, nil) when client_mode=disable — i.e. TLS off, signal
+// Returns (nil, nil) when client_mode=disable â€” i.e. TLS off, signal
 // upstream to write 'N' to SSLRequest.
 func BuildServerTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertStore, error) {
 	if cfg.ClientMode == config.SSLDisable || cfg.ClientMode == "" {
