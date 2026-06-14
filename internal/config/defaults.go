@@ -89,7 +89,7 @@ func applyDefaults(cfg *Config) {
 		// Default to enabled — Phase A's hot-path win only matters
 		// if operators actually use it. Set `wire.splice: false` to
 		// bisect a regression.
-		en := true
+		en := false
 		cfg.Wire.Splice = &en
 	}
 	if cfg.Wire.SpliceBufferSize == 0 {

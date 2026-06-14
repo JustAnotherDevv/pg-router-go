@@ -470,6 +470,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 
 	// First synthetic RFQ Ã¢â€ â€™ mark client idle.
 	state.ObserveBackendMessage(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+	lastClientMsgAt := time.Now()
 
 	var bConn *backend.Conn
 	// bConnPool tracks which pool bConn was acquired from so Release
@@ -484,12 +485,16 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 	// evictions. The drain loop filters them out so the client never
 	// sees a CloseComplete it didn't ask for.
 	pendingEvictCloseCompletes := 0
+	// Pending ParseComplete frames produced by injected re-Parse calls
+	// on a fresh backend. Those are an internal repair step and must
+	// not leak to the client.
+	pendingInjectedParseCompletes := 0
 
 	defer func() {
 		if bConn != nil {
-			// On client disconnect we always release. Reset is best-effort
-			// per the user's ResetOnRelease config.
-			releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+			// Client disconnect while mid-transaction leaves backend state
+			// unknown; discard instead of trying to reset+recycle it.
+			cleanupBackend(releasePool(bConnPool, h.Pool), bConn, state, h.ResetOnRelease)
 			bConnPool = nil
 		}
 		// End any in-flight OTel span: error paths (Acquire fail, drain
@@ -515,7 +520,20 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		// on every iteration: a fresh message clears the previous
 		// deadline; the deadline only fires while we're blocked here in
 		// Receive (which is exactly "client is idle from our POV").
-		h.applyIdleDeadline(conn, state)
+		if sessionPinned && bConn != nil && state.Tx().IsIdle() {
+			deadline := pinnedBackendPollInterval
+			if h.ClientIdleTimeout > 0 {
+				remaining := h.ClientIdleTimeout - time.Since(lastClientMsgAt)
+				if remaining <= 0 {
+					deadline = time.Nanosecond
+				} else if remaining < deadline {
+					deadline = remaining
+				}
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(deadline))
+		} else {
+			h.applyIdleDeadline(conn, state)
+		}
 
 		msg, err := clientSide.Receive()
 		if err != nil {
@@ -524,6 +542,19 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				return nil
 			}
 			if isTimeoutErr(err) {
+				if sessionPinned && bConn != nil && state.Tx().IsIdle() &&
+					(h.ClientIdleTimeout <= 0 || time.Since(lastClientMsgAt) < h.ClientIdleTimeout) {
+					if h.hasIdleDeadline {
+						_ = conn.SetReadDeadline(time.Time{})
+					}
+					if err := h.drainAsyncBackendMessages(bConn, be, state); err != nil {
+						releasePool(bConnPool, h.Pool).Discard(bConn)
+						bConnPool = nil
+						bConn = nil
+						return err
+					}
+					continue
+				}
 				inTx := !state.Tx().IsIdle()
 				which := "client_idle_timeout"
 				code := "57P05"
@@ -549,6 +580,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 		if h.hasIdleDeadline {
 			_ = conn.SetReadDeadline(time.Time{})
 		}
+		lastClientMsgAt = time.Now()
 
 		// Terminate: tear down without a final round trip.
 		if proto.IsTerminate(msg) {
@@ -667,7 +699,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 					log.Warn("guc replay failed; treating backend as bad",
 						"err", err)
 					// Defensively discard the backend.
-					_ = bConn.Close()
+					releasePool(bConnPool, h.Pool).Discard(bConn)
+					bConnPool = nil
 					bConn = nil
 					proto.SendFatalError(be, "57P03",
 						fmt.Sprintf("pgrouter: backend replay failed: %v", err))
@@ -695,7 +728,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 			if prepCache != nil {
 				var err error
 				forwardMsg, suppressForward, err = h.prepareInterceptForward(
-					msg, prepCache, bConn, be, &pendingEvictCloseCompletes, log)
+					msg, prepCache, bConn, be, &pendingEvictCloseCompletes, &pendingInjectedParseCompletes, log)
 				if err != nil {
 					return err
 				}
@@ -742,6 +775,7 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				log:            log,
 				state:          state,
 				pendingEvictCC: &pendingEvictCloseCompletes,
+				pendingParsePC: &pendingInjectedParseCompletes,
 				queryStart:     queryStart,
 				lastSQL:        lastSQL,
 				lastKind:       lastKind,
@@ -767,7 +801,8 @@ func (h *PooledConn) Serve(ctx context.Context, conn net.Conn) error {
 				// needed. The backend is now in an unknown state, so
 				// close + drop it; the next message will Acquire a
 				// fresh one.
-				_ = bConn.Close()
+				releasePool(bConnPool, h.Pool).Discard(bConn)
+				bConnPool = nil
 				bConn = nil
 				h.counters.OnQueryDuration(time.Since(queryStart).Seconds())
 				sendFatalWithDeadline(be, conn, "57014",
@@ -828,6 +863,7 @@ type drainInput struct {
 	log            *slog.Logger
 	state          *ClientState
 	pendingEvictCC *int
+	pendingParsePC *int
 	queryStart     time.Time
 	lastSQL        string
 	lastKind       string
@@ -904,6 +940,43 @@ func (h *PooledConn) finalizeRFQ(in drainInput, out *drainOutcome, curSpan trace
 	return nil
 }
 
+// drainAsyncBackendMessages forwards asynchronous backend frames for an
+// idle session-pinned connection, primarily LISTEN/NOTIFY traffic.
+// It polls until the backend socket goes dry.
+func (h *PooledConn) drainAsyncBackendMessages(
+	bConn *backend.Conn,
+	be *pgproto3.Backend,
+	state *ClientState,
+) error {
+	if bConn == nil || be == nil {
+		return nil
+	}
+	_ = bConn.NetConn.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+	defer func() { _ = bConn.NetConn.SetReadDeadline(time.Time{}) }()
+	for {
+		bmsg, err := bConn.Frontend.Receive()
+		if err != nil {
+			if isTimeoutErr(err) {
+				return nil
+			}
+			if errors.Is(err, io.EOF) {
+				return fmt.Errorf("async backend recv: %w", err)
+			}
+			return fmt.Errorf("async backend recv: %w", err)
+		}
+		be.Send(bmsg)
+		if err := be.Flush(); err != nil {
+			return fmt.Errorf("async client send: %w", err)
+		}
+		if state != nil {
+			prevTx := state.Tx()
+			if state.ObserveBackendMessage(bmsg) {
+				h.observeTxTransition(state, prevTx, state.Tx())
+			}
+		}
+	}
+}
+
 // drainBackendUntilRFQ pulls backend frames until ReadyForQuery (or
 // CopyInResponse, where we stop and return control to the outer loop
 // so it can receive CopyData from the client). For every frame:
@@ -939,7 +1012,7 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 	// Raw passthrough path: forward ALL backend messages as raw bytes,
 	// bypassing pgproto3 decode/re-encode entirely. Eliminates heap
 	// allocations for every backend message.
-	if in.spliceReader != nil {
+	if in.spliceReader != nil && *in.pendingEvictCC == 0 && *in.pendingParsePC == 0 {
 		if err := in.be.Flush(); err != nil {
 			return out, curSpan, fmt.Errorf("client flush pre-splice: %w", err)
 		}
@@ -990,6 +1063,10 @@ func (h *PooledConn) drainBackendUntilRFQ(in drainInput) (drainOutcome, trace.Sp
 		// evictions Ã¢â‚¬â€ the client never asked for them.
 		if _, isCC := bmsg.(*pgproto3.CloseComplete); isCC && *in.pendingEvictCC > 0 {
 			*in.pendingEvictCC--
+			continue
+		}
+		if _, isPC := bmsg.(*pgproto3.ParseComplete); isPC && *in.pendingParsePC > 0 {
+			*in.pendingParsePC--
 			continue
 		}
 		in.be.Send(bmsg.(pgproto3.BackendMessage))
@@ -1205,6 +1282,20 @@ func releasePool(p *pool.Pool, fallback *pool.Pool) *pool.Pool {
 		return p
 	}
 	return fallback
+}
+
+// cleanupBackend releases an attached backend when it's safe to reuse,
+// otherwise it discards it so the pool doesn't recycle a dirty or
+// broken connection.
+func cleanupBackend(p *pool.Pool, c *backend.Conn, state *ClientState, resetOnRelease bool) {
+	if p == nil || c == nil {
+		return
+	}
+	if state != nil && !state.Tx().IsIdle() {
+		p.Discard(c)
+		return
+	}
+	p.Release(c, resetOnRelease)
 }
 
 // stickyToPrimary returns true when we should route this client's read
@@ -1509,6 +1600,7 @@ func (h *PooledConn) prepareInterceptForward(
 	bConn *backend.Conn,
 	be *pgproto3.Backend,
 	pendingEvictCloseCompletes *int,
+	pendingInjectedParseCompletes *int,
 	log *slog.Logger,
 ) (pgproto3.FrontendMessage, bool, error) {
 	if clientPrep == nil {
@@ -1565,12 +1657,15 @@ func (h *PooledConn) prepareInterceptForward(
 		if m.PreparedStatement == "" {
 			return msg, false, nil
 		}
-		server := clientPrep.ServerNameOf(m.PreparedStatement)
-		if server == "" {
+		stmt := clientPrep.Get(m.PreparedStatement)
+		if stmt == nil {
 			return msg, false, nil
 		}
+		if err := h.ensureBackendPrepared(stmt, bConn, pendingEvictCloseCompletes, pendingInjectedParseCompletes, log); err != nil {
+			return nil, false, err
+		}
 		out := *m
-		out.PreparedStatement = server
+		out.PreparedStatement = stmt.ServerName
 		return &out, false, nil
 
 	case *pgproto3.Describe:
@@ -1579,12 +1674,15 @@ func (h *PooledConn) prepareInterceptForward(
 		if m.ObjectType != 'S' || m.Name == "" {
 			return msg, false, nil
 		}
-		server := clientPrep.ServerNameOf(m.Name)
-		if server == "" {
+		stmt := clientPrep.Get(m.Name)
+		if stmt == nil {
 			return msg, false, nil
 		}
+		if err := h.ensureBackendPrepared(stmt, bConn, pendingEvictCloseCompletes, pendingInjectedParseCompletes, log); err != nil {
+			return nil, false, err
+		}
 		out := *m
-		out.Name = server
+		out.Name = stmt.ServerName
 		return &out, false, nil
 
 	case *pgproto3.Close:
@@ -1599,6 +1697,44 @@ func (h *PooledConn) prepareInterceptForward(
 		return nil, true, nil
 	}
 	return msg, false, nil
+}
+
+// ensureBackendPrepared injects a Parse for stmt when the currently
+// attached backend does not have it yet. This covers the transaction-
+// pooling case where a client reuses a named statement after backend
+// reset or after hopping to a different backend.
+func (h *PooledConn) ensureBackendPrepared(
+	stmt *Stmt,
+	bConn *backend.Conn,
+	pendingEvictCloseCompletes *int,
+	pendingInjectedParseCompletes *int,
+	log *slog.Logger,
+) error {
+	if stmt == nil || bConn == nil || bConn.Prepared == nil {
+		return nil
+	}
+	if bConn.Prepared.Has(stmt.ServerName) {
+		bConn.Prepared.Touch(stmt.ServerName)
+		return nil
+	}
+	if evicted := bConn.Prepared.Add(stmt.ServerName); evicted != "" {
+		bConn.Frontend.Send(&pgproto3.Close{
+			ObjectType: 'S',
+			Name:       evicted,
+		})
+		*pendingEvictCloseCompletes++
+		h.counters.OnPreparedEviction()
+		log.Debug("prepared cache LRU eviction",
+			"evicted", evicted, "incoming", stmt.ServerName)
+	}
+	bConn.Frontend.Send(&pgproto3.Parse{
+		Name:          stmt.ServerName,
+		Query:         stmt.Query,
+		ParameterOIDs: append([]uint32(nil), stmt.ParamOIDs...),
+	})
+	*pendingInjectedParseCompletes++
+	h.counters.OnPreparedMiss()
+	return nil
 }
 
 // serveRaw is the raw-passthrough variant of Serve. When
@@ -1647,7 +1783,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 	defer func() {
 		putWriteBuf(writeBuf)
 		if bConn != nil {
-			releasePool(bConnPool, h.Pool).Release(bConn, h.ResetOnRelease)
+			cleanupBackend(releasePool(bConnPool, h.Pool), bConn, state, h.ResetOnRelease)
 			bConnPool = nil
 		}
 		if curSpan != nil {
@@ -1830,7 +1966,8 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 			if replay := gucCache.ReplayQuery(); replay != "" {
 				if err := h.fireReplay(bConn, replay); err != nil {
 					log.Warn("guc replay failed; treating backend as bad", "err", err)
-					_ = bConn.Close()
+					releasePool(bConnPool, h.Pool).Discard(bConn)
+					bConnPool = nil
 					bConn = nil
 					proto.SendFatalError(be, "57P03",
 						fmt.Sprintf("pgrouter: backend replay failed: %v", err))
@@ -1863,6 +2000,7 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					log:            log,
 					state:          state,
 					pendingEvictCC: &h.pendingEvictCC,
+					pendingParsePC: &h.pendingEvictCC,
 					queryStart:     queryStart,
 					lastSQL:        lastSQL,
 					lastKind:       lastKind,
@@ -1882,7 +2020,8 @@ func (h *PooledConn) serveRaw(ctx context.Context, conn net.Conn) error {
 					bConn = nil
 				}
 				if out.queryTimedOut {
-					_ = bConn.Close()
+					releasePool(bConnPool, h.Pool).Discard(bConn)
+					bConnPool = nil
 					bConn = nil
 					h.counters.OnQueryDuration(time.Since(queryStart).Seconds())
 					sendFatalWithDeadline(be, conn, "57014",

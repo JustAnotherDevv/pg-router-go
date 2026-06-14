@@ -162,6 +162,66 @@ func TestPooledBindRewritesPreparedStatementName(t *testing.T) {
 	testutil.DrainToRFQ(t, clt, fe)
 }
 
+func TestPooledBindRepreparesOnFreshBackendAndHidesInjectedParseComplete(t *testing.T) {
+	fb, bConn, clt, fe := newCachedSession(t)
+
+	wantServerName := ServerNameFor("SELECT $1::int")
+
+	// First Parse seeds the client-side mapping and the backend cache.
+	fb.expect(func(_ *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+		m, ok := msg.(*pgproto3.Parse)
+		require.True(t, ok, "expected Parse, got %T", msg)
+		require.Equal(t, wantServerName, m.Name)
+	})
+	fb.expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
+		be.Send(&pgproto3.ParseComplete{})
+		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+		_ = be.Flush()
+	})
+	fe.Send(&pgproto3.Parse{Name: "stmt1", Query: "SELECT $1::int"})
+	fe.Send(&pgproto3.Sync{})
+	require.NoError(t, fe.Flush())
+	testutil.DrainToRFQ(t, clt, fe)
+
+	// Simulate release+reset or a hop to a backend whose prepared cache
+	// does not yet contain the statement.
+	bConn.Prepared.Clear()
+
+	// The proxy should transparently inject Parse before Bind, then hide
+	// the resulting ParseComplete from the client.
+	fb.expect(func(_ *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+		m, ok := msg.(*pgproto3.Parse)
+		require.True(t, ok, "expected injected Parse, got %T", msg)
+		require.Equal(t, wantServerName, m.Name)
+		require.Equal(t, "SELECT $1::int", m.Query)
+	})
+	fb.expect(func(_ *pgproto3.Backend, msg pgproto3.FrontendMessage) {
+		m, ok := msg.(*pgproto3.Bind)
+		require.True(t, ok, "expected Bind after injected Parse, got %T", msg)
+		require.Equal(t, wantServerName, m.PreparedStatement)
+	})
+	fb.expect(func(be *pgproto3.Backend, _ pgproto3.FrontendMessage) {
+		be.Send(&pgproto3.ParseComplete{}) // injected; client must not see this
+		be.Send(&pgproto3.BindComplete{})
+		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+		_ = be.Flush()
+	})
+
+	fe.Send(&pgproto3.Bind{PreparedStatement: "stmt1"})
+	fe.Send(&pgproto3.Sync{})
+	require.NoError(t, fe.Flush())
+
+	_ = clt.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, err := fe.Receive()
+	require.NoError(t, err)
+	_, ok := got.(*pgproto3.BindComplete)
+	require.True(t, ok, "first visible message must be BindComplete, got %T", got)
+	got, err = fe.Receive()
+	require.NoError(t, err)
+	_, ok = got.(*pgproto3.ReadyForQuery)
+	require.True(t, ok, "second visible message must be RFQ, got %T", got)
+}
+
 // --- PooledConn: Close('S') is suppressed (statement stays cached) ---
 
 func TestPooledCloseStatementSuppressedAndCloseCompleteSynthesized(t *testing.T) {

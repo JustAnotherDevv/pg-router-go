@@ -98,14 +98,9 @@ func AnalyzeSQL(sql string) SQLInfo {
 	// Session-pin check â€” keyword-based fast-path + pg_advisory scan.
 	needsPin := false
 	hasPgAdv := false
-	for i := 0; i+10 <= len(sql); i++ {
-		if sql[i] == 'p' && sql[i+1] == 'g' && sql[i+2] == '_' &&
-			(sql[i+3] == 'a' || sql[i+3] == 'A') &&
-			(sql[i+4] == 'd' || sql[i+4] == 'D') {
-			hasPgAdv = true
-			needsPin = true
-			break
-		}
+	if containsSessionAdvisoryCall(sql) {
+		hasPgAdv = true
+		needsPin = true
 	}
 	if !needsPin {
 		switch kw {

@@ -83,6 +83,42 @@ func TestPooledIdleTxTimeoutClosesInTxClient(t *testing.T) {
 	}
 }
 
+func TestPooledClientDisconnectInTransactionDiscardsBackend(t *testing.T) {
+	fb, p := newPoolWithFake(t, 1)
+	clt, fe, serveDone := startPooledDefault(t, p, PooledConfig{
+		CannedParams:      map[string]string{"server_version": "16.0"},
+		ClientIdleTimeout: 5 * time.Second,
+		IdleTxTimeout:     5 * time.Second,
+		ResetOnRelease:    true,
+	})
+
+	fb.scriptQuery(t, "BEGIN", "BEGIN", 'T')
+
+	fe.Send(&pgproto3.Query{String: "BEGIN"})
+	require.NoError(t, fe.Flush())
+	for {
+		_ = clt.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		m, err := fe.Receive()
+		require.NoError(t, err)
+		if rfq, ok := m.(*pgproto3.ReadyForQuery); ok {
+			require.Equal(t, byte('T'), rfq.TxStatus)
+			break
+		}
+	}
+	_ = clt.SetReadDeadline(time.Time{})
+
+	requirePoolStats(t, p, 0, 1)
+	require.NoError(t, clt.Close())
+
+	select {
+	case <-serveDone:
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return after client disconnect in transaction")
+	}
+
+	requirePoolStats(t, p, 0, 0)
+}
+
 // --- query_timeout (M.9 enforce) ---
 
 // TestPooledQueryTimeoutKillsBackendAndKeepsClientConn: backend is told

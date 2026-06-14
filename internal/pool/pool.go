@@ -537,6 +537,26 @@ func (p *Pool) Release(c *backend.Conn, resetSession bool) {
 	}
 }
 
+// Discard closes a checked-out backend without returning it to idle.
+// Use this when the connection is no longer safe to reuse: mid-
+// transaction disconnects, replay failures, protocol desync, query
+// timeout, or any other path that leaves backend state unknown.
+//
+// PostRelease is fired exactly once, mirroring Release.
+func (p *Pool) Discard(c *backend.Conn) {
+	if c == nil {
+		return
+	}
+	defer func() {
+		if cb := p.cfg.Callbacks.PostRelease; cb != nil {
+			cb()
+		}
+	}()
+	_ = c.Close()
+	p.active.Add(-1)
+	p.cond.Broadcast()
+}
+
 // cancelWaiter removes `w` from the queue. Called from ctx.Done /
 // timeout paths. We mark `canceled` so a racing Release can skip past.
 func (p *Pool) cancelWaiter(w *waiter) {

@@ -41,6 +41,7 @@ var (
 	adminDSN    string
 	pgrouterDSN string
 	pgrouterCmd *exec.Cmd
+	moduleRoot  string
 )
 
 func TestMain(m *testing.M) {
@@ -53,6 +54,13 @@ func TestMain(m *testing.M) {
 		// exit 0 — go test treats it as "no tests"; CI knob can flip this.
 		os.Exit(0)
 	}
+
+	root, err := findModuleRoot()
+	if err != nil {
+		fmt.Printf("[fatal] find module root: %v\n", err)
+		os.Exit(2)
+	}
+	moduleRoot = root
 
 	bin, cleanup, err := buildPgrouter()
 	if err != nil {
@@ -149,13 +157,16 @@ func buildPgrouter() (string, func(), error) {
 	}
 	out := filepath.Join(dir, name)
 	// Module root is two levels up from test/integration.
-	moduleRoot, err := findModuleRoot()
+	root := moduleRoot
+	if root == "" {
+		root, err = findModuleRoot()
+	}
 	if err != nil {
 		os.RemoveAll(dir)
 		return "", nil, err
 	}
 	cmd := exec.Command("go", "build", "-o", out, "./cmd/pgrouter")
-	cmd.Dir = moduleRoot
+	cmd.Dir = root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -324,4 +335,51 @@ func stopPgrouter(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 		<-done
 	}
+}
+
+func composeFile() string {
+	return filepath.Join(moduleRoot, "test", "integration", "docker-compose.yml")
+}
+
+func faultHarnessReady(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not installed; skipping docker-backed fault test")
+	}
+	if !strings.Contains(adminDSN, "127.0.0.1:25433") {
+		t.Skipf("fault test expects local compose-backed Postgres, got %s", redactDSN(adminDSN))
+	}
+	cmd := exec.Command("docker", "version", "--format", "{{.Server.Version}}")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("docker daemon unavailable: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+}
+
+func dockerCompose(t *testing.T, args ...string) string {
+	t.Helper()
+	allArgs := append([]string{"compose", "-f", composeFile()}, args...)
+	cmd := exec.Command("docker", allArgs...)
+	cmd.Dir = moduleRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker %s failed: %v\n%s", strings.Join(allArgs, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out)
+}
+
+func waitForAdminReadyTimeout(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := pingAdmin(adminDSN); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for admin Postgres")
+	}
+	return lastErr
 }

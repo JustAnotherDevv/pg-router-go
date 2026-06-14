@@ -24,7 +24,10 @@ package client
 
 import (
 	"regexp"
+	"time"
 )
+
+const pinnedBackendPollInterval = 100 * time.Millisecond
 
 // pinPatterns are the SQL fragments that trigger force-session.
 //
@@ -43,6 +46,8 @@ var pinPatterns = []*regexp.Regexp{
 	// safe in txn-mode.)
 	regexp.MustCompile(`(?i)\bpg_advisory_lock\s*\(`),
 	regexp.MustCompile(`(?i)\bpg_advisory_lock_shared\s*\(`),
+	regexp.MustCompile(`(?i)\bpg_try_advisory_lock\s*\(`),
+	regexp.MustCompile(`(?i)\bpg_try_advisory_lock_shared\s*\(`),
 	// CREATE TEMP / TEMPORARY TABLE
 	regexp.MustCompile(`(?i)\bCREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP|TEMPORARY)\s+TABLE\b`),
 	// DECLARE <name> [BINARY] [INSENSITIVE] [SCROLL] CURSOR WITHOUT HOLD
@@ -81,14 +86,10 @@ func needsSessionPin(sql string) bool {
 // keyword not in the safe list (including function calls like
 // pg_advisory_lock which aren't SQL keywords).
 func maybeNeedsPin(sql string) bool {
-	// pg_advisory_lock / pg_advisory_lock_shared are function calls
-	// that can appear anywhere (e.g. SELECT pg_advisory_lock(42)).
-	for i := 0; i+10 <= len(sql); i++ {
-		if sql[i] == 'p' && sql[i+1] == 'g' && sql[i+2] == '_' &&
-			(sql[i+3] == 'a' || sql[i+3] == 'A') &&
-			(sql[i+4] == 'd' || sql[i+4] == 'D') {
-			return true
-		}
+	// Session-level advisory lock helpers can appear anywhere inside a
+	// statement (e.g. SELECT pg_try_advisory_lock(42)).
+	if containsSessionAdvisoryCall(sql) {
+		return true
 	}
 	kw := firstKeyword(stripLeadingNoise(sql))
 	switch kw {
@@ -101,6 +102,33 @@ func maybeNeedsPin(sql string) bool {
 		return false
 	}
 	return true // unknown keyword — could be pin trigger
+}
+
+func containsSessionAdvisoryCall(sql string) bool {
+	for i := 0; i < len(sql); i++ {
+		if !matchFoldAt(sql, i, "pg_advisory_") && !matchFoldAt(sql, i, "pg_try_advisory_") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func matchFoldAt(s string, start int, needle string) bool {
+	if start+len(needle) > len(s) {
+		return false
+	}
+	for i := 0; i < len(needle); i++ {
+		sb := s[start+i]
+		nb := needle[i]
+		if sb >= 'A' && sb <= 'Z' {
+			sb += 'a' - 'A'
+		}
+		if sb != nb {
+			return false
+		}
+	}
+	return true
 }
 
 // stripSQLComments removes `-- ... EOL` line comments and `/* ... */`

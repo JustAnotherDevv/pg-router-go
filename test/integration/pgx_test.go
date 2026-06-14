@@ -114,7 +114,7 @@ func TestPgxBatch(t *testing.T) {
 func TestPgxCopyIn(t *testing.T) {
 	c := pgxConnect(t)
 	ctx := context.Background()
-	_, err := c.Exec(ctx, "CREATE TEMP TABLE tcopy(id int, val text) ON COMMIT DROP")
+	_, err := c.Exec(ctx, "CREATE TEMP TABLE tcopy(id int, val text)")
 	require.NoError(t, err)
 	rows := [][]any{
 		{1, "alice"},

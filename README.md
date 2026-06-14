@@ -165,6 +165,45 @@ cosign verify-blob \
   checksums.txt
 ```
 
+## Operator Guide
+
+Minimum production checklist:
+
+- Put `auth.type`, TLS mode, pool sizes, `max_client_conn`, and admin token in
+  config explicitly. Do not rely on defaults you have not reviewed.
+- Bind Postgres and pgrouter only where intended. Keep test-only trust auth and
+  public listeners out of production.
+- Enable metrics scraping before first traffic and alert on process restarts,
+  readiness failures, query timeouts, waiters, and backend dial errors.
+- Keep `query_timeout`, `query_wait_timeout`, and backend connect timeouts set
+  to finite values.
+
+Startup and health:
+
+- Validate config before rollout: `bin/pgrouter validate <config>`
+- Start with `bin/pgrouter run --config <config>`
+- Check `/readyz` for readiness, `/healthz` for liveness, and `/metrics` for
+  saturation or dial failures.
+- Smoke test a real client query through pgrouter before sending full traffic.
+
+Reloads and rollouts:
+
+- Use `SIGHUP` for config and userlist reloads.
+- Change pool sizes gradually and watch waiters, dial errors, and query
+  timeouts during the rollout.
+- Prefer staged rollout with a canary slice before full cutover.
+
+Failure handling:
+
+- Backend restart: expect in-flight work to fail and new acquires to recover
+  once Postgres is reachable again.
+- Slow query: expect SQLSTATE `57014` when `query_timeout` fires.
+- Pool exhaustion: expect acquires to fail after `query_wait_timeout`; scale
+  pool capacity or reduce concurrency instead of letting waiters grow without
+  bound.
+- Unexpected backend disconnect: discard the affected client/backend pair and
+  confirm fresh connections succeed before reopening traffic.
+
 ## Architecture
 
 The short path:

@@ -16,6 +16,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -130,7 +131,9 @@ func TestEdgeWideRowInsertRoundTrip(t *testing.T) {
 	require.NoError(t, conn.QueryRow(ctx,
 		fmt.Sprintf("SELECT big, j::text, nums FROM %s", tab)).Scan(&bigOut, &jOut, &nums))
 	require.Equal(t, big, bigOut)
-	require.Contains(t, jOut, `"k":"v"`)
+	var gotJSON map[string]any
+	require.NoError(t, json.Unmarshal([]byte(jOut), &gotJSON))
+	require.Equal(t, "v", gotJSON["k"])
 	require.Equal(t, []int32{1, 2, 3, 4, 5}, nums)
 }
 

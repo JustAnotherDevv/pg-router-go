@@ -66,6 +66,18 @@ func TestReleasePutsBackendIntoIdle(t *testing.T) {
 	require.Equal(t, 1, st.Idle)
 }
 
+func TestDiscardClosesBackendWithoutReturningToIdle(t *testing.T) {
+	p, _ := newTestPool(t, Config{DefaultPoolSize: 2})
+	c, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+
+	p.Discard(c)
+
+	st := p.Stats()
+	require.Equal(t, 0, st.Active)
+	require.Equal(t, 0, st.Idle)
+}
+
 func TestAcquireReusesIdle(t *testing.T) {
 	p, md := newTestPool(t, Config{DefaultPoolSize: 2})
 	c, _ := p.Acquire(context.Background())
