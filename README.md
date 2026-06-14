@@ -92,9 +92,6 @@ Common sections:
 - `users` - per-user pool/limit overrides
 - `metrics` and `logging` - observability and log output
 
-See [docs/migration-from-pgbouncer.md](docs/migration-from-pgbouncer.md) for
-PgBouncer setting equivalents.
-
 ## Build
 
 Requires Go 1.26+.
@@ -161,7 +158,7 @@ Release artifacts can be verified with cosign:
 
 ```sh
 cosign verify-blob \
-  --certificate-identity-regexp 'https://github.com/JustAnotherDevv/pgrouter/.*' \
+  --certificate-identity-regexp 'https://github.com/JustAnotherDevv/pg-router-go/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --signature checksums.txt.sig \
   --certificate checksums.txt.pem \
@@ -192,21 +189,6 @@ Core packages:
 - `internal/listener` - TCP/Unix listeners, TLS helpers, PROXY protocol
 - `internal/stats` - Prometheus and admin HTTP API
 - `pkg/pgrouter` - embeddable library API
-
-Read [docs/architecture.md](docs/architecture.md) for the detailed runtime
-walkthrough.
-
-## Compatibility Note
-
-The old bare flag form still exists for quick local demos:
-
-```sh
-bin/pgrouter --listen :6432 --backend localhost:5432
-```
-
-It now generates a temporary config and runs through the same production
-pooled runtime as `pgrouter run --config`. New deployments should use a YAML
-config file.
 
 ## Contributing
 
