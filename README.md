@@ -1,5 +1,10 @@
 # pgrouter
 
+[![CI](https://github.com/JustAnotherDevv/pg-router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/JustAnotherDevv/pg-router-go/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/JustAnotherDevv/pg-router-go)](https://github.com/JustAnotherDevv/pg-router-go/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/JustAnotherDevv/pg-router-go)](https://github.com/JustAnotherDevv/pg-router-go/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/JustAnotherDevv/pg-router-go)](https://github.com/JustAnotherDevv/pg-router-go/blob/main/LICENSE)
+
 pgrouter is a PostgreSQL connection pooler written in Go. It speaks the
 PostgreSQL wire protocol on both sides, accepts normal Postgres clients, and
 routes them through per-database/per-user backend pools.
